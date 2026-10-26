@@ -107,7 +107,9 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 产物是单个 `MouseWheelEnhancement.exe`，拷到任意目录双击即可运行；
 数据会在 exe 旁边生成 `Mouse wheel enhancement data` 文件夹。
 
-> 更新器的资产名固定是 `MouseWheelEnhancement.exe`：发版时请把 exe 以此名上传到 Release。
+> 更新器的资产名固定是 **`MouseWheelEnhancement.App.exe`**（主程序本体，约 466 KB）。
+> 发版时必须把这个文件按此名上传，**不能**上传启动器整包（`MouseWheelEnhancement.exe`，约 505 KB）——
+> 否则更新完"主程序"会变成一个启动器，两个程序互相拉起。见 DESIGN 第 21 节。
 > Release 说明里写一行 `SHA256: <64 位十六进制>`，客户端下载后会做校验。
 
 ## 自检

@@ -51,11 +51,22 @@ public sealed class UpdateService
     /// <summary>
     /// **远端资产名**（发版时上传的文件名）。
     ///
-    /// 刻意没有跟着本地文件名改成 <c>MouseWheelEnhancement.App.exe</c>：
-    /// v1.1.0 的客户端会按这个名字去找更新包，改名会让它们全部更新失败
-    /// （报"这个版本里没有更新包"）。本地文件名与它无关 —— 见 <see cref="StagedPath"/>。
+    /// <para>
+    /// 必须是**主程序本体**（<c>MouseWheelEnhancement.App.exe</c>），不能是启动器整包。
+    /// </para>
+    /// <para>
+    /// 这里踩过一次：资产用的是启动器 <c>MouseWheelEnhancement.exe</c>（约 505 KB，
+    /// 主程序嵌在里面），而更新器把它当主程序替换进缓存 —— 更新完"主程序"其实是
+    /// 一个启动器，它又会去拉起主程序，形成互相拉起的死循环。
+    /// 体积也露了马脚：刷新包 505 KB，而主程序只有 466 KB。
+    /// </para>
+    /// <para>
+    /// 代价：v1.3.x 及更早的客户端按旧名字找包，会得到"这个版本里没有更新包"——
+    /// 这是**安全**的失败（不下载、不替换、不损坏），比装上一个坏文件好得多。
+    /// 那一版用户需要重新下载 zip 覆盖一次。
+    /// </para>
     /// </summary>
-    public const string AssetName = "MouseWheelEnhancement.exe";
+    public const string AssetName = "MouseWheelEnhancement.App.exe";
 
     private const string DefaultRepo = "QQQOrange/Mouse-wheel-enhancement";
 
