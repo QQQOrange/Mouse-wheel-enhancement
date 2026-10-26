@@ -126,6 +126,23 @@
                                                   Unchecked="AutoStart_Changed" />
                                 </Grid>
 
+                                <!-- 从属于「开机自启」：父开关关掉时整行变灰 -->
+                                <Grid x:Name="AdminStartRow" Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Margin="14,0,10,0">
+                                        <TextBlock Text="以管理员身份启动" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="AdminStartHint" Style="{StaticResource Caption}"
+                                                   TextWrapping="Wrap"
+                                                   Text="登录后直接以管理员运行，对管理员程序的窗口也生效（普通权限会被系统拦住）。Windows 只会弹一次确认。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="AdminStartSwitch" Grid.Column="1" Style="{StaticResource Switch}"
+                                                  VerticalAlignment="Center"
+                                                  Checked="AdminStart_Changed" Unchecked="AdminStart_Changed" />
+                                </Grid>
+
                                 <Grid Margin="0,16,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />

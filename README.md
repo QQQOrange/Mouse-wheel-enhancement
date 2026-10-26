@@ -34,6 +34,7 @@ Windows 桌面小工具 · **两个文件共 0.44 MB** · 无驱动 · 无后台
 | 自动更新 | 走 GitHub Releases，程序内下载、SHA256 校验、替换自身、重启 |
 | GitHub 令牌 | 选填，用于把查更新的接口额度从 60 次/小时提到 5000 次/小时；DPAPI 加密保存 |
 | 运行时检测 | 启动器先查 .NET 10 桌面运行时，缺了就弹窗 + 「下载」按钮（打开官方下载页）；检测失败不误拦 |
+| 管理员开机启动 | 设置里勾选后，登录即用管理员权限启动（计划任务实现，**只弹一次 UAC**）；对管理员窗口也生效 |
 | 帧率跟随显示器 | 自动按当前屏幕刷新率出帧（60/144/160/165/200/240Hz 都能对上），换屏或改分辨率 2 秒内自动生效 |
 | 托盘常驻 | 启用/暂停、打开设置、把当前应用加入/移出名单、检查更新、退出 |
 | 开机自启 | 写 HKCU Run 项，不需要管理员 |
@@ -97,7 +98,7 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ## 自检
 
 ```bash
-# 104 条纯逻辑断言：倍率曲线、速度判定、摊帧、帧率跟随、整格化、
+# 107 条纯逻辑断言：倍率曲线、速度判定、摊帧、帧率跟随、整格化、
 # 版本比较、令牌清洗、名单匹配、配置读写
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全部通过
 
@@ -115,6 +116,9 @@ MouseWheelEnhancement.App.exe --measure --show
 # 更新链路诊断：检查 + 真的下载校验（--as 假装旧版本，不替换程序）
 MouseWheelEnhancement.App.exe --checkupdate
 MouseWheelEnhancement.App.exe --checkupdate --as 1.0.0 --download
+
+# 「以管理员身份开机启动」的计划任务状态（只读；--create / --delete 才真的改）
+MouseWheelEnhancement.App.exe --taskcheck
 ```
 
 ## 装在哪、数据放哪

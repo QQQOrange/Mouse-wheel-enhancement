@@ -154,6 +154,9 @@ public partial class MainWindow : Window
         sb.Append($" line={CurveCanvas.Children.Count}");
         sb.Append($" help={HelpPanel.Children.Count}");
         sb.Append($" tab={Nav.SelectedIndex}");
+        sb.Append($" 自启={(AutoStartSwitch.IsChecked == true ? "开" : "关")}");
+        sb.Append($" 管理员启动={(AdminStartSwitch.IsChecked == true ? "开" : "关")}");
+        sb.Append($" 管理员行可用={(AdminStartRow.IsEnabled ? "是" : "否")}");
         return sb.ToString();
     }
 
@@ -180,7 +183,7 @@ public partial class MainWindow : Window
             var c = Services.Config;
 
             MasterSwitch.IsChecked = c.Enabled;
-            AutoStartSwitch.IsChecked = AutoStart.IsEnabled();
+            RefreshStartupSwitches();
             CloseToTraySwitch.IsChecked = c.Behavior.CloseToTray;
             PauseSelfSwitch.IsChecked = c.Behavior.PauseWhileSettingsOpen;
 
@@ -492,11 +495,143 @@ public partial class MainWindow : Window
     private void AutoStart_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
+
         var on = AutoStartSwitch.IsChecked == true;
-        var ok = AutoStart.Set(on);
-        if (!ok) UpdateStatus.Text = "写开机自启失败（可能被杀软拦住了）。";
         Services.Config.Behavior.RunAtLogin = on;
+        // 父开关一关，从属项自动失效（Normalize 里也会强制拉平，这里先让界面立刻对）
+        if (!on) Services.Config.Behavior.RunAtLoginAsAdmin = false;
+
+        UpdateAdminStartRowEnabled();
         Commit();
+        ApplyStartup(allowElevate: true);
+    }
+
+    private void AdminStart_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+
+        var want = AdminStartSwitch.IsChecked == true;
+        if (want && AutoStartSwitch.IsChecked != true)
+        {
+            // 父开关没开，这一项不成立（界面上已禁用，这里是第二道保险）
+            var prev = _loading;
+            _loading = true;
+            AdminStartSwitch.IsChecked = false;
+            _loading = prev;
+            return;
+        }
+
+        Services.Config.Behavior.RunAtLoginAsAdmin = want;
+        Commit();
+        ApplyStartup(allowElevate: true);
+    }
+
+    /// <summary>
+    /// 让两个开关反映**系统的真实状态**，而不是配置文件写的值。
+    /// 计划任务可能被用户在「任务计划程序」里手动删掉 —— 那种情况下以系统为准更诚实。
+    /// </summary>
+    private void RefreshStartupSwitches()
+    {
+        var adminTask = AdminStart.IsEnabled();
+        var runKey = AutoStart.IsRunKeyEnabled();
+
+        var prev = _loading;
+        _loading = true;
+        try
+        {
+            AutoStartSwitch.IsChecked = adminTask || runKey;
+            AdminStartSwitch.IsChecked = adminTask;
+        }
+        finally { _loading = prev; }
+
+        UpdateAdminStartRowEnabled();
+    }
+
+    /// <summary>「以管理员身份启动」从属于「开机自启」，父开关关着就整行变灰。</summary>
+    private void UpdateAdminStartRowEnabled()
+    {
+        if (AdminStartRow == null) return;
+
+        var on = AutoStartSwitch.IsChecked == true;
+        AdminStartRow.IsEnabled = on;
+        AdminStartRow.Opacity = on ? 1.0 : 0.45;
+        AdminStartSwitch.IsEnabled = on;
+        AdminStartHint.Text = on
+            ? "登录后直接以管理员运行，对管理员程序的窗口也生效（普通权限会被系统拦住）。Windows 只会弹一次确认。"
+            : "先打开上面的「开机自启」，这一项才有意义。";
+    }
+
+    /// <summary>
+    /// 把「开机自启」的实际形态落到系统里。
+    ///
+    /// <para>
+    /// 涉及计划任务的两个分支（要建、或者要删已有的）都必须有管理员权限 ——
+    /// 注册表 Run 项能写，计划任务不能。没有权限就提权重启自己，
+    /// 由新进程带 <c>--apply-startup</c> 回来把这一步做完。
+    /// </para>
+    /// </summary>
+    private void ApplyStartup(bool allowElevate)
+    {
+        var b = Services.Config.Behavior;
+        var needAdmin = b.RunAtLoginAsAdmin || AdminStart.IsEnabled();
+
+        if (needAdmin && !Services.IsElevated)
+        {
+            if (allowElevate) ElevateToApplyStartup();
+            else RefreshStartupSwitches();
+            return;
+        }
+
+        if (!AutoStart.Apply(b.RunAtLogin, b.RunAtLoginAsAdmin, out var error))
+        {
+            Log.Warn("应用开机自启失败：" + error);
+            MessageBox.Show(this, error ?? "设置开机自启失败。", Services.AppTitle,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        RefreshStartupSwitches();
+    }
+
+    /// <summary>连续点开关时只弹一次提权确认，避免 UAC 连闪。</summary>
+    private bool _elevatePrompted;
+
+    private void ElevateToApplyStartup()
+    {
+        if (_elevatePrompted) { RefreshStartupSwitches(); return; }
+        _elevatePrompted = true;
+
+        var r = MessageBox.Show(this,
+            "「以管理员身份启动」要靠 Windows 计划任务来实现，设置它需要管理员权限。\n\n" +
+            "点「确定」后系统会弹出一次确认，请选「是」。程序会自动重启，把设置应用好。",
+            Services.AppTitle, MessageBoxButton.OKCancel, MessageBoxImage.Information);
+
+        if (r != MessageBoxResult.OK)
+        {
+            _elevatePrompted = false;
+            RefreshStartupSwitches();
+            return;
+        }
+
+        try
+        {
+            // 带 --apply-startup 但不带 --minimized：重启后把设置窗口打开，
+            // 让用户看见开关真的变成"开"，而不是"点完之后一片安静"。
+            var psi = new ProcessStartInfo(UpdateService.ExePath, "--apply-startup")
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+            };
+            Process.Start(psi);
+            App.ExitApp();
+        }
+        catch (Exception ex)
+        {
+            _elevatePrompted = false;
+            Log.Warn("提权被取消或失败：" + ex.Message);
+            MessageBox.Show(this, "提权被取消，设置没有生效。", Services.AppTitle,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshStartupSwitches();
+        }
     }
 
     private void CloseToTray_Changed(object sender, RoutedEventArgs e)

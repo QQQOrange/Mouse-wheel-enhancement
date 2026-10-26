@@ -471,6 +471,23 @@ internal static class SelfTest
                 c3.Boost.SaturationPerSec >= c3.Boost.FastThresholdPerSec + 5,
                 $"{c3.Boost.SaturationPerSec} vs {c3.Boost.FastThresholdPerSec}");
 
+            // 「以管理员身份启动」从属于「开机自启」：父开关关掉时必须拉平
+            var ca = AppConfig.Default();
+            ca.Behavior.RunAtLogin = false;
+            ca.Behavior.RunAtLoginAsAdmin = true;
+            ca.Normalize();
+            Check("自启关掉后，管理员启动被强制拉平", !ca.Behavior.RunAtLoginAsAdmin,
+                ca.Behavior.RunAtLoginAsAdmin.ToString());
+
+            var cb2 = AppConfig.Default();
+            cb2.Behavior.RunAtLogin = true;
+            cb2.Behavior.RunAtLoginAsAdmin = true;
+            cb2.Normalize();
+            Check("自启开着时，管理员启动保留", cb2.Behavior.RunAtLoginAsAdmin);
+            Check("默认不自启、也不以管理员启动",
+                !AppConfig.Default().Behavior.RunAtLogin &&
+                !AppConfig.Default().Behavior.RunAtLoginAsAdmin);
+
             // 越界值必须被夹回来
             var c2 = AppConfig.Default();
             c2.Boost.MaxMultiplier = 999;

@@ -153,6 +153,15 @@ public sealed class AppBehaviorConfig
     /// <summary>开机自启（写 HKCU Run 项）。</summary>
     public bool RunAtLogin { get; set; } = false;
 
+    /// <summary>
+    /// 开机自启时以管理员身份启动（用计划任务实现，见 <see cref="AdminStart"/>）。
+    /// <para>
+    /// 只有 <see cref="RunAtLogin"/> 为 true 时才有意义 —— <see cref="Normalize"/> 会强制这一点。
+    /// 开启后注册表 Run 项会被删掉，改由计划任务以最高权限拉起。
+    /// </para>
+    /// </summary>
+    public bool RunAtLoginAsAdmin { get; set; } = false;
+
     /// <summary>关闭设置窗口时最小化到托盘而不是退出。</summary>
     public bool CloseToTray { get; set; } = true;
 
@@ -233,6 +242,11 @@ public sealed class AppConfig
         Update.GitHubToken ??= "";
         Update.GitHubTokenProtected ??= "";
         Update.LastCheckUtc ??= "";
+
+        // 「以管理员身份启动」只是「开机自启」的一种方式，父开关关掉时它没有意义。
+        // 这里强制拉平：否则会留下"自启关了、开关却还亮着"的矛盾状态，
+        // 用户下次打开设置会看到两行互相打架的界面。
+        if (!Behavior.RunAtLogin) Behavior.RunAtLoginAsAdmin = false;
     }
 
     /// <summary>`owner/repo` 的基本清洗：去掉网址前缀、多余斜杠、`.git` 后缀。</summary>
