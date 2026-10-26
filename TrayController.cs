@@ -206,12 +206,14 @@ internal sealed class TrayController : IDisposable
             g.DrawLine(pen, 26, 12, 21, 12);
         }
 
-        var hicon = bmp.GetHicon();
-        // 复制一份再销毁句柄，避免 Icon 持有已释放的 HICON
-        using var tmp = Icon.FromHandle(hicon);
-        var copy = (Icon)tmp.Clone();
-        Native.DestroyIcon(hicon);
-        return copy;
+        /* 直接用 HICON 包一个 Icon。
+         *
+         * 这里刻意**不做** "Clone 之后 DestroyIcon" 那一套：Icon.Clone() 在某些
+         * 实现里与原对象共享 HICON，销毁之后托盘图标会变成一块空白 —— 而且只在
+         * 真机上看得到，代码看起来完全正常。
+         * Icon.FromHandle 不接管句柄，Dispose 也不会销毁它；代价是进程生命周期内
+         * 多两个 GDI 句柄，可以忽略。 */
+        return Icon.FromHandle(bmp.GetHicon());
     }
 
     public void Dispose()

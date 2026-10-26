@@ -61,7 +61,15 @@ internal static class Services
         var ok = Engine.Start();
         Log.Info(ok ? "引擎已启动" : "引擎启动失败（钩子没装上）");
 
-        Tray = new TrayController();
+        try
+        {
+            Tray = new TrayController();
+        }
+        catch (Exception ex)
+        {
+            // 托盘没了很不方便，但还不至于让增强本身不可用
+            Log.Error("托盘图标创建失败（界面仍可正常打开）", ex);
+        }
     }
 
     private static void OnConfigChanged(AppConfig cfg)

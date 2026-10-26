@@ -256,7 +256,7 @@ public partial class App : System.Windows.Application
         Services.Shutdown();
         if (Current is App app)
         {
-            app._mutex?.ReleaseMutex();
+            try { app._mutex?.ReleaseMutex(); } catch { /* 不是持有者（冒烟/自检路径） */ }
             app._mutex?.Dispose();
             app._mutex = null;
             app._activateEvent?.Dispose();
