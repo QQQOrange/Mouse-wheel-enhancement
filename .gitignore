@@ -7,8 +7,10 @@ obj/
 
 # 运行时数据（用户自己的设置与日志，不进仓库）
 Mouse wheel enhancement data/
-WheelBoost-data/
 *.log
+
+# 自检 / 诊断模式自己生成的临时数据目录（.tmpst / .tmpcu / .tmpsm…）
+.tmp*/
 
 # 发布/打包临时产物
 publish/

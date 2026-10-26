@@ -1,8 +1,0 @@
-当前版本：1.0.0
-仓库：QQQOrange/Mouse-wheel-enhancement
-最新版接口：https://api.github.com/repos/QQQOrange/Mouse-wheel-enhancement/releases/latest
-网页备用：https://github.com/QQQOrange/Mouse-wheel-enhancement/releases/latest
-令牌：未填写（匿名，60 次/小时）
---------------------------------------------------------
-结果：失败
-原因：这个仓库还没有发布过正式版本（或仓库地址填错了）
