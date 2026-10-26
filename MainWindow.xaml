@@ -871,6 +871,9 @@
                                             Click="OpenDataDir_Click" />
                                     <Button Content="恢复默认设置" Style="{StaticResource DangerButton}" Margin="10,0,0,0"
                                             Click="ResetDefaults_Click" />
+                                    <Button Content="退出程序" Style="{StaticResource GhostButton}" Margin="10,0,0,0"
+                                            Click="ExitApp_Click"
+                                            ToolTip="完全退出（托盘图标也会消失）。平时点 × 只是收回托盘" />
                                 </StackPanel>
                             </StackPanel>
                         </Border>

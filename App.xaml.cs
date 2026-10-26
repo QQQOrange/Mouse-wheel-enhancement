@@ -27,10 +27,21 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // 测量模式：正常跑起来，等界面稳定后记录资源占用再退出。
+        //   --measure        只装托盘（≈ 常驻时的真实占用）
+        //   --measure --show 连设置窗口一起（七页全部布局完）
+        if (e.Args.Any(a => a.Equals("--measure", StringComparison.OrdinalIgnoreCase)))
+        {
+            // ⚠ 这里**不能**在设置完定时器后立刻 Shutdown：那会在测量之前就把进程结束掉。
+            // 交给 WPF 的正常消息循环跑，定时器到点自己记录并退出。
+            StartMeasureMode(e.Args.Any(a => a.Equals("--show", StringComparison.OrdinalIgnoreCase)));
+            return;
+        }
+
         // 诊断模式：只查一次更新并打印结果（不装钩子、不建窗口）
         if (e.Args.Any(a => a.Equals("--checkupdate", StringComparison.OrdinalIgnoreCase)))
         {
-            var code = CheckUpdateCli();
+            var code = CheckUpdateCli(e.Args);
             Shutdown(code);
             Environment.Exit(code);
             return;
@@ -101,6 +112,7 @@ public partial class App : System.Windows.Application
     private static int SmokeTest()
     {
         var code = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             Services.Init();
@@ -153,6 +165,8 @@ public partial class App : System.Windows.Application
                 code = 5;
             }
 
+            ReportResources(sw);
+
             w.Hide();
             Services.Shutdown();
         }
@@ -172,15 +186,22 @@ public partial class App : System.Windows.Application
     /// 用于排查"为什么点检查更新没反应"—— 界面只给一句人话，这里给完整判据
     /// （仓库、用没用令牌、有没有新版、包多大、有没有校验值）。
     /// </summary>
-    private static int CheckUpdateCli()
+    private static int CheckUpdateCli(string[] args)
     {
         var sb = new System.Text.StringBuilder();
         try
         {
+            /* 两个可选参数（都只为"验证发版流程"存在）：
+             *   --as 1.0.0   假装当前是这个版本 → 用来测"发现新版"这条分支
+             *   --download   真的把包下下来并校验 SHA256（**不替换程序**） */
+            var assumeIndex = Array.FindIndex(args, a => a.Equals("--as", StringComparison.OrdinalIgnoreCase));
+            var assume = assumeIndex >= 0 && assumeIndex + 1 < args.Length ? args[assumeIndex + 1] : null;
+            var doDownload = args.Any(a => a.Equals("--download", StringComparison.OrdinalIgnoreCase));
+            var current = string.IsNullOrWhiteSpace(assume) ? Log.Version : assume.Trim();
             var store = new ConfigStore();
             var svc = new UpdateService(store);
 
-            sb.AppendLine($"当前版本：{Log.Version}");
+            sb.AppendLine($"当前版本：{current}" + (assume != null ? $"（--as 指定，真实版本 {Log.Version}）" : ""));
             sb.AppendLine($"仓库：{svc.Repo}");
             sb.AppendLine($"最新版接口：{svc.LatestApi}");
             sb.AppendLine($"网页备用：{svc.LatestWeb}");
@@ -192,7 +213,7 @@ public partial class App : System.Windows.Application
              * 会被排回同一个线程，而这个线程正卡在 GetResult() 上 —— 直接死锁。
              * Task.Run 让它跑在线程池（无同步上下文），再阻塞等待就安全了；
              * 另外加个超时兜底，命令行诊断绝不能挂死。 */
-            var outcome = Task.Run(() => svc.CheckAsync(Log.Version))
+            var outcome = Task.Run(() => svc.CheckAsync(current))
                 .WaitAsync(TimeSpan.FromSeconds(45))
                 .GetAwaiter().GetResult();
             if (!outcome.Ok)
@@ -214,6 +235,20 @@ public partial class App : System.Windows.Application
                 {
                     sb.AppendLine();
                     sb.AppendLine("（已是最新，所以没有可下载的包 —— 这是正常结果，不是错误）");
+                }
+                else if (doDownload)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("开始下载并校验（不替换程序）…");
+                    var staged = Task.Run(() => svc.DownloadAsync(i, null))
+                        .WaitAsync(TimeSpan.FromSeconds(180))
+                        .GetAwaiter().GetResult();
+                    var len = new FileInfo(staged).Length;
+                    sb.AppendLine($"下载完成：{staged}");
+                    sb.AppendLine($"体积 {len} 字节，SHA256 与版本说明" +
+                                  (string.IsNullOrEmpty(i.Sha256) ? "（说明里没写，只比了体积）" : "一致 ✓"));
+                    try { File.Delete(staged); } catch { }
+                    sb.AppendLine("已删除临时文件，未改动正在运行的程序");
                 }
             }
         }
@@ -244,6 +279,89 @@ public partial class App : System.Windows.Application
 
     /// <summary>冒烟测试专用的"外来"标记：不能等于 <c>InputInjector.Signature</c>。</summary>
     private static readonly IntPtr ForeignSignature = (IntPtr)0x5EE0;
+
+    /// <summary>
+    /// `--measure`：让程序按真实方式跑起来（装钩子、建托盘、可选建窗口），
+    /// 等 6 秒让 JIT / GC / 首帧渲染都稳定，再把占用写进日志然后退出。
+    ///
+    /// 加这个模式是因为"内存占用"只能实测：WPF 的数字取决于有没有渲染过、
+    /// 有没有走过 D3D、有没有把七个页面都布局出来。拍脑袋说"大概几十兆"没有意义。
+    /// </summary>
+    private static void StartMeasureMode(bool showWindow)
+    {
+        try
+        {
+            Services.Init();
+
+            MainWindow? w = null;
+            if (showWindow)
+            {
+                w = new MainWindow();
+                w.Show();
+                w.UpdateLayout();
+                for (var i = 0; i < 7; i++) { w.SelectTab(i); w.UpdateLayout(); }
+            }
+
+            // 等 6 秒：JIT、GC、首帧渲染、D3D 设备创建都稳定下来，数字才有可比性
+            var timer = new DispatcherTimer(TimeSpan.FromSeconds(6), DispatcherPriority.Background,
+                (_, _) =>
+                {
+                    ReportResources(showWindow ? "measure(带窗口)" : "measure(仅托盘)");
+
+                    if (w == null) { ExitApp(); return; }
+
+                    /* 再走一遍"用户点 × 退到托盘"的真实路径：窗口应当被真正销毁，
+                     * 那 100 多兆要还给系统。3 秒后回收一次再测，这是"关掉设置后
+                     * 内存会不会回落"的唯一硬证据。 */
+                    w.CloseAndRelease();
+                    var after = new DispatcherTimer(TimeSpan.FromSeconds(3), DispatcherPriority.Background,
+                        (_, _) =>
+                        {
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
+                            GC.Collect();
+                            ReportResources("measure(关闭设置后)");
+
+                            /* 再走一次"从托盘点开设置"：窗口是刚销毁的，
+                             * 这条重建路径必须验证 —— 否则为了省内存把用户
+                             * 卡在"点了打不开"上，比多占两百兆严重得多。 */
+                            Services.ShowWindow();
+                            var reopened = Services.Window;
+                            reopened?.UpdateLayout();
+                            ReportResources($"measure(重新打开，窗口={(reopened != null ? "已重建" : "失败")})");
+                            ExitApp();
+                        }, Dispatcher.CurrentDispatcher);
+                    _ = after;
+                }, Dispatcher.CurrentDispatcher);
+            _ = timer; // DispatcherTimer 由 dispatcher 持有，不需要额外引用
+        }
+        catch (Exception ex)
+        {
+            Log.Error("measure 模式异常", ex);
+            Log.Flush();
+            Environment.Exit(3);
+        }
+    }
+
+    /// <summary>把启动耗时与资源占用写进日志（优化前后对比要用的原始数字）。</summary>
+    private static void ReportResources(System.Diagnostics.Stopwatch sw) => ReportResources($"启动+七页布局 {sw.ElapsedMilliseconds} ms");
+
+    private static void ReportResources(string label)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetCurrentProcess();
+            p.Refresh();
+            var gdi = Native.GetGuiResources(p.Handle, 0);
+            var user = Native.GetGuiResources(p.Handle, 1);
+            Log.Info($"{label}：" +
+                     $"工作集 {p.WorkingSet64 / 1048576.0:0.0} MB，" +
+                     $"私有 {p.PrivateMemorySize64 / 1048576.0:0.0} MB，" +
+                     $"托管堆 {GC.GetTotalMemory(false) / 1048576.0:0.0} MB，" +
+                     $"线程 {p.Threads.Count}，GDI {gdi}，USER {user}");
+        }
+        catch (Exception ex) { Log.Warn("统计资源占用失败：" + ex.Message); }
+    }
 
     private static void RedrawCurveNow(MainWindow w)
     {

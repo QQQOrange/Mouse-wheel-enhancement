@@ -49,18 +49,11 @@ internal sealed class ScrollAnimator : IDisposable
     private long _nextFrameTicks;
     private long _lastFrameTicks;
 
-    private long _emittedUnits;
-    private long _injectCalls;
 
     public ScrollAnimator()
     {
         UpdateSettings(RuntimeSettings.From(AppConfig.Default()));
     }
-
-    /// <summary>已经发出去的滚轮量（单位，120 = 一格）。界面拿来显示"跑了多少"。</summary>
-    public double EmittedNotches => Interlocked.Read(ref _emittedUnits) / (double)Native.WHEEL_DELTA;
-
-    public long InjectCalls => Interlocked.Read(ref _injectCalls);
 
     /// <summary>还有多少没发完（单位）。</summary>
     public double PendingUnits => Interlocked.Read(ref _pendingMilli) / Milli;
@@ -158,8 +151,6 @@ internal sealed class ScrollAnimator : IDisposable
 
     private void Loop()
     {
-        // 让 WaitOne 的超时精度到 1ms 附近，否则 8ms 的帧会被系统计时器凑整成 15.6ms
-        Native.TimeBeginPeriod(1);
         try
         {
             _lastFrameTicks = _clock.ElapsedTicks;
@@ -175,12 +166,21 @@ internal sealed class ScrollAnimator : IDisposable
 
                 if (pendingMilli == 0)
                 {
-                    // 没活干就阻塞等待，一个核都不占
+                    /* 没活干：**先把计时精度还给系统**再阻塞等待。
+                     *
+                     * 原来是一进线程就 TimeBeginPeriod(1) 并一直持有到进程退出。
+                     * 那个请求会让整机更难进入低功耗计时状态 —— 对一个 90% 时间
+                     * 都闲着、只在用户甩滚轮那几百毫秒才干活的小工具来说完全不值。
+                     * 现在只在"真有量要发"的这段时间里申请，发完立刻释放。 */
+                    ReleaseTimerPrecision();
                     _lastFrameTicks = now;
                     _nextFrameTicks = now;
                     _wake.WaitOne(Timeout.Infinite);
                     continue;
                 }
+
+                // 要让 WaitOne 的超时精度到 1ms 附近，否则 8ms 的帧会被系统凑整成 15.6ms
+                RequestTimerPrecision();
 
                 var waitTicks = _nextFrameTicks - now;
                 if (waitTicks > 0)
@@ -216,17 +216,14 @@ internal sealed class ScrollAnimator : IDisposable
                     if (units != 0)
                     {
                         Interlocked.Add(ref _pendingMilli, -(long)units * (long)Milli);
-                        if (InputInjector.SendWheel(units))
-                        {
-                            Interlocked.Add(ref _emittedUnits, Math.Abs(units));
-                            Interlocked.Increment(ref _injectCalls);
-                        }
-                        else
+                        if (!InputInjector.SendWheel(units))
                         {
                             /* 注入失败（被 UIPI 拦下、桌面锁了、目标进程更高权限）。
                              * 丢掉这份积压，否则它会一直重试、越积越多。 */
                             Interlocked.Exchange(ref _pendingMilli, 0);
-                            Log.Warn($"SendInput 失败（GetLastError={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}），已丢弃积压");
+                            Log.Warn("SendInput 失败（错误码 " +
+                                     System.Runtime.InteropServices.Marshal.GetLastWin32Error() +
+                                     "），已丢弃积压");
                         }
                     }
                 }
@@ -241,8 +238,25 @@ internal sealed class ScrollAnimator : IDisposable
         }
         finally
         {
-            Native.TimeEndPeriod(1);
+            ReleaseTimerPrecision();
         }
+    }
+
+    /// <summary>当前是否持有"1ms 计时精度"的请求（必须成对释放，否则会把精度永久占住）。</summary>
+    private bool _timerPrecision;
+
+    private void RequestTimerPrecision()
+    {
+        if (_timerPrecision) return;
+        _timerPrecision = true;
+        Native.TimeBeginPeriod(1);
+    }
+
+    private void ReleaseTimerPrecision()
+    {
+        if (!_timerPrecision) return;
+        _timerPrecision = false;
+        Native.TimeEndPeriod(1);
     }
 
     public void Dispose()

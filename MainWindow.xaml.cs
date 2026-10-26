@@ -26,6 +26,21 @@ public partial class MainWindow : Window
 
     private readonly DispatcherTimer _tick;
     private readonly ObservableCollection<AppRuleRowData> _rows = new();
+
+    /// <summary>画刷缓存：每 400 ms 的刷新里不必反复走资源字典查找。</summary>
+    private readonly Dictionary<string, Brush> _brushes = new();
+
+    /// <summary>帮助页是懒渲染的：二十多个参数块几百个控件，不影响启动才合理。</summary>
+    private bool _helpRendered;
+
+    /// <summary>曲线重绘合并标记：拖动滑块时一次布局只重画一次。</summary>
+    private bool _curvePending;
+
+    /// <summary>名单内容的指纹，用来避免"拖一下滑块就把列表重建一遍"。</summary>
+    private string _appsSignature = "\u0000";
+
+    /// <summary>置位后关闭窗口就是真的销毁（释放资源），而不是退回托盘。</summary>
+    private bool _allowClose;
     private UpdateInfo? _info;
     private CancellationTokenSource? _downloadCts;
     private bool _busy;
@@ -54,7 +69,6 @@ public partial class MainWindow : Window
         FooterRight.Text = Services.IsElevated ? "管理员模式" : "普通权限";
 
         LoadFromConfig();
-        HelpContent.Render(HelpPanel);
         RefreshStats();
         RefreshApps();
         RefreshTokenUi();
@@ -83,6 +97,11 @@ public partial class MainWindow : Window
         {
             Services.StateChanged -= OnServicesStateChanged;
             _tick.Stop();
+
+            /* 窗口（连同视觉树、D3D 表面、字形缓存）刚被销毁，此刻是把工作集
+             * 还给系统的唯一合适时机。放在窗口自己身上而不是创建方，是为了
+             * "谁打开的就谁负责还" —— 任何路径销毁窗口都会走到这里。 */
+            MemoryTrim.TrimIfLarge();
         };
         Loaded += (_, _) => ApplyDarkTitleBar();
     }
@@ -91,6 +110,15 @@ public partial class MainWindow : Window
     /// 构建日期。用 exe 文件自身的修改时间，而不是 Assembly.Location ——
     /// 单文件发布时后者恒为空串（IL3000）。
     /// </summary>
+    /// <summary>取画刷（带缓存）。</summary>
+    private Brush B(string key)
+    {
+        if (_brushes.TryGetValue(key, out var b)) return b;
+        b = (Brush)FindResource(key);
+        _brushes[key] = b;
+        return b;
+    }
+
     private static string BuildStamp()
     {
         try
@@ -132,6 +160,14 @@ public partial class MainWindow : Window
     public void SelectTab(int index)
     {
         if (index >= 0 && index < Nav.Items.Count) Nav.SelectedIndex = index;
+        if (index == HelpTabIndex) EnsureHelpRendered();
+    }
+
+    /// <summary>测量/测试用：立刻真正销毁窗口（绕过"退到托盘"）。</summary>
+    internal void CloseAndRelease()
+    {
+        _allowClose = true;
+        Close();
     }
 
     /* ══════════════ 配置 → 界面 ══════════════ */
@@ -227,8 +263,8 @@ public partial class MainWindow : Window
 
         StatHook.Text = running ? "运行中" : "未运行";
         StatHook.Foreground = running
-            ? (Brush)FindResource("SuccessBrush")
-            : (Brush)FindResource("DangerBrush");
+            ? B("SuccessBrush")
+            : B("DangerBrush");
 
         var t = e.LastTarget;
         StatApp.Text = t.IsKnown ? t.Exe : "—";
@@ -265,7 +301,7 @@ public partial class MainWindow : Window
         UpdateDerivedLabels();
         RefreshApps();
         RefreshStats();
-        RedrawCurve();
+        InvalidateCurve();
     }
 
     /// <summary>界面改动 → 写配置 → 通知引擎 → 合并写盘。</summary>
@@ -278,12 +314,28 @@ public partial class MainWindow : Window
         finally { _updatingFromUi = false; }
 
         if (refreshDerived) UpdateDerivedLabels();
-        RedrawCurve();
+        InvalidateCurve();
     }
 
     /* ══════════════ 倍率曲线预览 ══════════════ */
 
-    private void CurveCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawCurve();
+    private void CurveCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => InvalidateCurve();
+
+    /// <summary>
+    /// 请求重绘曲线：同一轮消息里多次请求只真正画一次。
+    /// 拖滑块时 ValueChanged 一秒能来几十次，每次都重建 121 个点的 Polyline
+    /// 会把 UI 线程占满（拖动明显发涩）。
+    /// </summary>
+    private void InvalidateCurve()
+    {
+        if (_curvePending || CurveCanvas == null) return;
+        _curvePending = true;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _curvePending = false;
+            RedrawCurve();
+        }), DispatcherPriority.Background);
+    }
 
     private void RedrawCurve()
     {
@@ -321,7 +373,7 @@ public partial class MainWindow : Window
             {
                 Text = $"{m:0.#}×",
                 FontSize = 9.5,
-                Foreground = (Brush)FindResource("TextMuted"),
+                Foreground = B("TextMuted"),
             };
             Canvas.SetLeft(lbl, 2);
             Canvas.SetTop(lbl, Y(m) - 9);
@@ -360,7 +412,7 @@ public partial class MainWindow : Window
         CurveCanvas.Children.Add(new Polyline
         {
             Points = pts,
-            Stroke = (Brush)FindResource("AccentBrush"),
+            Stroke = B("AccentBrush"),
             StrokeThickness = 2,
             StrokeLineJoin = PenLineJoin.Round,
         });
@@ -377,7 +429,7 @@ public partial class MainWindow : Window
             {
                 Text = text,
                 FontSize = 9.5,
-                Foreground = (Brush)FindResource("TextMuted"),
+                Foreground = B("TextMuted"),
             };
             Canvas.SetLeft(lbl, Math.Min(X(rate) - 6, left + pw - 12));
             Canvas.SetTop(lbl, top + ph + 3);
@@ -388,7 +440,7 @@ public partial class MainWindow : Window
         {
             Text = "格/秒",
             FontSize = 9.5,
-            Foreground = (Brush)FindResource("TextMuted"),
+            Foreground = B("TextMuted"),
         };
         Canvas.SetLeft(axis, left + pw - 26);
         Canvas.SetTop(axis, top + ph + 3);
@@ -399,7 +451,23 @@ public partial class MainWindow : Window
 
     private void Nav_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (Nav.SelectedIndex == 1) RedrawCurve();
+        if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
+        if (Nav.SelectedIndex == 1) InvalidateCurve();
+    }
+
+    /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
+    private const int HelpTabIndex = 5;
+
+    /// <summary>
+    /// 第一次真正打开「帮助」页时再生成内容。
+    /// 那些文案是几百个控件，一次性在构造里建好会让每次开设置都白付这笔开销 ——
+    /// 而大多数时候用户根本不会翻到这一页。
+    /// </summary>
+    private void EnsureHelpRendered()
+    {
+        if (_helpRendered || HelpPanel == null) return;
+        _helpRendered = true;
+        HelpContent.Render(HelpPanel);
     }
 
     private void Master_Toggled(object sender, RoutedEventArgs e)
@@ -562,6 +630,15 @@ public partial class MainWindow : Window
     private void RefreshApps()
     {
         var apps = Services.Config.Filter.Apps;
+
+        /* 指纹没变就直接返回。
+         * 原来这段在**每次**配置变更时都跑（拖滑块一秒几十次），
+         * 结果是列表被清空重建几十次：选中项丢失、滚动位置跳回顶部、
+         * 还平白产生一堆 UI 对象。 */
+        var signature = string.Join('\u0001', apps.Select(a => a.Exe + '\u0002' + a.Note));
+        if (signature == _appsSignature) return;
+        _appsSignature = signature;
+
         _rows.Clear();
         foreach (var a in apps.OrderBy(a => a.Exe, StringComparer.OrdinalIgnoreCase))
             _rows.Add(new AppRuleRowData { Exe = a.Exe, Note = string.IsNullOrWhiteSpace(a.Note) ? "（无备注）" : a.Note });
@@ -682,7 +759,7 @@ public partial class MainWindow : Window
 
         if (info.Newer)
         {
-            UpdateStatus.Foreground = (Brush)FindResource("WarnBrush");
+            UpdateStatus.Foreground = B("WarnBrush");
             UpdateStatus.Text = $"发现新版本 v{info.Version}" +
                                 (info.Size > 0 ? $"（{Text.HumanSize(info.Size)}）" : "") +
                                 (fromAutoCheck ? " —— 点「下载并安装」即可在程序内更新。" : "");
@@ -698,7 +775,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            UpdateStatus.Foreground = (Brush)FindResource("TextSecondary");
+            UpdateStatus.Foreground = B("TextSecondary");
             UpdateStatus.Text = $"已是最新版本（v{Services.Version}）";
             DownloadBtn.Visibility = Visibility.Collapsed;
             NotesCard.Visibility = Visibility.Collapsed;
@@ -706,7 +783,7 @@ public partial class MainWindow : Window
 
         if (info.AuthWarning != null)
         {
-            UpdateStatus.Foreground = (Brush)FindResource("WarnBrush");
+            UpdateStatus.Foreground = B("WarnBrush");
             UpdateStatus.Text += "\n" + info.AuthWarning;
         }
     }
@@ -717,7 +794,7 @@ public partial class MainWindow : Window
         _busy = true;
         CheckBtn.IsEnabled = false;
         UpdateProgress.Visibility = Visibility.Collapsed;
-        UpdateStatus.Foreground = (Brush)FindResource("TextSecondary");
+        UpdateStatus.Foreground = B("TextSecondary");
         UpdateStatus.Text = "正在检查…";
 
         try
@@ -725,7 +802,7 @@ public partial class MainWindow : Window
             var outcome = await Services.Updater.CheckAsync(Services.Version);
             if (!outcome.Ok)
             {
-                UpdateStatus.Foreground = (Brush)FindResource("DangerBrush");
+                UpdateStatus.Foreground = B("DangerBrush");
                 UpdateStatus.Text = "检查失败：" + outcome.Error;
                 return;
             }
@@ -738,7 +815,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            UpdateStatus.Foreground = (Brush)FindResource("DangerBrush");
+            UpdateStatus.Foreground = B("DangerBrush");
             UpdateStatus.Text = "检查失败：" + ex.Message;
             Log.Warn("检查更新失败：" + ex.Message);
         }
@@ -755,7 +832,7 @@ public partial class MainWindow : Window
 
         if (!Services.Updater.CanSelfUpdate(out var reason))
         {
-            UpdateStatus.Foreground = (Brush)FindResource("DangerBrush");
+            UpdateStatus.Foreground = B("DangerBrush");
             UpdateStatus.Text = reason;
             return;
         }
@@ -771,7 +848,7 @@ public partial class MainWindow : Window
         var progress = new Progress<DownloadProgress>(p =>
         {
             if (p.Total > 0) UpdateProgress.Value = p.Percent;
-            UpdateStatus.Foreground = (Brush)FindResource("TextSecondary");
+            UpdateStatus.Foreground = B("TextSecondary");
             UpdateStatus.Text = p.Message;
         });
 
@@ -783,19 +860,19 @@ public partial class MainWindow : Window
             Services.Updater.ApplyUpdate();
 
             UpdateProgress.Value = 100;
-            UpdateStatus.Foreground = (Brush)FindResource("SuccessBrush");
+            UpdateStatus.Foreground = B("SuccessBrush");
             UpdateStatus.Text = "更新已就位 —— 重启程序即可用上新版本。";
             RestartBtn.Visibility = Visibility.Visible;
             DownloadBtn.Visibility = Visibility.Collapsed;
         }
         catch (OperationCanceledException)
         {
-            UpdateStatus.Foreground = (Brush)FindResource("TextSecondary");
+            UpdateStatus.Foreground = B("TextSecondary");
             UpdateStatus.Text = "已取消下载（已下载的部分会保留，下次可以接着下）。";
         }
         catch (Exception ex)
         {
-            UpdateStatus.Foreground = (Brush)FindResource("DangerBrush");
+            UpdateStatus.Foreground = B("DangerBrush");
             UpdateStatus.Text = "更新失败：" + ex.Message;
             Log.Warn("更新失败：" + ex.Message);
         }
@@ -865,14 +942,14 @@ public partial class MainWindow : Window
         var raw = TokenBox.Text;
         if (Text.SanitizeToken(raw) == null)
         {
-            TokenStatus.Foreground = (Brush)FindResource("DangerBrush");
+            TokenStatus.Foreground = B("DangerBrush");
             TokenStatus.Text = "没填内容 —— 把 github_pat_… 或 ghp_… 粘进来再保存。";
             return;
         }
 
         Services.Store.SetToken(raw);
         RefreshTokenUi();
-        TokenStatus.Foreground = (Brush)FindResource("TextSecondary");
+        TokenStatus.Foreground = B("TextSecondary");
         TokenStatus.Text = "已保存（DPAPI 加密，只在本机可解）。正在验证…";
         await VerifyCurrentTokenAsync();
     }
@@ -885,7 +962,7 @@ public partial class MainWindow : Window
             var raw = TokenBox.Text;
             if (Text.SanitizeToken(raw) == null)
             {
-                TokenStatus.Foreground = (Brush)FindResource("DangerBrush");
+                TokenStatus.Foreground = B("DangerBrush");
                 TokenStatus.Text = "还没填令牌 —— 粘进来再点验证。";
                 return;
             }
@@ -900,7 +977,7 @@ public partial class MainWindow : Window
         var tok = Services.Store.CurrentToken();
         if (tok == null)
         {
-            TokenStatus.Foreground = (Brush)FindResource("DangerBrush");
+            TokenStatus.Foreground = B("DangerBrush");
             TokenStatus.Text = "还没保存令牌。";
             return;
         }
@@ -910,12 +987,12 @@ public partial class MainWindow : Window
     private async Task VerifyAsync(string token)
     {
         VerifyTokenBtn.IsEnabled = false;
-        TokenStatus.Foreground = (Brush)FindResource("TextSecondary");
+        TokenStatus.Foreground = B("TextSecondary");
         TokenStatus.Text = "正在向 GitHub 验证…";
         try
         {
             var check = await Services.Updater.VerifyTokenAsync(token);
-            TokenStatus.Foreground = (Brush)FindResource("SuccessBrush");
+            TokenStatus.Foreground = B("SuccessBrush");
             TokenStatus.Text = "令牌有效：" + check.Display;
 
             try
@@ -931,7 +1008,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            TokenStatus.Foreground = (Brush)FindResource("DangerBrush");
+            TokenStatus.Foreground = B("DangerBrush");
             TokenStatus.Text = "令牌无效：" + ex.Message;
         }
         finally { VerifyTokenBtn.IsEnabled = true; }
@@ -941,7 +1018,7 @@ public partial class MainWindow : Window
     {
         Services.Store.SetToken("");
         RefreshTokenUi();
-        TokenStatus.Foreground = (Brush)FindResource("TextSecondary");
+        TokenStatus.Foreground = B("TextSecondary");
         TokenStatus.Text = "已清除令牌。查更新会走匿名接口（每小时 60 次额度）。";
         RateText.Text = "接口额度：点「验证」可以查看。";
     }
@@ -995,9 +1072,11 @@ public partial class MainWindow : Window
         RefreshApps();
         RefreshTokenUi();
         RedrawCurve();
-        UpdateStatus.Foreground = (Brush)FindResource("SuccessBrush");
+        UpdateStatus.Foreground = B("SuccessBrush");
         UpdateStatus.Text = "已恢复默认设置。";
     }
+
+    private void ExitApp_Click(object sender, RoutedEventArgs e) => App.ExitApp();
 
     private void RestartElevated_Click(object sender, RoutedEventArgs e)
     {
@@ -1021,6 +1100,8 @@ public partial class MainWindow : Window
     {
         Services.Store.SaveNow();
 
+        if (_allowClose) return; // 真正销毁这条路径，放手让 WPF 关
+
         if (!Services.Config.Behavior.CloseToTray)
         {
             App.ExitApp();
@@ -1030,6 +1111,22 @@ public partial class MainWindow : Window
         e.Cancel = true;
         Hide();
         Services.Tray?.ShowHintOnce();
+
+        /* ⚠ 退到托盘之后要把窗口**真正销毁**，不能只是 Hide()。
+         *
+         * 实测：仅托盘常驻约 70 MB，而"打开过设置窗口"之后是 197 MB ——
+         * 因为 WPF 的视觉树、D3D 表面、全部控件都还挂在这个隐藏窗口上，
+         * 一直占到进程退出。用户点一下 × 只是把它藏起来，那 120 多 MB 就白占了。
+         *
+         * 这里排到 ApplicationIdle 再关（正在 Closing 里直接 Close 会重入），
+         * 并且先确认它还是隐藏状态（用户可能已经又点开了托盘）。
+         * 下次从托盘打开时 App.ShowMainWindow 会重新建一个，界面上看不出来。 */
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (IsVisible || _allowClose) return;
+            _allowClose = true;
+            Close();
+        }), DispatcherPriority.ApplicationIdle);
     }
 }
 

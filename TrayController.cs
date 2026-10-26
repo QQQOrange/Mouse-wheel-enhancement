@@ -19,16 +19,26 @@ internal sealed class TrayController : IDisposable
     private readonly Icon _iconOn;
     private readonly Icon _iconOff;
 
+    /* 图标句柄自己留着，退出时销毁。
+     * Icon.FromHandle 不接管 HICON，光 Icon.Dispose() 不会释放它 ——
+     * 这是一个很典型的"每跑一次漏两个 GDI 句柄"，长时间挂着看不出来，
+     * 但在任务管理器里 GDI 对象数只增不减。 */
+    private readonly IntPtr _hiconOn;
+    private readonly IntPtr _hiconOff;
+
+    private readonly ContextMenuStrip _menu;
+
     private readonly ToolStripMenuItem _enableItem;
     private readonly ToolStripMenuItem _appItem;
     private readonly ToolStripMenuItem _updateItem;
 
     public TrayController()
     {
-        _iconOn = BuildIcon(true);
-        _iconOff = BuildIcon(false);
+        (_iconOn, _hiconOn) = BuildIcon(true);
+        (_iconOff, _hiconOff) = BuildIcon(false);
 
         var menu = new ContextMenuStrip { ShowImageMargin = false };
+        _menu = menu;
 
         _enableItem = new ToolStripMenuItem("启用增强", null, (_, _) => Services.ToggleEnabled());
         _appItem = new ToolStripMenuItem("", null, (_, _) => ToggleCurrentApp());
@@ -173,7 +183,7 @@ internal sealed class TrayController : IDisposable
     /* ══════════════ 图标绘制 ══════════════ */
 
     /// <summary>运行时画托盘图标（32×32）：一个滚轮 + 向上箭头，暂停时变灰。</summary>
-    private static Icon BuildIcon(bool on)
+    private static (Icon Icon, IntPtr HIcon) BuildIcon(bool on)
     {
         const int n = 32;
         using var bmp = new Bitmap(n, n);
@@ -211,16 +221,24 @@ internal sealed class TrayController : IDisposable
          * 这里刻意**不做** "Clone 之后 DestroyIcon" 那一套：Icon.Clone() 在某些
          * 实现里与原对象共享 HICON，销毁之后托盘图标会变成一块空白 —— 而且只在
          * 真机上看得到，代码看起来完全正常。
-         * Icon.FromHandle 不接管句柄，Dispose 也不会销毁它；代价是进程生命周期内
-         * 多两个 GDI 句柄，可以忽略。 */
-        return Icon.FromHandle(bmp.GetHicon());
+         * Icon.FromHandle 不接管句柄，Dispose 也不会销毁它，所以句柄由调用方
+         * 保存并在 Dispose 里 DestroyIcon —— 见 _hiconOn / _hiconOff。 */
+        var hicon = bmp.GetHicon();
+        return (Icon.FromHandle(hicon), hicon);
     }
 
     public void Dispose()
     {
         Services.StateChanged -= RefreshVisual;
-        try { _icon.Visible = false; _icon.Dispose(); } catch { }
+
+        try { _icon.Visible = false; } catch { }
+        try { _icon.ContextMenuStrip = null; } catch { }
+        try { _icon.Dispose(); } catch { }
+        try { _menu.Dispose(); } catch { }
+
         _iconOn.Dispose();
         _iconOff.Dispose();
+        if (_hiconOn != IntPtr.Zero) Native.DestroyIcon(_hiconOn);
+        if (_hiconOff != IntPtr.Zero) Native.DestroyIcon(_hiconOff);
     }
 }

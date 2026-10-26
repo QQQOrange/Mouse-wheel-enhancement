@@ -98,16 +98,4 @@ public static class Log
         Thread.Sleep(20); // 让最后一条真正落盘
     }
 
-    /// <summary>读完最近的日志（界面上的"打开日志"用）。</summary>
-    public static string Tail(int maxLines = 300)
-    {
-        try
-        {
-            if (!File.Exists(FilePath)) return "(还没有日志)";
-            var lines = File.ReadAllLines(FilePath, Encoding.UTF8);
-            var start = Math.Max(0, lines.Length - maxLines);
-            return string.Join(Environment.NewLine, lines[start..]);
-        }
-        catch (Exception ex) { return $"(读日志失败：{ex.Message})"; }
-    }
 }

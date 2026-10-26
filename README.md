@@ -2,7 +2,7 @@
 
 > 普通滚动一个字都不改，只在**快速拨动滚轮**时按可调倍率加速；可选平滑推进；可按应用启用/禁用。
 
-Windows 桌面小工具 · 单 exe · 无驱动 · 无后台服务 · 数据就在软件自己的文件夹里
+Windows 桌面小工具 · **单文件 0.4 MB** · 无驱动 · 无后台服务 · 数据就在软件自己的文件夹里
 
 - 中文名：**鼠标滚轮增强**
 - 英文名：**Mouse wheel enhancement**
@@ -41,7 +41,12 @@ Windows 桌面小工具 · 单 exe · 无驱动 · 无后台服务 · 数据就�
 ## 运行要求
 
 - Windows 10 1809 或更高（Windows 11 推荐）
-- [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0)（用自包含发布版则不需要）
+- [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0)
+
+> 为什么需要运行时：v1.0.0 曾把整个 .NET 打进 exe，结果 66.65 MB ——
+> 而这个程序自己的代码只有 210 KB。改成框架依赖后发布包 **0.38 MB**（缩小 99.4%）。
+> 目标机器不能装运行时的话，用 `tools\publish.ps1 -SelfContained` 另出一个 67 MB 的自包含包，
+> 功能完全一样。
 
 ## 构建
 
@@ -51,21 +56,26 @@ dotnet build -c Release
 
 ## 发布（单文件 exe）
 
-一条命令完成「发布 + 装到本机 + 自检」：
+一条命令完成「发布 + 装到本机 + 自检 + 算 SHA256」：
 
-```powershell
-tools\publish.ps1
+```
+tools\publish.ps1                  # 框架依赖，约 0.38 MB（默认）
+tools\publish.ps1 -SelfContained   # 自包含，约 67 MB（目标机器没装 .NET 时用）
 ```
 
-默认装到 **`D:\software\myself`**（参数 `-OutDir` 可改，`-NoInstall` 表示只发布不覆盖）。
-也可以手动发布：
+默认装到 **`D:\software\myself`**（`-OutDir` 换目录，`-NoInstall` 只发布不覆盖）。
+也可以手动：
 
 ```bash
-dotnet publish -c Release -p:PublishSingleFile=true -r win-x64 --self-contained
+# 默认：框架依赖单文件
+dotnet publish -c Release -p:PublishSingleFile=true --self-contained false -o out
+
+# 自包含单文件（压缩只对自包含有效）
+dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ```
 
-产物在 `bin/Release/net10.0-windows/win-x64/publish/MouseWheelEnhancement.exe`，自带运行时（约 70 MB），
-拷到任意目录双击即可运行；数据会在 exe 旁边生成 `Mouse wheel enhancement data` 文件夹。
+产物是单个 `MouseWheelEnhancement.exe`，拷到任意目录双击即可运行；
+数据会在 exe 旁边生成 `Mouse wheel enhancement data` 文件夹。
 
 > 更新器的资产名固定是 `MouseWheelEnhancement.exe`：发版时请把 exe 以此名上传到 Release。
 > Release 说明里写一行 `SHA256: <64 位十六进制>`，客户端下载后会做校验。
@@ -95,6 +105,16 @@ MouseWheelEnhancement.exe --smoke
 
 程序目录不可写时（例如装在 `C:\Program Files` 且非管理员）自动退到
 `%APPDATA%\Mouse wheel enhancement data\`，「关于」页会写出实际路径。
+
+## 体积与资源占用
+
+| | v1.0.0 | v1.1.0 |
+|---|---:|---:|
+| 发布包 | 66.65 MB | **0.38 MB** |
+| 托盘常驻工作集 | 70 MB | 70 MB |
+| 打开设置后关闭（退回托盘） | 197 MB 一直占着 | **53 MB**（销毁窗口 + 主动归还） |
+
+体积构成、方案对比、修掉的 10 个 bug / 泄漏项，见 [DESIGN.md 第 12 节](DESIGN.md)。
 
 ## 已知限制
 

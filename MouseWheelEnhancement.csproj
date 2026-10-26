@@ -11,8 +11,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>MouseWheelEnhancement</AssemblyName>
     <RootNamespace>MouseWheelEnhancement</RootNamespace>
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.1.0</Version>
+    <FileVersion>1.1.0.0</FileVersion>
     <Product>鼠标滚轮增强</Product>
     <AssemblyTitle>鼠标滚轮增强</AssemblyTitle>
     <Company>QQQOrange</Company>
@@ -27,13 +27,39 @@
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
 
-  <!-- 单文件发布时把 WPF 依赖打进一个 exe（另见 README 的发布命令） -->
+  <!--
+    ══════════════ 发布形态 ══════════════
+
+    默认 **框架依赖 + 单文件**：exe 里只有本程序的代码和资源，运行时由系统里
+    已装的 .NET 10 桌面运行时提供 —— 产物不到 0.5 MB。
+
+    以前默认是自包含（把整个 .NET 运行时打进 exe），体积 66 MB。经测量那 66 MB
+    里本程序只占 0.21 MB（0.1%），其余全是运行时和 WPF/WinForms 程序集。
+    本程序是常驻托盘的小工具，为了一个 200 KB 的 exe 背 66 MB 运行时不划算，
+    所以改成默认框架依赖；需要"拷到没装 .NET 的机器也能跑"时用：
+        tools\publish.ps1 -SelfContained
+  -->
   <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
-    <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <!-- 自包含才有"压缩"和"提取原生库"这两件事；框架依赖时设了会直接报 NETSDK1176 -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true' and '$(SelfContained)' == 'true'">
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
+
+  <!-- 自包含时剔掉两个只在该场景下才会被拖进来的纯设计期/诊断用程序集（约 8 MB） -->
+  <Target Name="DropDesignTimeAssemblies" AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(SelfContained)' == 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(Filename)%(Extension)' == 'System.Windows.Forms.Design.dll'" />
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(Filename)%(Extension)' == 'Microsoft.DiaSymReader.Native.amd64.dll'" />
+    </ItemGroup>
+  </Target>
+
 
   <!--
     WPF + WinForms 双栈项目里，WindowsDesktop SDK 默认会把 System.Drawing 和

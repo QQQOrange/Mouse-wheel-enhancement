@@ -49,7 +49,13 @@ public sealed class WheelEngine : IDisposable
     private long _lastErrorMs;
     private double _lastMultiplier = 1.0;
     private double _lastRate;
-    private TargetInfo _lastTarget = TargetInfo.Unknown;
+    /// <summary>
+    /// 最近一次解析到的目标应用。**故意包成不可变引用**再由 Volatile 交换：
+    /// TargetInfo 是 4 个字段的结构体（含两个引用），直接在两个线程间读写会是
+    /// "撕裂读"——可能读到新的 Hwnd 配旧的 Exe。原子换引用就没有这个问题。
+    /// </summary>
+    private sealed record TargetBox(TargetInfo Value);
+    private TargetBox _lastTargetBox = new(TargetInfo.Unknown);
 
     /// <summary>钩子安装/运行出问题时抛给界面（只抛一次，不刷屏）。</summary>
     public event Action<string>? Faulted;
@@ -57,7 +63,7 @@ public sealed class WheelEngine : IDisposable
     internal ScrollAnimator Animator => _animator;
     public TargetResolver Targets => _targets;
     public bool IsRunning => _running && _hook != IntPtr.Zero;
-    public TargetInfo LastTarget => _lastTarget;
+    public TargetInfo LastTarget => Volatile.Read(ref _lastTargetBox).Value;
     public double LastMultiplier => Volatile.Read(ref _lastMultiplier);
     public double LastRatePerSec => Volatile.Read(ref _lastRate);
     public long EventCount => Interlocked.Read(ref _events);
@@ -127,7 +133,10 @@ public sealed class WheelEngine : IDisposable
     private void HookThread()
     {
         _threadId = Native.GetCurrentThreadId();
-        Native.TimeBeginPeriod(1);
+        /* 不再在这里调 timeBeginPeriod(1)：
+         * 钩子线程只是被动等消息，不需要毫秒级计时；而它对计时精度的请求是
+         * 进程级（甚至系统级）的，会让整机更难进入低功耗状态。
+         * 真正需要 1ms 帧精度的只有平滑动画线程，那边按需申请/释放。 */
         try
         {
             _proc = HookProc;
@@ -159,7 +168,6 @@ public sealed class WheelEngine : IDisposable
                 Native.UnhookWindowsHookEx(_hook);
                 _hook = IntPtr.Zero;
             }
-            Native.TimeEndPeriod(1);
         }
     }
 
@@ -196,8 +204,8 @@ public sealed class WheelEngine : IDisposable
             if (s.IgnoreShift && Native.IsKeyDown(Native.VK_SHIFT))
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
-            var target = _targets.ResolveForWheel();
-            _lastTarget = target;
+            var target = _targets.ResolveForWheel(s.NeedsTitle);
+            Volatile.Write(ref _lastTargetBox, new TargetBox(target));
 
             // "打开设置面板时暂停"：对本程序自己的窗口不增强
             if (s.SkipSelf && s.OwnExe.Length > 0 &&

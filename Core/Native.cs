@@ -13,7 +13,6 @@ internal static class Native
 
     public const int WH_MOUSE_LL = 14;
     public const int WM_MOUSEWHEEL = 0x020A;
-    public const int WM_MOUSEHWHEEL = 0x020E;
     public const int WM_QUIT = 0x0012;
 
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
@@ -146,18 +145,7 @@ internal static class Native
     public static extern bool GetCursorPos(out POINT lpPoint);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
@@ -214,6 +202,10 @@ internal static class Native
     [DllImport("kernel32.dll")]
     public static extern IntPtr LocalFree(IntPtr hMem);
 
+    /// <summary>进程当前的 GDI / USER 句柄数（0=GDI，1=USER）。查句柄泄漏用。</summary>
+    [DllImport("user32.dll")]
+    public static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
+
     /* ══════════════ 其它 ══════════════ */
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -246,7 +238,7 @@ internal static class Native
     {
         try
         {
-            if (!OpenProcessToken(GetCurrentProcessPseudo(), 0x0008 /*TOKEN_QUERY*/, out var tok)) return false;
+            if (!OpenProcessToken(GetCurrentProcess(), 0x0008 /*TOKEN_QUERY*/, out var tok)) return false;
             try
             {
                 return GetTokenInformation(tok, 20 /*TokenElevation*/, out var elevated, sizeof(int), out _)
@@ -259,8 +251,6 @@ internal static class Native
 
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
-
-    private static IntPtr GetCurrentProcessPseudo() => GetCurrentProcess();
 
     /// <summary>取窗口标题；取不到返回空串。</summary>
     public static string TitleOf(IntPtr hwnd)

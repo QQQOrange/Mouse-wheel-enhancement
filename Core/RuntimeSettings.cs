@@ -45,6 +45,12 @@ public sealed class RuntimeSettings
     public IReadOnlySet<string> FilterApps { get; init; } = new HashSet<string>();
     public Regex? TitleRegex { get; init; }
 
+    /// <summary>
+    /// 这一份配置下，判定一个应用需不需要窗口标题。
+    /// 没配标题正则就是 false —— 钩子里因此连 GetWindowText 都不会调。
+    /// </summary>
+    public bool NeedsTitle => TitleRegex != null;
+
     /// <summary>是否跳过本程序自己的窗口（"打开设置面板时暂停增强"）。</summary>
     public bool SkipSelf { get; init; }
 
