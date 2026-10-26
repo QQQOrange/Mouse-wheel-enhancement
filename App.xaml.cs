@@ -229,7 +229,10 @@ public partial class App : System.Windows.Application
                 sb.AppendLine($"这次用上令牌：{(i.Authed ? "是" : "否")}");
                 if (i.Size > 0) sb.AppendLine($"更新包：{Text.HumanSize(i.Size)}");
                 if (!string.IsNullOrEmpty(i.Url)) sb.AppendLine($"下载地址：{i.Url}");
-                sb.AppendLine($"校验值：{(string.IsNullOrEmpty(i.Sha256) ? "（版本说明里没写 SHA256）" : i.Sha256)}");
+                // "已是最新"时走的是省额度的 302 路径，根本没拉版本说明 —— 别误报成"没写 SHA"
+                sb.AppendLine("校验值：" + (string.IsNullOrEmpty(i.Sha256)
+                    ? (i.Newer ? "（版本说明里没写 SHA256）" : "（已是最新，未拉取版本说明）")
+                    : i.Sha256));
                 if (i.AuthWarning != null) sb.AppendLine("提示：" + i.AuthWarning);
                 if (!i.Newer)
                 {

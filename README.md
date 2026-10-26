@@ -88,6 +88,14 @@ MouseWheelEnhancement.exe --selftest      # 退出码 0 = 全部通过
 
 # 端到端冒烟：装钩子、建窗口（七页逐个布局）、注入滚轮跑通 钩子→判定→平滑→注入
 MouseWheelEnhancement.exe --smoke
+
+# 资源占用实测：仅托盘 / 连设置窗口（并验证关掉后回落、能重新打开）
+MouseWheelEnhancement.exe --measure
+MouseWheelEnhancement.exe --measure --show
+
+# 更新链路诊断：检查 + 真的下载校验（--as 假装旧版本，不替换程序）
+MouseWheelEnhancement.exe --checkupdate
+MouseWheelEnhancement.exe --checkupdate --as 1.0.0 --download
 ```
 
 ## 装在哪、数据放哪
