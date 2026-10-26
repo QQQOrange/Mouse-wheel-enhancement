@@ -85,10 +85,23 @@ public sealed class ConfigStore
         {
             var text = File.ReadAllText(ConfigPath, Encoding.UTF8);
             var cfg = JsonSerializer.Deserialize<AppConfig>(text, JsonOpts) ?? AppConfig.Default();
+
+            /* 归一化可能真的改了东西（越界值被夹回、小数被取整、名单被去重）。
+             * 改过就立刻写回，否则用户打开 config.json 会看到 9.927287581699336
+             * 这种鬼数字，而界面上显示的是 10 —— 两边对不上比什么都可疑。 */
+            var before = JsonSerializer.Serialize(cfg, JsonOpts);
             cfg.Normalize();
+            var changed = !string.Equals(before, JsonSerializer.Serialize(cfg, JsonOpts), StringComparison.Ordinal);
+
             Config = cfg;
             MigrateTokenIfNeeded();
             Log.Info($"已读取配置：{ConfigPath}");
+
+            if (changed)
+            {
+                Log.Info("配置里有越界值或小数，已归一化为整格并回写");
+                SaveNow();
+            }
         }
         catch (Exception ex)
         {

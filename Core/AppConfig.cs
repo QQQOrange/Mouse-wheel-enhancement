@@ -35,22 +35,26 @@ public sealed class BoostConfig
     public bool Enabled { get; set; } = true;
 
     /// <summary>
-    /// 触发阈值：每秒滚多少"格"以上才认为是在快滚。
+    /// 触发阈值：每秒滚多少"格"以上才认为是在快滚。**整数**，2–25。
     /// 10 格/秒 ≈ 每 100ms 拨一格 —— 正常浏览的节奏基本就在这以下。
     /// </summary>
-    public double FastThresholdPerSec { get; set; } = 10.0;
+    public double FastThresholdPerSec { get; set; } = 10;
 
     /// <summary>
-    /// 饱和点：到这个速度时倍率已经吃满 <see cref="MaxMultiplier"/>。
-    /// 40 格/秒 ≈ 每 25ms 拨一格，属于明显甩动。
+    /// 满速点：到这个速度时倍率已经吃满 <see cref="MaxMultiplier"/>。**整数**，
+    /// 且至少比触发阈值高 5。40 格/秒 ≈ 每 25ms 拨一格，属于明显甩动。
     /// </summary>
-    public double SaturationPerSec { get; set; } = 40.0;
+    public double SaturationPerSec { get; set; } = 40;
 
-    /// <summary>倍率下限（阈值处的倍率）。固定 1.0 = 阈值以下不加速。</summary>
+    /// <summary>
+    /// 倍率下限（阈值处的倍率）。**恒为 1.0**（由 Normalize 强制）：
+    /// 曲线必须从"阈值处正好 1 倍"起步，否则一过阈值就会跳一截。
+    /// 保留这个字段只是为了配置文件可读、以及将来真要放开时有地方改。
+    /// </summary>
     public double MinMultiplier { get; set; } = 1.0;
 
-    /// <summary>倍率上限：1 格最多变成几格。默认 3.0。</summary>
-    public double MaxMultiplier { get; set; } = 3.0;
+    /// <summary>倍率上限：1 格最多变成几格。**整数 1–8**，默认 3。</summary>
+    public double MaxMultiplier { get; set; } = 3;
 
     /// <summary>反向滚动时立刻丢掉未发完的积压（否则会"想往回滚却还在往下"）。</summary>
     public bool FlushOnReverse { get; set; } = true;
@@ -187,19 +191,25 @@ public sealed class AppConfig
 
         SchemaVersion = Math.Max(1, SchemaVersion);
 
-        // 阈值：2..25 格/秒；饱和点必须显著高于阈值，否则曲线会变成阶跃
-        Boost.FastThresholdPerSec = Clamp(Boost.FastThresholdPerSec, 2, 25);
-        Boost.SaturationPerSec = Clamp(Boost.SaturationPerSec, Boost.FastThresholdPerSec * 1.2, 120);
-        Boost.MaxMultiplier = Clamp(Boost.MaxMultiplier, 1.0, 8.0);
-        Boost.MinMultiplier = Clamp(Boost.MinMultiplier, 1.0, Boost.MaxMultiplier);
+        /* 所有"格"相关与时间相关的数值一律取整。
+         *
+         * 用户口径：「格数要是整数，不要有小数点，一格一格就可以了」。
+         * 这条不只是显示格式 —— 配置里存 10.37 这种值时，滑块会卡在两格之间，
+         * 往上调一格可能先变成 11.37 再变成 12，手感很别扭。所以入口就取整。 */
+        Boost.FastThresholdPerSec = Whole(Clamp(Boost.FastThresholdPerSec, 2, 25));
+        // 满速点必须明显高于阈值，否则曲线被压成阶跃（两值贴近＝一过阈值就顶格）
+        Boost.SaturationPerSec = Whole(Clamp(Boost.SaturationPerSec, Boost.FastThresholdPerSec + 5, 120));
+        Boost.MaxMultiplier = Whole(Clamp(Boost.MaxMultiplier, 1.0, 8.0));
+        // 倍率下限固定 1.0：曲线必须从"阈值处正好 1 倍"起步，否则一过阈值就跳一截
+        Boost.MinMultiplier = 1.0;
 
         Smooth.TargetFps = (int)Clamp(Smooth.TargetFps, 30, 240);
         // 每格帧数只接受 120 的约数：这样每帧发出去的都是 120 的整数分之几，
         // 老式按 zDelta/120 取整的程序也不会把小数部分吃掉。
         Smooth.FramesPerNotch = NearestDivisorOf120(Smooth.FramesPerNotch);
-        Smooth.TailTauMs = Clamp(Smooth.TailTauMs, 5, 200);
-        Smooth.MaxLatencyMs = Clamp(Smooth.MaxLatencyMs, 10, 240);
-        Smooth.MaxBacklogNotches = Clamp(Smooth.MaxBacklogNotches, 1, 20);
+        Smooth.TailTauMs = Whole(Clamp(Smooth.TailTauMs, 5, 200));
+        Smooth.MaxLatencyMs = Whole(Clamp(Smooth.MaxLatencyMs, 10, 240));
+        Smooth.MaxBacklogNotches = Whole(Clamp(Smooth.MaxBacklogNotches, 1, 20));
 
         if (Filter.Apps == null) Filter.Apps = new();
         Filter.Apps = Filter.Apps
@@ -230,6 +240,12 @@ public sealed class AppConfig
         var parts = s.Split('/', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length >= 2 ? $"{parts[0]}/{parts[1]}" : fallback;
     }
+
+    /// <summary>
+    /// 取整。**不用默认的银行家舍入**（4.5 → 4），按"四舍五入"来（4.5 → 5）——
+    /// 用户看到 4.5 被存成 4 会觉得程序算错了。
+    /// </summary>
+    private static int Whole(double v) => (int)Math.Round(v, MidpointRounding.AwayFromZero);
 
     private static double Clamp(double v, double lo, double hi)
         => double.IsNaN(v) || double.IsInfinity(v) ? lo : Math.Min(hi, Math.Max(lo, v));

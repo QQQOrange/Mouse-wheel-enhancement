@@ -89,6 +89,8 @@ internal static class SelfTest
 
     private static void Section(string title) => Report.AppendLine($"\n[{title}]");
 
+    private static bool IsWhole(double v) => Math.Abs(v - Math.Round(v)) < 1e-9;
+
     /* ══════════════ 曲线 ══════════════ */
 
     private static void TestBoostCurve()
@@ -394,16 +396,39 @@ internal static class SelfTest
             Check("默认名单里有远程桌面", c.Filter.Apps.Any(a => a.Exe == "mstsc.exe"));
 
             // 改 → 存 → 读
-            c.Boost.MaxMultiplier = 4.5;
+            c.Boost.MaxMultiplier = 5;
             c.Filter.Apps.Add(new AppRule { Exe = "Test.EXE", Note = "x" });
             store.SaveNow();
 
             var store2 = new ConfigStore(tmp);
-            Near("倍率持久化", store2.Config.Boost.MaxMultiplier, 4.5);
+            Near("倍率持久化", store2.Config.Boost.MaxMultiplier, 5);
             Check("名单持久化且已归一",
                 store2.Config.Filter.Apps.Any(a => a.Exe == "test.exe"), "应存在 test.exe");
             store2.Dispose();
             store.Dispose();
+
+            // 小数必须被抹平成整格（用户口径：格数不要小数点）
+            var c3 = AppConfig.Default();
+            c3.Boost.FastThresholdPerSec = 7.6;
+            c3.Boost.SaturationPerSec = 33.4;
+            c3.Boost.MaxMultiplier = 4.5;
+            c3.Smooth.TailTauMs = 47.3;
+            c3.Normalize();
+            Check("阈值取整（7.6 → 8）", c3.Boost.FastThresholdPerSec == 8, c3.Boost.FastThresholdPerSec.ToString("0.##"));
+            Check("满速点取整（33.4 → 33）", c3.Boost.SaturationPerSec == 33, c3.Boost.SaturationPerSec.ToString("0.##"));
+            Check("倍率取整（4.5 → 5，四舍五入不是银行家舍入）",
+                c3.Boost.MaxMultiplier == 5, c3.Boost.MaxMultiplier.ToString("0.##"));
+            Check("惯性取整（47.3 → 47）", c3.Smooth.TailTauMs == 47, c3.Smooth.TailTauMs.ToString("0.##"));
+            Check("默认配置本身就全是整数",
+                IsWhole(AppConfig.Default().Boost.FastThresholdPerSec) &&
+                IsWhole(AppConfig.Default().Boost.SaturationPerSec) &&
+                IsWhole(AppConfig.Default().Boost.MaxMultiplier) &&
+                IsWhole(AppConfig.Default().Smooth.TailTauMs) &&
+                IsWhole(AppConfig.Default().Smooth.MaxLatencyMs) &&
+                IsWhole(AppConfig.Default().Smooth.MaxBacklogNotches));
+            Check("满速点至少比阈值高 5 格",
+                c3.Boost.SaturationPerSec >= c3.Boost.FastThresholdPerSec + 5,
+                $"{c3.Boost.SaturationPerSec} vs {c3.Boost.FastThresholdPerSec}");
 
             // 越界值必须被夹回来
             var c2 = AppConfig.Default();
@@ -425,6 +450,19 @@ internal static class SelfTest
             Check("损坏文件被保留成备份",
                 Directory.GetFiles(tmp, "config.corrupt-*.json").Length == 1);
             store3.Dispose();
+
+            // 老配置里的小数应该在**加载时**被抹平并回写，而不是留着让界面显示 10、文件里写 9.9273
+            File.WriteAllText(Path.Combine(tmp, "config.json"),
+                "{\"boost\":{\"fastThresholdPerSec\":9.927287581699336,\"saturationPerSec\":25.58823529411775,\"maxMultiplier\":6.5849673202614145}}");
+            var store5 = new ConfigStore(tmp);
+            Check("加载时把小数抹平", store5.Config.Boost.FastThresholdPerSec == 10 &&
+                                      store5.Config.Boost.MaxMultiplier == 7,
+                $"{store5.Config.Boost.FastThresholdPerSec} / {store5.Config.Boost.MaxMultiplier}");
+            var written = File.ReadAllText(Path.Combine(tmp, "config.json"));
+            Check("抹平后的值被写回文件", written.Contains("\"fastThresholdPerSec\": 10") ||
+                                          written.Contains("\"fastThresholdPerSec\":10"),
+                written.Length > 120 ? written[..120] : written);
+            store5.Dispose();
 
             // 空 JSON 对象也要能读（字段缺失走默认值）
             File.WriteAllText(Path.Combine(tmp, "config.json"), "{}");

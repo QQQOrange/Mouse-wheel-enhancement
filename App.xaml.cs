@@ -27,6 +27,15 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // 诊断模式：只查一次更新并打印结果（不装钩子、不建窗口）
+        if (e.Args.Any(a => a.Equals("--checkupdate", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = CheckUpdateCli();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
         // 冒烟模式：真的把这套东西拉起来（装钩子、建托盘、实例化窗口、逐页布局），
         // 然后立刻退出。给"改完 XAML 到底能不能跑"一个不用肉眼盯的答案。
         if (e.Args.Any(a => a.Equals("--smoke", StringComparison.OrdinalIgnoreCase)))
@@ -155,6 +164,81 @@ public partial class App : System.Windows.Application
             catch { }
             Log.Flush();
         }
+        return code;
+    }
+
+    /// <summary>
+    /// `--checkupdate`：只走一次「检查更新」并把结论写出来。
+    /// 用于排查"为什么点检查更新没反应"—— 界面只给一句人话，这里给完整判据
+    /// （仓库、用没用令牌、有没有新版、包多大、有没有校验值）。
+    /// </summary>
+    private static int CheckUpdateCli()
+    {
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            var store = new ConfigStore();
+            var svc = new UpdateService(store);
+
+            sb.AppendLine($"当前版本：{Log.Version}");
+            sb.AppendLine($"仓库：{svc.Repo}");
+            sb.AppendLine($"最新版接口：{svc.LatestApi}");
+            sb.AppendLine($"网页备用：{svc.LatestWeb}");
+            sb.AppendLine($"令牌：{(store.CurrentToken() == null ? "未填写（匿名，60 次/小时）" : "已填写（5000 次/小时）")}");
+            sb.AppendLine(new string('-', 56));
+
+            /* ⚠ 不能用 CheckAsync(...).GetAwaiter().GetResult()：OnStartup 跑在 WPF 的
+             * UI 线程上，那里装了 DispatcherSynchronizationContext，await 之后的续接
+             * 会被排回同一个线程，而这个线程正卡在 GetResult() 上 —— 直接死锁。
+             * Task.Run 让它跑在线程池（无同步上下文），再阻塞等待就安全了；
+             * 另外加个超时兜底，命令行诊断绝不能挂死。 */
+            var outcome = Task.Run(() => svc.CheckAsync(Log.Version))
+                .WaitAsync(TimeSpan.FromSeconds(45))
+                .GetAwaiter().GetResult();
+            if (!outcome.Ok)
+            {
+                sb.AppendLine("结果：失败");
+                sb.AppendLine("原因：" + outcome.Error);
+            }
+            else
+            {
+                var i = outcome.Info!;
+                sb.AppendLine($"最新版本：v{i.Version}（tag {i.Tag}）");
+                sb.AppendLine($"有没有新版：{(i.Newer ? "有" : "没有，已是最新")}");
+                sb.AppendLine($"这次用上令牌：{(i.Authed ? "是" : "否")}");
+                if (i.Size > 0) sb.AppendLine($"更新包：{Text.HumanSize(i.Size)}");
+                if (!string.IsNullOrEmpty(i.Url)) sb.AppendLine($"下载地址：{i.Url}");
+                sb.AppendLine($"校验值：{(string.IsNullOrEmpty(i.Sha256) ? "（版本说明里没写 SHA256）" : i.Sha256)}");
+                if (i.AuthWarning != null) sb.AppendLine("提示：" + i.AuthWarning);
+                if (!i.Newer)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("（已是最新，所以没有可下载的包 —— 这是正常结果，不是错误）");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine("异常：" + ex.GetType().Name + "：" + ex.Message);
+            return WriteCliResult("checkupdate.txt", sb.ToString(), 2);
+        }
+        return WriteCliResult("checkupdate.txt", sb.ToString(), 0);
+    }
+
+    private static int WriteCliResult(string fileName, string text, int code)
+    {
+        try
+        {
+            var path = Path.Combine(AppPaths.DataDir, fileName);
+            File.WriteAllText(path, text, new System.Text.UTF8Encoding(false));
+            try
+            {
+                Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+                Console.Out.Write(text);
+            }
+            catch { }
+        }
+        catch { }
         return code;
     }
 

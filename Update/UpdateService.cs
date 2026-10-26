@@ -286,8 +286,19 @@ public sealed class UpdateService
         {
             var loc = resp.Headers.Location?.ToString();
             if (string.IsNullOrEmpty(loc)) throw new Exception("重定向响应里没有 Location");
-            var tag = loc.TrimEnd('/').Split('/')[^1];
-            if (string.IsNullOrEmpty(tag)) throw new Exception("Location 里没有 tag");
+
+            /* 必须从 `.../releases/tag/v1.2.3` 里取「tag 之后那一段」。
+             * 不能直接取最后一段：仓库**一次发布都没有**时，GitHub 会重定向到
+             * `.../releases`，最后一段就是字面量 "releases"，被当成版本号之后
+             * 解析成 0.0.0 → 判定"已是最新"，用户永远看不到"还没有正式版本"这个真相。 */
+            var parts = loc.TrimEnd('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var tagIndex = Array.FindLastIndex(parts,
+                p => p.Equals("tag", StringComparison.OrdinalIgnoreCase));
+            if (tagIndex < 0 || tagIndex + 1 >= parts.Length)
+                throw new Exception($"重定向地址里没有版本标签（{loc}）");
+
+            var tag = parts[tagIndex + 1];
+            if (tag.Length == 0) throw new Exception("Location 里没有 tag");
             return tag;
         }
         throw new Exception($"没有重定向（HTTP {code}）");

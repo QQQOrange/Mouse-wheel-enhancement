@@ -54,6 +54,7 @@ public partial class MainWindow : Window
         FooterRight.Text = Services.IsElevated ? "管理员模式" : "普通权限";
 
         LoadFromConfig();
+        HelpContent.Render(HelpPanel);
         RefreshStats();
         RefreshApps();
         RefreshTokenUi();
@@ -123,6 +124,7 @@ public partial class MainWindow : Window
         sb.Append($" nav={Nav.ActualWidth:0}x{Nav.ActualHeight:0}");
         sb.Append($" curve={CurveCanvas.ActualWidth:0}x{CurveCanvas.ActualHeight:0}");
         sb.Append($" line={CurveCanvas.Children.Count}");
+        sb.Append($" help={HelpPanel.Children.Count}");
         sb.Append($" tab={Nav.SelectedIndex}");
         return sb.ToString();
     }
@@ -189,10 +191,11 @@ public partial class MainWindow : Window
             return;
 
         var c = Services.Config;
-        ThresholdValue.Text = $"{c.Boost.FastThresholdPerSec:0.0} 格/秒";
-        SatValue.Text = $"{c.Boost.SaturationPerSec:0.0} 格/秒";
-        MaxMultValue.Text = $"{c.Boost.MaxMultiplier:0.0}×";
-        CurveHint.Text = $"1 格 → {c.Boost.MaxMultiplier:0.0} 格";
+        // 一律按整格显示：格数带小数点既不好读也不好调
+        ThresholdValue.Text = $"{c.Boost.FastThresholdPerSec:0} 格/秒";
+        SatValue.Text = $"{c.Boost.SaturationPerSec:0} 格/秒";
+        MaxMultValue.Text = $"{c.Boost.MaxMultiplier:0}×";
+        CurveHint.Text = $"拨 1 格 → 滚 {c.Boost.MaxMultiplier:0} 格";
         TauValue.Text = $"{c.Smooth.TailTauMs:0} ms";
         LatencyValue.Text = $"{c.Smooth.MaxLatencyMs:0} ms";
         BacklogValue.Text = $"{c.Smooth.MaxBacklogNotches:0} 格";
@@ -441,24 +444,24 @@ public partial class MainWindow : Window
     private void Threshold_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        Services.Config.Boost.FastThresholdPerSec = e.NewValue;
-        // 阈值不能追上满速点，否则曲线会被压成阶跃
-        if (SatSlider != null && SatSlider.Value < e.NewValue * 1.2 + 1)
-            SatSlider.Value = Math.Min(SatSlider.Maximum, e.NewValue * 1.2 + 1);
+        Services.Config.Boost.FastThresholdPerSec = Math.Round(e.NewValue);
+        // 满速点必须和阈值拉开至少 5 格，否则曲线被压成阶跃（一过阈值就顶格）
+        if (SatSlider != null && SatSlider.Value < e.NewValue + 5)
+            SatSlider.Value = Math.Min(SatSlider.Maximum, Math.Round(e.NewValue) + 5);
         Commit();
     }
 
     private void Sat_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        Services.Config.Boost.SaturationPerSec = e.NewValue;
+        Services.Config.Boost.SaturationPerSec = Math.Round(e.NewValue);
         Commit();
     }
 
     private void MaxMult_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        Services.Config.Boost.MaxMultiplier = e.NewValue;
+        Services.Config.Boost.MaxMultiplier = Math.Round(e.NewValue);
         Commit();
     }
 
@@ -527,21 +530,21 @@ public partial class MainWindow : Window
     private void Tau_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        Services.Config.Smooth.TailTauMs = e.NewValue;
+        Services.Config.Smooth.TailTauMs = Math.Round(e.NewValue);
         Commit();
     }
 
     private void Latency_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        Services.Config.Smooth.MaxLatencyMs = e.NewValue;
+        Services.Config.Smooth.MaxLatencyMs = Math.Round(e.NewValue);
         Commit();
     }
 
     private void Backlog_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        Services.Config.Smooth.MaxBacklogNotches = e.NewValue;
+        Services.Config.Smooth.MaxBacklogNotches = Math.Round(e.NewValue);
         Commit();
     }
 

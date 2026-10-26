@@ -28,7 +28,7 @@ Windows 桌面小工具 · 单 exe · 无驱动 · 无后台服务 · 数据就�
 
 | 功能 | 说明 |
 |---|---|
-| 快速滚动加速 | 触发阈值、满速点、倍率上限（1×–8×）全部可调，默认 10 格/秒 → 3.0× |
+| 快速滚动加速 | 触发阈值、满速点、倍率上限（1×–8×）全部可调，默认 10 格/秒 → 3×；所有数值都是整格，没有小数点 |
 | 平滑滚动 | 把一次滚动拆成多帧推进（默认 120 fps、每格 4 帧），接近触控板手感 |
 | 应用黑白名单 | 按 exe 名匹配，可选窗口标题正则；托盘里一键切换 |
 | 自动更新 | 走 GitHub Releases，程序内下载、SHA256 校验、替换自身、重启 |
@@ -51,11 +51,21 @@ dotnet build -c Release
 
 ## 发布（单文件 exe）
 
+一条命令完成「发布 + 装到本机 + 自检」：
+
+```powershell
+tools\publish.ps1
+```
+
+默认装到 **`D:\software\myself`**（参数 `-OutDir` 可改，`-NoInstall` 表示只发布不覆盖）。
+也可以手动发布：
+
 ```bash
 dotnet publish -c Release -p:PublishSingleFile=true -r win-x64 --self-contained
 ```
 
-产物在 `bin/Release/net10.0-windows/win-x64/publish/MouseWheelEnhancement.exe`，拷到任意目录双击即可运行。
+产物在 `bin/Release/net10.0-windows/win-x64/publish/MouseWheelEnhancement.exe`，自带运行时（约 70 MB），
+拷到任意目录双击即可运行；数据会在 exe 旁边生成 `Mouse wheel enhancement data` 文件夹。
 
 > 更新器的资产名固定是 `MouseWheelEnhancement.exe`：发版时请把 exe 以此名上传到 Release。
 > Release 说明里写一行 `SHA256: <64 位十六进制>`，客户端下载后会做校验。
@@ -63,14 +73,19 @@ dotnet publish -c Release -p:PublishSingleFile=true -r win-x64 --self-contained
 ## 自检
 
 ```bash
-# 81 条纯逻辑断言：倍率曲线、速度判定、摊帧、版本比较、令牌清洗、名单匹配、配置读写
+# 89 条纯逻辑断言：倍率曲线、速度判定、摊帧、整格化、版本比较、令牌清洗、名单匹配、配置读写
 MouseWheelEnhancement.exe --selftest      # 退出码 0 = 全部通过
 
 # 端到端冒烟：装钩子、建窗口（七页逐个布局）、注入滚轮跑通 钩子→判定→平滑→注入
 MouseWheelEnhancement.exe --smoke
 ```
 
-## 数据放在哪
+## 装在哪、数据放哪
+
+软件本体就是一个 exe，放在 `D:\software\myself\MouseWheelEnhancement.exe` 即可
+（自动更新也会就地替换这个文件，不需要卸载重装）。
+
+数据在 exe 旁边：
 
 ```
 <程序目录>\Mouse wheel enhancement data\

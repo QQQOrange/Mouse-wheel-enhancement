@@ -230,7 +230,8 @@
                                                Text="10.0 格/秒" />
                                 </Grid>
                                 <Slider x:Name="ThresholdSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
-                                        Minimum="2" Maximum="25" SmallChange="0.5" LargeChange="1"
+                                        Minimum="2" Maximum="25" SmallChange="1" LargeChange="1"
+                                        TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="Threshold_Changed" />
                             </StackPanel>
                         </Border>
@@ -252,6 +253,7 @@
                                 </Grid>
                                 <Slider x:Name="SatSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                         Minimum="12" Maximum="120" SmallChange="1" LargeChange="5"
+                                        TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="Sat_Changed" />
                             </StackPanel>
                         </Border>
@@ -272,7 +274,8 @@
                                                Text="3.0×" />
                                 </Grid>
                                 <Slider x:Name="MaxMultSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
-                                        Minimum="1" Maximum="8" SmallChange="0.1" LargeChange="0.5"
+                                        Minimum="1" Maximum="8" SmallChange="1" LargeChange="1"
+                                        TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="MaxMult_Changed" />
                             </StackPanel>
                         </Border>
@@ -452,7 +455,8 @@
                                                Text="45 ms" />
                                 </Grid>
                                 <Slider x:Name="TauSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
-                                        Minimum="5" Maximum="120" SmallChange="1" LargeChange="5"
+                                        Minimum="5" Maximum="120" SmallChange="5" LargeChange="5"
+                                        TickFrequency="5" IsSnapToTickEnabled="True"
                                         ValueChanged="Tau_Changed" />
                             </StackPanel>
                         </Border>
@@ -473,7 +477,8 @@
                                                Text="60 ms" />
                                 </Grid>
                                 <Slider x:Name="LatencySlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
-                                        Minimum="16" Maximum="200" SmallChange="2" LargeChange="10"
+                                        Minimum="16" Maximum="200" SmallChange="4" LargeChange="10"
+                                        TickFrequency="4" IsSnapToTickEnabled="True"
                                         ValueChanged="Latency_Changed" />
                             </StackPanel>
                         </Border>
@@ -495,6 +500,7 @@
                                 </Grid>
                                 <Slider x:Name="BacklogSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                         Minimum="1" Maximum="20" SmallChange="1" LargeChange="2"
+                                        TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="Backlog_Changed" />
                             </StackPanel>
                         </Border>
@@ -718,151 +724,10 @@
             </TabItem>
 
             <!-- ─────────── 帮助 ─────────── -->
+            <!-- 内容由 HelpContent.Render() 生成：二十多个参数 × 五行说明，写死在 XAML 里会难以维护 -->
             <TabItem Header="帮助">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="24,18,24,26">
-
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="这个软件是干什么的" Style="{StaticResource H2}" Margin="0,0,0,10" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="鼠标滚轮增强（Mouse wheel enhancement）只解决一个具体问题：滚轮在「需要快速翻很远」的时候太慢。" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="它不改你的鼠标设置、不改系统滚动行数、不装驱动。它只在你快速连续拨动滚轮的那一瞬间介入，把这一段滚动的距离按倍率放大；你一放慢，它立刻退场，把控制权原样交回 Windows。" />
-                                <TextBlock Style="{StaticResource Caption}"
-                                           Text="另外还提供两件事：一是可选的平滑滚动（把一次滚动拆成多帧推进，接近触控板手感），二是按应用的黑白名单（哪些软件里启用、哪些禁用）。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="三条核心规则" Style="{StaticResource H2}" Margin="0,0,0,10" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="① 慢速滚动＝完全原生。程序在钩子里判定「这一下不需要接管」时直接放行，不做任何重发。所以普通滚动的手感、精度、平滑度、惯性与你没装这个软件时完全一致。" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="② 快滚才加速。判定依据是「每秒滚多少格」，不是「第几格」。速度超过触发阈值后开始介入，倍率随速度平滑爬到上限。" />
-                                <TextBlock Style="{StaticResource Caption}"
-                                           Text="③ 随时可退出链路。总开关关掉、名单命中、按住 Ctrl/Alt/Shift、或反向滚动纠正时，都立刻回到原生行为。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="加速参数逐个说" Style="{StaticResource H2}" Margin="0,0,0,12" />
-
-                                <TextBlock Text="触发阈值（默认 10 格/秒）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="每秒滚过多少格以上才认为你在快滚。一格＝滚轮物理上的一响。10 格/秒约等于每 100 毫秒拨一格。调高→更保守，几乎不会误触发；调低→轻轻一拨就加速，但浏览长文时容易「窜」。可行范围 2~25。" />
-
-                                <TextBlock Text="满速点（默认 40 格/秒）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="速度到这里时倍率已经吃满上限。触发阈值与满速点之间用平滑曲线过渡，所以加速是渐进的、没有台阶。这两点靠得越近，加速来得越突然。可行范围 12~120，且必须高于触发阈值。" />
-
-                                <TextBlock Text="加速倍率上限（默认 3.0×）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="相对原始滚动速度的倍数。3.0 表示滚轮拨一格、页面滚动三格的距离；2.0 是两倍；8.0 是上限。这是上限而不是固定值——只有当你的滚动速度达到满速点时才会真正用满。" />
-
-                                <TextBlock Text="反向滚动时立刻纠正（默认开）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="平滑会把一次滚动分成多帧慢慢发。若攒着一堆「向下」还没发完，你却开始「向上」滚，那些旧方向会继续冲完，手感像「滚不动」。开启后方向一变就丢掉旧积压，立刻响应。" />
-
-                                <TextBlock Text="反转加速方向（默认关）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="只给在 Windows 里勾了「滚轮反向」的鼠标用。正常鼠标打开会导致上下相反。" />
-
-                                <TextBlock Text="也增强高精度输入（默认关）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}"
-                                           Text="触控板、自由滚轮、部分鼠标的精细档每次只发很小的滚动量，且频率极高。它们本身已经很顺，按「每秒格数」去算会被判成狂甩而加速过头，所以默认一律放行。只有你确定希望这类设备也加速时才打开。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="平滑参数逐个说" Style="{StaticResource H2}" Margin="0,0,0,12" />
-
-                                <TextBlock Text="施加范围（默认：仅加速时）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="「仅加速时」意味着普通滚动完全不经过本程序，这是保住原生手感的关键；「所有滚动」会把普通滚动也拆帧重放，观感更统一，但严格来说已经不是原生行为了。" />
-
-                                <TextBlock Text="注入帧率（默认 120）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="每秒发多少个小步。60 已经能看出平滑，120 基本无缝，144 提升很小但更耗电。" />
-
-                                <TextBlock Text="每格拆分（默认 4）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="一格 120 单位拆成几帧发。选 4 则每帧 30 单位，4×30＝120 正好整除，连按「除以 120 取整」处理滚动量的老程序也不会把小数吃掉。数值越大越细腻，但太大会让单帧量小到某些程序直接忽略。" />
-
-                                <TextBlock Text="惯性长度（默认 45ms）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="指数衰减的时间常数，决定「尾巴」有多长。30~60ms 最接近触控板；调到 10ms 几乎等于关掉平滑，调到 120ms 会有明显滑行感。" />
-
-                                <TextBlock Text="最大延迟（默认 60ms）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="一次输入最多拖这么久必须发完，是体感延迟的硬上限。它是保险：无论惯性长度调多大，页面的反应都不会超过这个时间才开始。" />
-
-                                <TextBlock Text="积压上限（默认 5 格）" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}"
-                                           Text="连续甩动时允许暂存还没发完的量。超过上限就把剩余量一次性冲出，避免你停手之后页面还在继续飘。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="应用名单怎么用" Style="{StaticResource H2}" Margin="0,0,0,12" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10"
-                                           Text="黑名单（默认）：名单里的程序不增强，其他全部增强。适合「个别软件里别烦我」。" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10"
-                                           Text="白名单：只有名单里的程序增强。适合「平时都别动，我只在浏览器里用」。" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10"
-                                           Text="按 exe 文件名匹配，不区分大小写，粘贴完整路径会自动只取文件名。托盘右键菜单里有「加入/移出黑名单：当前应用」，不用回设置页。" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10"
-                                           Text="默认黑名单已排除远程桌面（注入会和控制端滚动叠加）、音游与竞技游戏（时序敏感、反作弊对注入敏感）。" />
-                                <TextBlock Style="{StaticResource Caption}"
-                                           Text="判定依据是「光标下那个窗口」所属的进程，而不是任务栏里的前台窗口——因为 Windows 默认把滚轮发给光标下的窗口，哪怕它没有激活。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="更新与令牌" Style="{StaticResource H2}" Margin="0,0,0,12" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10"
-                                           Text="更新走 GitHub Releases：点「检查更新」会比对最新正式版；发现有新版可在程序内直接下载、校验 SHA256、替换旧程序并重启，不需要跳浏览器。" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10"
-                                           Text="令牌是选填的。不填也能查更新和下载，只是查版本走匿名接口，每小时只有 60 次额度，容易被限流；填了是每小时 5000 次。" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10"
-                                           Text="令牌只以 DPAPI 加密保存在本机配置文件里，只有当前 Windows 账户能解开，不上传、不写日志。填错或过期时程序会自动降级成匿名请求，不会让更新功能整个坏掉。" />
-                                <TextBlock Style="{StaticResource Caption}"
-                                           Text="换仓库时不必改代码：配置文件里 update.repo 填 owner/repo 即可。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="常见问题" Style="{StaticResource H2}" Margin="0,0,0,12" />
-
-                                <TextBlock Text="某些窗口里完全没效果？" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="那个窗口大概率是以管理员身份运行的。Windows 的安全机制（UIPI）不允许普通权限的钩子拦截高权限窗口的输入。在「概览」页点「以管理员身份重启」即可覆盖这类窗口。" />
-
-                                <TextBlock Text="全屏游戏里无效？" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="用 Raw Input / DirectInput 独占总线的游戏绕过系统鼠标钩子，任何基于 SetWindowsHookEx 的工具都拿不到事件。这是技术边界，不是配置问题；默认名单也已把常见竞技游戏排除。" />
-
-                                <TextBlock Text="笔记本触控板两指滚动没变化？" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="这是刻意的：高精度输入默认不接管。见「也增强高精度输入」这一项。" />
-
-                                <TextBlock Text="Ctrl + 滚轮缩放会不会被加速？" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,12"
-                                           Text="不会。按住 Ctrl 或 Alt 的滚轮一律原样放行，缩放必须 1:1。Shift + 滚轮（横向滚动）同样放行。" />
-
-                                <TextBlock Text="用着用着突然失灵？" FontWeight="SemiBold" />
-                                <TextBlock Style="{StaticResource Caption}"
-                                           Text="Windows 在钩子回调超时会静默摘掉钩子且不作提示。到「关于」页点「重启钩子」即可恢复；日志里会留下记录。" />
-                            </StackPanel>
-                        </Border>
-
-                    </StackPanel>
+                    <StackPanel x:Name="HelpPanel" Margin="24,18,24,26" />
                 </ScrollViewer>
             </TabItem>
 
