@@ -4,8 +4,19 @@
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
         <ResourceDictionary>
+            <!--
+                顺序有意义：**调色板必须排在样式前面**。
+
+                样式里所有颜色都是 DynamicResource，运行时要能在资源树里找到；
+                调色板在前、样式在后，查找时先命中调色板。
+                运行时换主题就是替换这个列表里的那一份调色板（见 Core/Theme.cs）。
+
+                这里默认合并深色，真正的主题在 Services.Init 里按配置与系统设置应用 ——
+                那时窗口还没建出来，所以不会出现"闪一下深色再变白"。
+            -->
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Themes/Dark.xaml" />
+                <ResourceDictionary Source="Themes/Palette.Dark.xaml" />
+                <ResourceDictionary Source="Themes/Controls.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

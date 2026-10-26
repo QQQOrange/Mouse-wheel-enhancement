@@ -182,6 +182,20 @@ public sealed class UpdateConfig
     public string LastCheckUtc { get; set; } = "";
 }
 
+/// <summary>界面外观。</summary>
+public sealed class AppearanceConfig
+{
+    /// <summary>
+    /// 界面主题：<c>system</c>（跟随系统，默认）/ <c>light</c>（浅色）/ <c>dark</c>（深色）。
+    /// <para>
+    /// 用字符串而不是枚举：配置文件是给人看、也可能被人手改的，
+    /// 写成 <c>"system"</c> 一眼就懂，写成 <c>0</c> 得回来翻代码。
+    /// 非法值由 <see cref="Theme.Normalize"/> 收敛成 <c>system</c>。
+    /// </para>
+    /// </summary>
+    public string Theme { get; set; } = MouseWheelEnhancement.Core.Theme.System;
+}
+
 public sealed class AppBehaviorConfig
 {
     /// <summary>开机自启（写 HKCU Run 项）。</summary>
@@ -220,6 +234,7 @@ public sealed class AppConfig
     public InputConfig Input { get; set; } = new();
     public UpdateConfig Update { get; set; } = new();
     public AppBehaviorConfig Behavior { get; set; } = new();
+    public AppearanceConfig Appearance { get; set; } = new();
 
     /// <summary>不认识的字段原样保留 —— 将来降级回旧版本时不至于把新配置扫掉。</summary>
     [JsonExtensionData]
@@ -239,8 +254,24 @@ public sealed class AppConfig
         Input ??= new InputConfig();
         Update ??= new UpdateConfig();
         Behavior ??= new AppBehaviorConfig();
+        Appearance ??= new AppearanceConfig();
 
-        SchemaVersion = Math.Max(1, SchemaVersion);
+        /* ── v2 迁移：取消"对自己排除"的默认 ──
+         *
+         * v1 时期 PauseWhileSettingsOpen 的语义是"面板打开时暂停增强"，默认值是 false，
+         * 但早期有版本把它写成了 true，于是升级上来的用户配置里是 true ——
+         * 表现就是"在设置窗口里滚，滚轮完全没有增强"。
+         *
+         * 这一版按需求把默认改成"对自己也生效"，同时对 v1 的旧配置做一次性纠正。
+         * 只做一次（靠 SchemaVersion 记账），之后用户自己再打开这个开关不会被覆盖。 */
+        if (SchemaVersion < 2)
+        {
+            Behavior.PauseWhileSettingsOpen = false;
+            SchemaVersion = 2;
+        }
+
+        SchemaVersion = Math.Max(2, SchemaVersion);
+        Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* 所有"格"相关与时间相关的数值一律取整。
          *

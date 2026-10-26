@@ -70,6 +70,20 @@ public sealed class RuntimeSettings
     /// <summary>本程序的 exe 名（小写），用于 <see cref="SkipSelf"/> 判定。</summary>
     public string OwnExe { get; init; } = AppRuleName.Normalize(Environment.ProcessPath);
 
+    /// <summary>
+    /// 这个 exe 是不是"本程序自己"、且当前配置要求跳过它。
+    ///
+    /// <para>
+    /// 抽成方法是为了能被自检直接断言 —— 钩子热路径里再判断一次同样的条件没有意义，
+    /// 也没法在无界面环境里覆盖到。
+    /// </para>
+    /// </summary>
+    public bool ShouldSkipSelf(string? exe) =>
+        SkipSelf
+        && OwnExe.Length > 0
+        && !string.IsNullOrEmpty(exe)
+        && string.Equals(exe, OwnExe, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>给速度判定用的倍率配置（独立副本，不受用户后续改配置影响）。</summary>
     public BoostConfig BoostView { get; init; } = new();
 

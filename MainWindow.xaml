@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="鼠标滚轮增强" Height="780" Width="940" MinHeight="620" MinWidth="880"
-        Background="{StaticResource WindowBg}" WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource WindowBg}" WindowStartupLocation="CenterScreen"
         FontFamily="{StaticResource UiFont}" UseLayoutRounding="True" SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display">
 
@@ -22,9 +22,9 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Orientation="Horizontal">
-                    <Border Width="38" Height="38" CornerRadius="10" Background="{StaticResource AccentSoft}"
+                    <Border Width="38" Height="38" CornerRadius="10" Background="{DynamicResource AccentSoft}"
                             Margin="0,0,13,0">
-                        <TextBlock Text="⟳" FontSize="19" Foreground="{StaticResource AccentHover}"
+                        <TextBlock Text="⟳" FontSize="19" Foreground="{DynamicResource AccentHover}"
                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <StackPanel VerticalAlignment="Center">
@@ -36,9 +36,9 @@
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Border x:Name="StatusPill" CornerRadius="20" Padding="12,5"
-                            Background="{StaticResource AccentFaint}">
+                            Background="{DynamicResource AccentFaint}">
                         <StackPanel Orientation="Horizontal">
-                            <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="{StaticResource SuccessBrush}"
+                            <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="{DynamicResource SuccessBrush}"
                                      VerticalAlignment="Center" Margin="0,0,7,0" />
                             <TextBlock x:Name="StatusText" Text="已启用" FontSize="12" VerticalAlignment="Center" />
                         </StackPanel>
@@ -164,9 +164,9 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
-                                        <TextBlock Text="打开设置面板时暂停增强" FontWeight="SemiBold" />
-                                        <TextBlock Style="{StaticResource Caption}"
-                                                   Text="关掉时可以在本窗口里直接试手感；打开后本窗口的滚动也完全原生。" />
+                                        <TextBlock Text="在本窗口暂停增强" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="默认关闭 —— 设置窗口里的滚动同样会被增强，可以直接在这里试手感。只有想对比「原生 vs 增强」时才需要打开。" />
                                     </StackPanel>
                                     <ToggleButton x:Name="PauseSelfSwitch" Grid.Column="1"
                                                   Style="{StaticResource Switch}" VerticalAlignment="Center"
@@ -175,10 +175,39 @@
                             </StackPanel>
                         </Border>
 
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="外观" Style="{StaticResource H2}" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="默认跟随系统：Windows 切成深色，这里跟着变，不用重启。也可以固定成浅色或深色。" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="ThemeNow" Grid.Column="1" Style="{StaticResource Caption}"
+                                               VerticalAlignment="Top" Margin="12,2,0,0" Text="—" />
+                                </Grid>
+
+                                <Border Style="{StaticResource SegGroup}" HorizontalAlignment="Left" Margin="0,12,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton x:Name="ThemeSystem" GroupName="theme" Content="跟随系统"
+                                                     Style="{StaticResource SegRadio}" Checked="Theme_Changed" />
+                                        <RadioButton x:Name="ThemeLight" GroupName="theme" Content="浅色"
+                                                     Style="{StaticResource SegRadio}" Checked="Theme_Changed" />
+                                        <RadioButton x:Name="ThemeDark" GroupName="theme" Content="深色"
+                                                     Style="{StaticResource SegRadio}" Checked="Theme_Changed" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
                         <Border x:Name="ElevationCard" Style="{StaticResource Card}" Visibility="Collapsed">
                             <StackPanel>
                                 <TextBlock Text="权限提示" Style="{StaticResource H2}" Margin="0,0,0,8"
-                                           Foreground="{StaticResource WarnBrush}" />
+                                           Foreground="{DynamicResource WarnBrush}" />
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,12"
                                            Text="当前不是管理员身份。Windows 不允许普通程序拦截更高权限窗口的输入，所以「以管理员身份运行的窗口」里的滚轮不会被增强（任务管理器、部分游戏启动器、安装程序等）。" />
                                 <Button Content="以管理员身份重启" Style="{StaticResource GhostButton}"
@@ -518,7 +547,7 @@
                                 <!-- 两项参数打架时给一句人话：光开滑行没用，跟手期得有量留下 -->
                                 <TextBlock x:Name="GlideHint" Style="{StaticResource Caption}" Margin="0,8,0,0"
                                            TextWrapping="Wrap" Visibility="Collapsed"
-                                           Foreground="{StaticResource WarnBrush}" />
+                                           Foreground="{DynamicResource WarnBrush}" />
                             </StackPanel>
                         </Border>
 
@@ -635,7 +664,7 @@
                                                 </Grid.ColumnDefinitions>
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding Exe}" Style="{StaticResource Mono}"
-                                                               FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                                                               FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" />
                                                     <TextBlock Text="{Binding Note}" Style="{StaticResource Caption}"
                                                                Margin="0,2,0,0" />
                                                 </StackPanel>
@@ -659,7 +688,7 @@
                                 <TextBox x:Name="TitleRegexBox" Style="{StaticResource DarkTextBox}"
                                          TextChanged="TitleRegex_Changed" />
                                 <TextBlock x:Name="RegexHint" Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                           Visibility="Collapsed" Foreground="{StaticResource DangerBrush}" />
+                                           Visibility="Collapsed" Foreground="{DynamicResource DangerBrush}" />
                             </StackPanel>
                         </Border>
 
@@ -705,7 +734,7 @@
                                         <Button x:Name="RepoLink" Style="{StaticResource LinkButton}"
                                                 HorizontalAlignment="Right" Margin="0,3,0,0" Click="OpenRepo_Click">
                                             <TextBlock x:Name="RepoText" Style="{StaticResource Mono}" FontSize="11.5"
-                                                       Foreground="{StaticResource AccentHover}" />
+                                                       Foreground="{DynamicResource AccentHover}" />
                                         </Button>
                                     </StackPanel>
                                 </Grid>
@@ -801,8 +830,8 @@
                             <StackPanel>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
                                     <Border Width="52" Height="52" CornerRadius="13"
-                                            Background="{StaticResource AccentSoft}" Margin="0,0,16,0">
-                                        <TextBlock Text="⟳" FontSize="26" Foreground="{StaticResource AccentHover}"
+                                            Background="{DynamicResource AccentSoft}" Margin="0,0,16,0">
+                                        <TextBlock Text="⟳" FontSize="26" Foreground="{DynamicResource AccentHover}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
                                     <StackPanel VerticalAlignment="Center">
@@ -819,7 +848,7 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="当前版本" Style="{StaticResource Caption}" />
                                     <TextBlock x:Name="AboutVersion" Grid.Column="1" Style="{StaticResource Mono}"
-                                               FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                                               FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" />
                                 </Grid>
 
                                 <Grid Margin="0,0,0,10">
@@ -829,7 +858,7 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="开发者" Style="{StaticResource Caption}" />
                                     <TextBlock x:Name="AboutAuthor" Grid.Column="1" Style="{StaticResource Mono}"
-                                               FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                                               FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" />
                                 </Grid>
 
                                 <Grid Margin="0,0,0,10">
@@ -841,7 +870,7 @@
                                     <Button x:Name="HomeBtn" Grid.Column="1" Style="{StaticResource LinkButton}"
                                             HorizontalAlignment="Left" Click="OpenHome_Click">
                                         <TextBlock x:Name="HomeText" Style="{StaticResource Mono}" FontSize="12"
-                                                   Foreground="{StaticResource AccentHover}" />
+                                                   Foreground="{DynamicResource AccentHover}" />
                                     </Button>
                                 </Grid>
 
@@ -855,7 +884,7 @@
                                             HorizontalAlignment="Left" Click="OpenGitHub_Click"
                                             ToolTip="git clone git@github.com:QQQOrange/Mouse-wheel-enhancement.git">
                                         <TextBlock x:Name="GitHubText" Style="{StaticResource Mono}" FontSize="12"
-                                                   Foreground="{StaticResource AccentHover}" />
+                                                   Foreground="{DynamicResource AccentHover}" />
                                     </Button>
                                 </Grid>
 
@@ -868,7 +897,7 @@
                                     <Button x:Name="ReleasesBtn" Grid.Column="1" Style="{StaticResource LinkButton}"
                                             HorizontalAlignment="Left" Click="OpenReleases_Click">
                                         <TextBlock x:Name="ReleasesText" Style="{StaticResource Mono}" FontSize="12"
-                                                   Foreground="{StaticResource AccentHover}" />
+                                                   Foreground="{DynamicResource AccentHover}" />
                                     </Button>
                                 </Grid>
 
@@ -879,7 +908,7 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="许可证" Style="{StaticResource Caption}" />
                                     <TextBlock Grid.Column="1" Style="{StaticResource Mono}"
-                                               Foreground="{StaticResource TextPrimary}" Text="MIT License" />
+                                               Foreground="{DynamicResource TextPrimary}" Text="MIT License" />
                                 </Grid>
                             </StackPanel>
                         </Border>
@@ -897,7 +926,7 @@
                                     <TextBlock Text="数据目录" Style="{StaticResource Caption}" />
                                     <TextBlock x:Name="AboutDataDir" Grid.Column="1" Style="{StaticResource Mono}"
                                                FontSize="11" TextWrapping="Wrap"
-                                               Foreground="{StaticResource TextPrimary}" />
+                                               Foreground="{DynamicResource TextPrimary}" />
                                     <Button Grid.Column="2" Content="打开" Style="{StaticResource GhostButton}"
                                             Click="OpenDataDir_Click" />
                                 </Grid>
@@ -946,8 +975,8 @@
         </TabControl>
 
         <!-- ══════════════ 底部 ══════════════ -->
-        <Border Grid.Row="2" Background="{StaticResource PanelBg}" BorderThickness="0,1,0,0"
-                BorderBrush="{StaticResource BorderBrushSoft}" Padding="20,8">
+        <Border Grid.Row="2" Background="{DynamicResource PanelBg}" BorderThickness="0,1,0,0"
+                BorderBrush="{DynamicResource BorderBrushSoft}" Padding="20,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />

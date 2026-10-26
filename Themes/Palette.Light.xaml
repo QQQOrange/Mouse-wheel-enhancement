@@ -1,0 +1,66 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        ══════════════════════ 浅色调色板 ══════════════════════
+
+        Key 与 Palette.Dark.xaml **一一对应**，顺序也一样，方便对照着改。
+        少一个 Key，切换主题时对应控件就会失去颜色（透明或黑）——
+        自检里有断言在守这条线（见 SelfTest.TestThemePalette）。
+
+        取值原则：
+          · 背景不是纯白。窗口底 #F6F7FA、卡片纯白，靠明度差分层，
+            全白会让卡片看不清边界，纯白底也更容易刺眼。
+          · 文字不用纯黑。#1B2130 在浅底上对比足够，又不至于像 #000 那样发死。
+          · 强调色比深色模式**更深**（#3B6FE0 而不是 #5B8CFF）：
+            同一个颜色在浅底上会显浅，直接用深色模式那支会糊成一片。
+    -->
+
+    <!-- 背景四层：窗口 → 侧栏/分组 → 卡片 → 卡片内嵌块 -->
+    <SolidColorBrush x:Key="WindowBg" Color="#F6F7FA" />
+    <SolidColorBrush x:Key="PanelBg" Color="#EDF0F6" />
+    <SolidColorBrush x:Key="CardBg" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="CardBg2" Color="#F4F6FB" />
+
+    <!-- 输入框单独一档：深色模式下它和侧栏同色没关系，浅色下必须是白的 -->
+    <SolidColorBrush x:Key="FieldBg" Color="#FFFFFF" />
+
+    <!-- 描边 -->
+    <SolidColorBrush x:Key="BorderBrushSoft" Color="#E3E7EF" />
+    <SolidColorBrush x:Key="BorderBrushStrong" Color="#C9D0DE" />
+
+    <!-- 文字三级 -->
+    <SolidColorBrush x:Key="TextPrimary" Color="#1B2130" />
+    <SolidColorBrush x:Key="TextSecondary" Color="#596276" />
+    <SolidColorBrush x:Key="TextMuted" Color="#8A93A5" />
+
+    <!-- 强调色 -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#3B6FE0" />
+    <SolidColorBrush x:Key="AccentHover" Color="#2A57C0" />
+    <SolidColorBrush x:Key="AccentSoft" Color="#DCE6FB" />
+    <SolidColorBrush x:Key="AccentFaint" Color="#EAF0FE" />
+
+    <!-- 语义色（浅底上要压暗，否则黄字在白色上几乎看不见） -->
+    <SolidColorBrush x:Key="SuccessBrush" Color="#12805C" />
+    <SolidColorBrush x:Key="WarnBrush" Color="#A15C07" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#CC2B2B" />
+
+    <!-- 轨道 -->
+    <SolidColorBrush x:Key="TrackBrush" Color="#DCE1EB" />
+
+    <!-- 与深色模式同名的细节色 -->
+    <SolidColorBrush x:Key="SwitchKnob" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SelectedText" Color="#17356B" />
+    <SolidColorBrush x:Key="NavHoverBg" Color="#E5EAF4" />
+    <SolidColorBrush x:Key="ListHoverBg" Color="#E9EEF9" />
+    <SolidColorBrush x:Key="ScrollThumbBg" Color="#C3CBD9" />
+    <SolidColorBrush x:Key="DangerHoverBg" Color="#FBE7E7" />
+    <SolidColorBrush x:Key="SliderThumbStroke" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="PrimaryBtnFg" Color="#FFFFFF" />
+
+    <!-- 倍率曲线 -->
+    <SolidColorBrush x:Key="CurveGrid" Color="#DCE1EA" />
+    <SolidColorBrush x:Key="CurveGuide" Color="#553B6FE0" />
+    <SolidColorBrush x:Key="CurveArea" Color="#223B6FE0" />
+
+</ResourceDictionary>

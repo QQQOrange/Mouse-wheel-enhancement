@@ -259,6 +259,10 @@ internal static class Native
 
     public const int ENUM_CURRENT_SETTINGS = -1;
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetCursorPos(int x, int y);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
 

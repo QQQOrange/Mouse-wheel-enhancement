@@ -93,9 +93,11 @@ public partial class MainWindow : Window
         };
 
         Closing += OnClosing;
+        Theme.Changed += OnThemeChanged;
         Closed += (_, _) =>
         {
             Services.StateChanged -= OnServicesStateChanged;
+            Theme.Changed -= OnThemeChanged;
             _tick.Stop();
 
             /* 窗口（连同视觉树、D3D 表面、字形缓存）刚被销毁，此刻是把工作集
@@ -103,7 +105,7 @@ public partial class MainWindow : Window
              * "谁打开的就谁负责还" —— 任何路径销毁窗口都会走到这里。 */
             MemoryTrim.TrimIfLarge();
         };
-        Loaded += (_, _) => ApplyDarkTitleBar();
+        Loaded += (_, _) => ApplyTitleBar(Theme.IsLightNow);
     }
 
     /// <summary>
@@ -129,19 +131,57 @@ public partial class MainWindow : Window
         catch { return "local"; }
     }
 
-    /// <summary>让标题栏跟着深色界面走（Win10 1809+ 支持，取不到就算了）。</summary>
-    private void ApplyDarkTitleBar()
+    /// <summary>
+    /// 让**标题栏**跟着界面主题走（Win10 1809+ 支持，取不到就算了）。
+    ///
+    /// <para>
+    /// 浅色时必须显式写 0，不能"什么都不做"：这个属性是**按窗口**保存的，
+    /// 从深色切回浅色时如果只是不再设置，标题栏会停在深色，
+    /// 于是窗口主体是白的、标题栏是黑的，很难看。
+    /// </para>
+    /// </summary>
+    private void ApplyTitleBar(bool light)
     {
         try
         {
             var hwnd = new WindowInteropHelper(this).Handle;
             if (hwnd == IntPtr.Zero) return;
-            var on = 1;
+
+            var dark = light ? 0 : 1;
             // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE；老 build 上是 19
-            if (Native.DwmSetWindowAttribute(hwnd, 20, ref on, sizeof(int)) != 0)
-                Native.DwmSetWindowAttribute(hwnd, 19, ref on, sizeof(int));
+            if (Native.DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int)) != 0)
+                Native.DwmSetWindowAttribute(hwnd, 19, ref dark, sizeof(int));
         }
         catch { /* 非关键美化 */ }
+    }
+
+    /// <summary>
+    /// 主题变了：把"现画的东西"重画一遍。
+    ///
+    /// <para>
+    /// 走 DynamicResource 的控件会自己更新，但有三处不会：
+    /// </para>
+    /// <list type="number">
+    ///   <item><see cref="B"/> 里的画刷缓存 —— 存的是旧主题的 Brush 对象；</item>
+    ///   <item>倍率曲线 —— Canvas 里的 Line/Polygon/TextBlock 是代码建的，颜色写死在对象上；</item>
+    ///   <item>帮助页 —— 文案里的前景色是渲染时查出来的，不重建就一直是旧色。</item>
+    /// </list>
+    /// </summary>
+    private void OnThemeChanged()
+    {
+        _brushes.Clear();
+        ApplyTitleBar(Theme.IsLightNow);
+        RefreshStats();   // 状态点/徽章的颜色是 FindResource 取完写死在控件上的
+
+        if (_helpRendered && HelpPanel != null)
+        {
+            HelpPanel.Children.Clear();
+            _helpRendered = false;
+            EnsureHelpRendered();
+        }
+
+        UpdateThemeHints();
+        InvalidateCurve();
     }
 
     /// <summary>冒烟测试用：把关键尺寸打出来，确认页面真的被布局了（不是全 0）。</summary>
@@ -216,6 +256,11 @@ public partial class MainWindow : Window
             ModeWhite.IsChecked = c.Filter.Mode == FilterMode.Whitelist;
             TitleRegexBox.Text = c.Filter.TitleRegex;
 
+            var th = Theme.Normalize(c.Appearance.Theme);
+            ThemeSystem.IsChecked = th == Theme.System;
+            ThemeLight.IsChecked = th == Theme.Light;
+            ThemeDark.IsChecked = th == Theme.Dark;
+
             AutoFpsSwitch.IsChecked = c.Smooth.AutoFps;
             AutoCheckSwitch.IsChecked = c.Update.AutoCheck;
         }
@@ -234,6 +279,7 @@ public partial class MainWindow : Window
             CurveHint == null || TauValue == null || LatencyValue == null ||
             BacklogValue == null || FpsValue == null || FpsManualGroup == null ||
             GlideValue == null || GlideSlider == null ||
+            ThemeNow == null || ThemeSystem == null ||
             RegexHint == null)
             return;
 
@@ -267,6 +313,8 @@ public partial class MainWindow : Window
             : $"手动 · {c.Smooth.TargetFps} Hz（{1000.0 / c.Smooth.TargetFps:0.00} ms/帧）";
         FpsManualGroup.IsEnabled = !c.Smooth.AutoFps;
         FpsManualGroup.Opacity = c.Smooth.AutoFps ? 0.45 : 1.0;
+
+        UpdateThemeHints();
 
         var pattern = c.Filter.TitleRegex;
         if (string.IsNullOrWhiteSpace(pattern))
@@ -390,7 +438,7 @@ public partial class MainWindow : Window
         double Y(double m) => top + ph * (1 - Math.Clamp((m - 1) / (maxMult - 1), 0, 1));
 
         // 网格（横：1×、中间、上限）
-        var gridBrush = new SolidColorBrush(Color.FromRgb(0x25, 0x2C, 0x39));
+        var gridBrush = B("CurveGrid");
         foreach (var m in new[] { 1.0, (1 + maxMult) / 2, maxMult })
         {
             CurveCanvas.Children.Add(new Line
@@ -419,7 +467,7 @@ public partial class MainWindow : Window
             CurveCanvas.Children.Add(new Line
             {
                 X1 = x, X2 = x, Y1 = top, Y2 = top + ph,
-                Stroke = new SolidColorBrush(Color.FromArgb(0x66, 0x5B, 0x8C, 0xFF)),
+                Stroke = B("CurveGuide"),
                 StrokeThickness = 1,
             });
         }
@@ -438,7 +486,7 @@ public partial class MainWindow : Window
         CurveCanvas.Children.Add(new Polygon
         {
             Points = area,
-            Fill = new SolidColorBrush(Color.FromArgb(0x22, 0x5B, 0x8C, 0xFF)),
+            Fill = B("CurveArea"),
         });
 
         CurveCanvas.Children.Add(new Polyline
@@ -734,6 +782,53 @@ public partial class MainWindow : Window
             ? SmoothScope.Always
             : SmoothScope.BoostedOnly;
         Commit();
+    }
+
+    private void Theme_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+
+        var mode = ThemeLight.IsChecked == true ? Theme.Light
+                 : ThemeDark.IsChecked == true ? Theme.Dark
+                 : Theme.System;
+
+        Services.Config.Appearance.Theme = mode;
+
+        // 立刻生效，不等配置保存那条链路 —— 切主题如果是"点了过半秒才变"，很像卡了
+        Theme.SetMode(mode);
+        UpdateThemeHints();
+
+        // 主题跟引擎无关，不必重算派生标签
+        Commit(refreshDerived: false);
+    }
+
+    /// <summary>
+    /// 刷新「外观」那一行右侧的状态文字，并把单选框对齐到配置。
+    ///
+    /// <para>
+    /// 之所以要单独写这么一段：选"跟随系统"时，用户看不到系统当前到底是浅还是深，
+    /// 界面上就会变成"我选了跟随系统，但不知道它跟成了什么"。
+    /// </para>
+    /// </summary>
+    private void UpdateThemeHints()
+    {
+        if (ThemeNow == null || ThemeSystem == null || ThemeLight == null || ThemeDark == null) return;
+
+        var mode = Theme.Normalize(Services.Config.Appearance.Theme);
+
+        var prev = _loading;
+        _loading = true;
+        try
+        {
+            ThemeSystem.IsChecked = mode == Theme.System;
+            ThemeLight.IsChecked = mode == Theme.Light;
+            ThemeDark.IsChecked = mode == Theme.Dark;
+        }
+        finally { _loading = prev; }
+
+        ThemeNow.Text = mode == Theme.System
+            ? $"跟随系统 · 现在是{(Theme.SystemIsLight() ? "浅色" : "深色")}"
+            : $"固定{(Theme.IsLightNow ? "浅色" : "深色")}，系统换了也不跟";
     }
 
     private void AutoFps_Changed(object sender, RoutedEventArgs e)

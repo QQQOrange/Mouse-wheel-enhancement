@@ -43,6 +43,8 @@ internal static class SelfTest
             TestFilter();
             TestRepoNormalize();
             TestConfigRoundTrip();
+            TestTheme();
+            TestSelfBoost();
         }
         catch (Exception ex)
         {
@@ -437,6 +439,112 @@ internal static class SelfTest
     }
 
     /* ══════════════ 名单与配置 ══════════════ */
+
+    /// <summary>
+    /// 主题：两份调色板的 Key 必须**完全一致**，否则切主题时会有控件变成透明/黑。
+    /// 这个错误类型很隐蔽 —— 编译能过，只有真的切一次那一个控件才露馅。
+    /// </summary>
+    private static void TestTheme()
+    {
+        Section("界面主题");
+
+        // ① 字符串收敛
+        Check("system / light / dark 原样保留",
+            Theme.Normalize("system") == Theme.System &&
+            Theme.Normalize("light") == Theme.Light &&
+            Theme.Normalize("dark") == Theme.Dark);
+        Check("大小写与空白都被吃掉", Theme.Normalize("  DARK ") == Theme.Dark);
+        Check("空值与乱写一律当跟随系统",
+            Theme.Normalize(null) == Theme.System &&
+            Theme.Normalize("") == Theme.System &&
+            Theme.Normalize("purple") == Theme.System);
+
+        // ② 强制的意思就是"不看系统"
+        Check("强制浅色不受系统影响", Theme.ResolveIsLight(Theme.Light));
+        Check("强制深色不受系统影响", !Theme.ResolveIsLight(Theme.Dark));
+        Check("跟随系统时等于系统当前的取值",
+            Theme.ResolveIsLight(Theme.System) == Theme.SystemIsLight());
+
+        // ③ 两份调色板的 Key 必须一一对应
+        try
+        {
+            var dark = new System.Windows.ResourceDictionary
+            { Source = new Uri("pack://application:,,,/Themes/Palette.Dark.xaml") };
+            var light = new System.Windows.ResourceDictionary
+            { Source = new Uri("pack://application:,,,/Themes/Palette.Light.xaml") };
+
+            var dk = dark.Keys.Cast<object>().Select(k => k.ToString()!).OrderBy(x => x).ToList();
+            var lk = light.Keys.Cast<object>().Select(k => k.ToString()!).OrderBy(x => x).ToList();
+
+            Check("深色调色板不是空的", dk.Count > 20, $"{dk.Count} 个 Key");
+            var missing = dk.Except(lk).ToList();
+            var extra = lk.Except(dk).ToList();
+            Check("浅色调色板补齐了深色的每个 Key", missing.Count == 0, string.Join(",", missing));
+            Check("浅色调色板没有多余的 Key", extra.Count == 0, string.Join(",", extra));
+        }
+        catch (Exception ex)
+        {
+            Check("两份调色板能加载", false, ex.Message);
+        }
+
+        // ④ 配置里存的必须是收敛后的值
+        var c = AppConfig.Default();
+        Check("默认跟随系统", c.Appearance.Theme == Theme.System, c.Appearance.Theme);
+        c.Appearance.Theme = "Nonsense";
+        c.Normalize();
+        Check("非法主题被收敛成 system", c.Appearance.Theme == Theme.System, c.Appearance.Theme);
+    }
+
+    /// <summary>
+    /// 「增强对自己也生效」：默认不排除自己，且旧配置里被写成 true 的那一项要纠正回来。
+    ///
+    /// <para>
+    /// 这是用户实际踩到的问题：配置里的 pauseWhileSettingsOpen 是 true，
+    /// 于是他在自己的设置窗口里滚，一点增强都没有 —— 看起来像"功能坏了"。
+    /// </para>
+    /// </summary>
+    private static void TestSelfBoost()
+    {
+        Section("对自己也生效");
+
+        var own = AppRuleName.Normalize(Environment.ProcessPath);
+
+        var cfg = AppConfig.Default();
+        var s = RuntimeSettings.From(cfg);
+
+        Check("默认不在自己窗口里暂停", !cfg.Behavior.PauseWhileSettingsOpen);
+        Check("默认不排除自己", !s.ShouldSkipSelf(own), $"own={s.OwnExe}");
+        Check("自己不在默认黑名单里", s.IsAppEnabled(own, ""), own);
+
+        // 开关打开时才跳过（这就是"试原生手感"的用途）
+        var off = AppConfig.Default();
+        off.Behavior.PauseWhileSettingsOpen = true;
+        var so = RuntimeSettings.From(off);
+        Check("打开暂停开关后跳过自己", so.ShouldSkipSelf(own));
+        Check("暂停开关不影响别人", so.IsAppEnabled("chrome.exe", ""));
+
+        // exe 名判定的边界：空、大小写、别的程序
+        Check("空 exe 不算自己", !so.ShouldSkipSelf(""));
+        Check("大小写不影响判定", so.ShouldSkipSelf(own.ToUpperInvariant()));
+        Check("别的程序不算自己", !so.ShouldSkipSelf("notepad.exe"));
+
+        /* ── v1 → v2 的迁移 ──
+         * 老配置里这一项是 true（早期默认值），升级后必须被纠正成 false，
+         * 否则用户升级完还是会觉得"对自己没效果"。 */
+        var legacy = AppConfig.Default();
+        legacy.SchemaVersion = 1;
+        legacy.Behavior.PauseWhileSettingsOpen = true;
+        legacy.Normalize();
+        Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
+        Check("迁移后 schemaVersion 记为 2", legacy.SchemaVersion == 2, legacy.SchemaVersion.ToString());
+
+        // 已经是 v2 之后，用户自己打开就不再被覆盖
+        var kept = AppConfig.Default();
+        kept.SchemaVersion = 2;
+        kept.Behavior.PauseWhileSettingsOpen = true;
+        kept.Normalize();
+        Check("v2 之后用户手动打开的开关不再被覆盖", kept.Behavior.PauseWhileSettingsOpen);
+    }
 
     private static void TestFilter()
     {

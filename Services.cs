@@ -47,6 +47,13 @@ internal static class Services
         Store = new ConfigStore();
         Store.Changed += OnConfigChanged;
 
+        /* 主题要在**建窗口之前**应用：App.xaml 默认合并的是深色调色板，
+         * 如果等窗口建完再换，浅色系统上会先闪一下深色。
+         * 这里只是替换一份资源字典，窗口都还没建，所以是零成本的。 */
+        _themeMode = Theme.Normalize(Store.Config.Appearance.Theme);
+        Theme.Apply(_themeMode);
+        Theme.Start(_themeMode);
+
         /* 帧率要跟着显示器走：先把当前刷新率读出来，再让引擎按它烘焙第一份快照。
          * 之后刷新率一变（换分辨率、插拔电源、动态刷新率），重建快照即可 —— 
          * 动画线程每帧都会读最新的那份。 */
@@ -88,8 +95,20 @@ internal static class Services
     private static void OnConfigChanged(AppConfig cfg)
     {
         Engine.Apply(cfg);
+
+        /* 主题单独处理：只有真的换了模式才动资源字典。
+         * 拖个滑块也走这里，每次重建字典会让整棵视觉树重新解析一遍颜色，白闪一下。 */
+        var mode = Theme.Normalize(cfg.Appearance.Theme);
+        if (mode != _themeMode)
+        {
+            _themeMode = mode;
+            Theme.SetMode(mode);
+        }
+
         Notify();
     }
+
+    private static string _themeMode = Theme.Normalize(new AppConfig().Appearance.Theme);
 
     public static void Notify() => StateChanged?.Invoke();
 
@@ -142,6 +161,7 @@ internal static class Services
         try { Store?.Dispose(); } catch { }
         try { Tray?.Dispose(); } catch { }
         try { RefreshRateMonitor.Stop(); } catch { }
+        try { Theme.Stop(); } catch { }
         Log.Info("==== 退出 ====");
         Log.Flush();
     }

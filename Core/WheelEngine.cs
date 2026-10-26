@@ -207,9 +207,10 @@ public sealed class WheelEngine : IDisposable
             var target = _targets.ResolveForWheel(s.NeedsTitle);
             Volatile.Write(ref _lastTargetBox, new TargetBox(target));
 
-            // "打开设置面板时暂停"：对本程序自己的窗口不增强
-            if (s.SkipSelf && s.OwnExe.Length > 0 &&
-                string.Equals(target.Exe, s.OwnExe, StringComparison.OrdinalIgnoreCase))
+            /* 默认**不**排除自己：设置窗口里的滚动也该被增强，
+             * 否则用户在自己的软件里根本试不出效果（这正是曾经的困惑来源）。
+             * 只有显式打开「在本窗口也暂停加速」时才跳过自己。 */
+            if (s.ShouldSkipSelf(target.Exe))
             {
                 if (_animator.PendingUnits != 0) _animator.FlushSoon();
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);

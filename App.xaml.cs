@@ -286,6 +286,19 @@ public partial class App : System.Windows.Application
 
             var boosted = Services.Engine.BoostedCount - beforeBoost;
             var passed = Services.Engine.PassedCount - beforePass;
+
+            /* ── 自我增强：把光标挪到自己窗口里，再滚一次 ──
+             *
+             * 这一条是专门为"功能对自己不生效"补的。判定依据有两个，缺一不可：
+             *   ① 目标的 exe 就是本程序（说明目标解析认得出自己）；
+             *   ② 这次滚动被接管了（说明 Skipped 逻辑没有把它放行）。
+             *
+             * 只靠读代码看不出问题 —— 以前的默认配置就是把 ② 卡住的。 */
+            var selfCode = CheckSelfBoost(w);
+            if (selfCode != 0) code = selfCode;
+
+            var themeCode = CheckTheme(w);
+            if (themeCode != 0) code = themeCode;
             Log.Info($"smoke: 注入 {sent}/16 次，钩子接管 {boosted} 次、放行 {passed} 次，" +
                      $"倍率 {Services.Engine.LastMultiplier:0.00}×");
 
@@ -422,6 +435,177 @@ public partial class App : System.Windows.Application
         }
         catch { }
         return code;
+    }
+
+    /// <summary>
+    /// 验证主题能**热切换**：不重建窗口，只换调色板字典，已有的控件应当立刻变色。
+    ///
+    /// <para>
+    /// 这是本功能唯一真正容易做错的地方：如果样式里用的是 StaticResource，
+    /// 换字典对已建好的元素毫无作用 —— 界面看起来"没反应"，重开一次才对。
+    /// 所以这里读的是**窗口自己的 Background**（一个真实的、已经建好的控件属性），
+    /// 而不是资源字典里的值。后者换了只能证明"字典换了"，证明不了"界面跟着变了"。
+    /// </para>
+    /// </summary>
+    private static int CheckTheme(MainWindow w)
+    {
+        static double Lum(System.Windows.Media.Color c) =>
+            (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
+
+        var cfgMode = Theme.Normalize(Services.Config.Appearance.Theme);
+        var code = 0;
+
+        try
+        {
+            Theme.SetMode(Theme.Light);
+            w.UpdateLayout();
+            var light = (w.Background as System.Windows.Media.SolidColorBrush)?.Color
+                        ?? System.Windows.Media.Colors.Transparent;
+
+            Theme.SetMode(Theme.Dark);
+            w.UpdateLayout();
+            var dark = (w.Background as System.Windows.Media.SolidColorBrush)?.Color
+                       ?? System.Windows.Media.Colors.Transparent;
+
+            Log.Info($"smoke: 主题热切换 → 浅色底 #{light.R:X2}{light.G:X2}{light.B:X2}" +
+                     $"（亮度 {Lum(light):0.00}），深色底 #{dark.R:X2}{dark.G:X2}{dark.B:X2}" +
+                     $"（亮度 {Lum(dark):0.00}）");
+
+            if (Lum(light) < 0.7)
+            {
+                Log.Error("smoke: 切到浅色后窗口底色仍然很暗 —— 静态资源没跟着换");
+                code = 10;
+            }
+            if (Lum(dark) > 0.3)
+            {
+                Log.Error("smoke: 切回深色后窗口底色仍然很亮");
+                code = 11;
+            }
+            if (Math.Abs(Lum(light) - Lum(dark)) < 0.4)
+            {
+                Log.Error("smoke: 两种主题的底色几乎一样，切换没有真的生效");
+                code = 12;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("smoke: 主题切换抛异常", ex);
+            code = 13;
+        }
+        finally
+        {
+            // 回到配置里的模式（可能是"跟随系统"）
+            Theme.SetMode(cfgMode);
+            w.UpdateLayout();
+            Log.Info($"smoke: 主题已复原为「{cfgMode}」→ 实际 {Theme.Effective}");
+        }
+
+        return code;
+    }
+
+    /// <summary>
+    /// 验证「增强对自己也生效」：光标移进设置窗口，注入滚轮，检查是否被接管。
+    ///
+    /// <para>
+    /// 顺带反向验证一次开关：把「在本窗口暂停增强」临时打开，同样注入，
+    /// 应当一次都不接管（那就是以前的默认行为）。测完立刻改回去，
+    /// 免得把测试状态落到用户配置里。
+    /// </para>
+    /// </summary>
+    private static int CheckSelfBoost(MainWindow w)
+    {
+        var own = AppRuleName.Normalize(Environment.ProcessPath);
+        if (own.Length == 0)
+        {
+            Log.Warn("smoke: 取不到自己的 exe 名，跳过自我增强检查");
+            return 0;
+        }
+
+        var settings = RuntimeSettings.From(Services.Config);
+        if (settings.ShouldSkipSelf(own))
+        {
+            Log.Error("smoke: 配置里仍然把自己排除了 —— 在设置窗口里滚不出效果");
+            return 6;
+        }
+
+        if (!Native.GetCursorPos(out var saved)) saved = default;
+
+        var p = w.PointToScreen(new System.Windows.Point(w.ActualWidth / 2, w.ActualHeight / 2));
+        if (!Native.SetCursorPos((int)p.X, (int)p.Y))
+        {
+            Log.Warn("smoke: 光标挪不过去（会话可能被锁），跳过自我增强检查");
+            return 0;
+        }
+
+        Thread.Sleep(150);                 // 让光标落位，目标解析才认得出是自己
+        var before = Services.Engine.BoostedCount;
+        var sent = 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        for (var i = 0; i < 12; i++)
+        {
+            if (InputInjector.SendWheelWith(Native.WHEEL_DELTA, ForeignSignature)) sent++;
+            var due = 18 * (i + 1);
+            while (clock.ElapsedMilliseconds < due) Thread.Sleep(0);
+        }
+        Thread.Sleep(350);
+
+        var got = Services.Engine.BoostedCount - before;
+        var target = Services.Engine.LastTarget.Exe;
+        Log.Info($"smoke: 光标在自己窗口内 → 目标 exe={target}，注入 {sent}/12 次，接管 {got} 次");
+
+        var result = 0;
+        if (sent == 0)
+        {
+            Log.Warn("smoke: 注入失败（桌面可能被锁），跳过自我增强判定");
+        }
+        else if (!string.Equals(target, own, StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Error($"smoke: 目标没解析成自己（自己的 exe={own}），无法判定");
+            result = 7;
+        }
+        else if (got == 0)
+        {
+            Log.Error("smoke: 自己窗口里的滚动没有被接管 —— 自我增强不生效");
+            result = 8;
+        }
+
+        /* 反向：打开「在本窗口暂停增强」，应当一次都不接管 */
+        if (result == 0)
+        {
+            var cfg = Services.Config;
+            var keep = cfg.Behavior.PauseWhileSettingsOpen;
+            try
+            {
+                cfg.Behavior.PauseWhileSettingsOpen = true;
+                Services.Engine.Apply(cfg);
+                Thread.Sleep(120);
+
+                var beforeOff = Services.Engine.BoostedCount;
+                for (var i = 0; i < 10; i++) InputInjector.SendWheelWith(Native.WHEEL_DELTA, ForeignSignature);
+                Thread.Sleep(300);
+                var gotOff = Services.Engine.BoostedCount - beforeOff;
+
+                Log.Info($"smoke: 打开「在本窗口暂停增强」后，接管 {gotOff} 次（期望 0）");
+                if (gotOff != 0)
+                {
+                    Log.Error("smoke: 暂停开关没起作用");
+                    result = 9;
+                }
+            }
+            finally
+            {
+                // 一定要还原：冒烟退出时会保存配置，别把测试值写进用户文件
+                cfg.Behavior.PauseWhileSettingsOpen = keep;
+                Services.Engine.Apply(cfg);
+                Native.SetCursorPos(saved.X, saved.Y);
+            }
+        }
+        else
+        {
+            Native.SetCursorPos(saved.X, saved.Y);
+        }
+
+        return result;
     }
 
     /// <summary>冒烟测试专用的"外来"标记：不能等于 <c>InputInjector.Signature</c>。</summary>
