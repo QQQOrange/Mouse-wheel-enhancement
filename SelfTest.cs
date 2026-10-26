@@ -35,6 +35,7 @@ internal static class SelfTest
             TestReversal();
             TestRounding();
             TestFrameSpreading();
+            TestFrameRateFollowsDisplay();
             TestVersionCompare();
             TestShaParse();
             TestTokenSanitize();
@@ -276,6 +277,46 @@ internal static class SelfTest
         // 到期必须整块冲掉（不能让尾巴无限拖）
         var flush = ScrollAnimator.ComputeFrame(360, 8, 0, 45, 30, true);
         Check("超过截止时间立刻发完", flush == 360, $"实际 {flush}");
+    }
+
+    private static void TestFrameRateFollowsDisplay()
+    {
+        Section("帧率跟随显示器刷新率");
+        var cfg = AppConfig.Default();
+        Check("默认就是自动跟随", cfg.Smooth.AutoFps);
+
+        // 常见刷新率 → 期望的帧间隔
+        double Ms(int hz) => 1000.0 / hz;
+        foreach (var hz in new[] { 60, 75, 120, 144, 160, 165, 200, 240, 360 })
+        {
+            RefreshRateMonitor.OverrideForTest(hz);
+            Near($"{hz} Hz → {Ms(hz):0.00} ms/帧", RuntimeSettings.From(cfg).FrameIntervalMs, Ms(hz), 0.02);
+        }
+
+        // 手动指定时不受显示器影响
+        var manual = AppConfig.Default();
+        manual.Smooth.AutoFps = false;
+        manual.Smooth.TargetFps = 90;
+        RefreshRateMonitor.OverrideForTest(240);
+        Near("手动 90 Hz 时忽略显示器 240 Hz", RuntimeSettings.From(manual).FrameIntervalMs, Ms(90), 0.02);
+
+        // 荒谬值要夹住：不能让一块报错率的驱动把出帧节奏带飞
+        RefreshRateMonitor.OverrideForTest(2000);
+        Check("异常高的刷新率被夹到 2 ms", RuntimeSettings.From(cfg).FrameIntervalMs >= 2.0 - 1e-9,
+            RuntimeSettings.From(cfg).FrameIntervalMs.ToString("0.00"));
+        RefreshRateMonitor.OverrideForTest(5);
+        Check("异常低的刷新率被夹到 40 ms", RuntimeSettings.From(cfg).FrameIntervalMs <= 40.0 + 1e-9,
+            RuntimeSettings.From(cfg).FrameIntervalMs.ToString("0.00"));
+
+        // 读不出来时退回兜底值，而不是变成 0
+        RefreshRateMonitor.OverrideForTest(0);
+        Near("测不出刷新率时退回 120 Hz", RuntimeSettings.From(cfg).FrameIntervalMs, Ms(120), 0.02);
+
+        // 160/200Hz 这类"非标准"值必须能被表示（整数值的 fps 存不下 6.25ms）
+        RefreshRateMonitor.OverrideForTest(160);
+        Check("160 Hz 的帧间隔不是整数毫秒", Math.Abs(RuntimeSettings.From(cfg).FrameIntervalMs - 6.25) < 0.01);
+
+        RefreshRateMonitor.OverrideForTest(0);
     }
 
     /* ══════════════ 更新 ══════════════ */

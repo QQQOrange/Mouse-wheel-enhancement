@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ══════════════════════════════════════════════════════════════════
+    启动器（Launcher）—— 唯一职责：确认这台电脑有 .NET 10 桌面运行时，然后把主程序拉起来
+    ══════════════════════════════════════════════════════════════════
+
+    # 为什么要有这个项目
+
+    主程序是**框架依赖**发布（0.38 MB，不带运行时）。当机器上没有 .NET 10 时，
+    .NET 的 apphost 会在加载我们的代码**之前**就失败 —— 也就是说主程序里写的任何
+    "检测 + 提示"都不可能被执行到。要在这个场景下弹自己的窗口，就必须有一个
+    **不依赖 .NET 10** 的程序先跑起来。
+
+    # 为什么用 .NET Framework 4.8
+
+    Windows 10 1809 及以上**内置** .NET Framework 4.8，所以这个启动器不需要用户装任何东西，
+    产物也只有 20 KB 左右。相比 NativeAOT（需要 C++ 工具链）和原生 C++（需要完整 Windows SDK），
+    这是唯一"零额外依赖、零工具链"的方案。
+
+    # 它绝不能成为新的故障点
+
+    · 运行时检测到就启动、检测不到才弹窗；
+    · **任何检测异常都按"放行"处理**（fail-open）：宁可让主程序自己去撞 apphost 的提示，
+      也不能因为本程序判断失误把能正常用的软件拦在门外；
+    · 找不到主程序时给出明确的一句话，而不是静默退出。
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>7.3</LangVersion>
+    <AssemblyName>MouseWheelEnhancement</AssemblyName>
+    <RootNamespace>MouseWheelEnhancement.Launcher</RootNamespace>
+    <ApplicationIcon>..\app.ico</ApplicationIcon>
+    <Product>鼠标滚轮增强</Product>
+    <AssemblyTitle>鼠标滚轮增强</AssemblyTitle>
+    <Company>QQQOrange</Company>
+    <Description>鼠标滚轮增强 —— 启动器（检查 .NET 10 运行时）</Description>
+    <Version>1.2.0</Version>
+    <FileVersion>1.2.0.0</FileVersion>
+    <Deterministic>true</Deterministic>
+    <!-- net48 上不需要，也不该带 pdb 进安装目录 -->
+    <DebugType>none</DebugType>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+</Project>

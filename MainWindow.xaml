@@ -394,10 +394,28 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
                                         <TextBlock Text="注入帧率" FontWeight="SemiBold" />
-                                        <TextBlock Style="{StaticResource Caption}"
-                                                   Text="每秒发多少小步。120 已经很顺；越高越耗电，笔记本上没必要上 144。" />
+                                        <TextBlock x:Name="FpsHint" Style="{StaticResource Caption}"
+                                                   Text="自动跟着显示器刷新率走：屏幕多少 Hz，就每多少毫秒推一小步。"
+                                                   TextWrapping="Wrap" />
                                     </StackPanel>
-                                    <Border Grid.Column="1" Style="{StaticResource SegGroup}" VerticalAlignment="Center">
+                                    <TextBlock x:Name="FpsValue" Grid.Column="1" Style="{StaticResource Value}"
+                                               Text="自动 · —" Margin="12,0,0,0" VerticalAlignment="Top" />
+                                </Grid>
+
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ToggleButton x:Name="AutoFpsSwitch" Style="{StaticResource Switch}"
+                                                      VerticalAlignment="Center"
+                                                      Checked="AutoFps_Changed" Unchecked="AutoFps_Changed" />
+                                        <TextBlock Text="自动跟随显示器刷新率" Margin="10,0,0,0"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <Border x:Name="FpsManualGroup" Grid.Column="1"
+                                            Style="{StaticResource SegGroup}" VerticalAlignment="Center">
                                         <StackPanel Orientation="Horizontal">
                                             <RadioButton x:Name="Fps60" GroupName="fps" Content="60"
                                                          Style="{StaticResource SegRadio}" Checked="Fps_Changed" />

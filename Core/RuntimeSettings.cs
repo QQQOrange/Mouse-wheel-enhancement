@@ -30,7 +30,11 @@ public sealed class RuntimeSettings
 
     public bool SmoothEnabled { get; init; }
     public bool SmoothAlways { get; init; }
-    public int FrameMs { get; init; }
+    /// <summary>出帧间隔（毫秒）。自动模式下来自显示器刷新率，手动模式下来自配置。</summary>
+    public double FrameIntervalMs { get; init; }
+
+    /// <summary>这一份设置里的帧间隔是按哪来的（界面显示用）。</summary>
+    public bool AutoFps { get; init; }
     public int UnitsPerFrame { get; init; }
     public double TauMs { get; init; }
     public double MaxLatencyMs { get; init; }
@@ -64,8 +68,14 @@ public sealed class RuntimeSettings
 
     public static RuntimeSettings From(AppConfig c)
     {
-        var fps = Math.Clamp(c.Smooth.TargetFps, 30, 240);
-        var frameMs = Math.Max(1, (int)Math.Round(1000.0 / fps));
+        /* 帧间隔：
+         *   自动 → 直接问显示器要（光标所在那台的当前刷新率）；
+         *   手动 → 用配置里的整数帧率。
+         * 两端都夹一下：2 ms（500Hz）到 40 ms（25Hz），
+         * 防止某个显卡驱动报回一个荒谬的刷新率把出帧节奏带飞。 */
+        var frameMs = c.Smooth.AutoFps
+            ? Math.Clamp(RefreshRateMonitor.FrameIntervalMs, 2.0, 40.0)
+            : Math.Clamp(1000.0 / Math.Clamp(c.Smooth.TargetFps, 30, 240), 2.0, 40.0);
         var framesPerNotch = Math.Clamp(c.Smooth.FramesPerNotch, 1, 40);
 
         Regex? rx = null;
@@ -96,7 +106,8 @@ public sealed class RuntimeSettings
             FlushOnReverse = c.Boost.FlushOnReverse,
             SmoothEnabled = c.Enabled && c.Smooth.Enabled,
             SmoothAlways = c.Smooth.Scope == SmoothScope.Always,
-            FrameMs = frameMs,
+            FrameIntervalMs = frameMs,
+            AutoFps = c.Smooth.AutoFps,
             UnitsPerFrame = Math.Max(1, (int)Math.Round(Native.WHEEL_DELTA / (double)framesPerNotch)),
             TauMs = c.Smooth.TailTauMs,
             MaxLatencyMs = c.Smooth.MaxLatencyMs,

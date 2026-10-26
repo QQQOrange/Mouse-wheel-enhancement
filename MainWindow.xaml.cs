@@ -212,6 +212,7 @@ public partial class MainWindow : Window
             ModeWhite.IsChecked = c.Filter.Mode == FilterMode.Whitelist;
             TitleRegexBox.Text = c.Filter.TitleRegex;
 
+            AutoFpsSwitch.IsChecked = c.Smooth.AutoFps;
             AutoCheckSwitch.IsChecked = c.Update.AutoCheck;
         }
         finally { _loading = false; }
@@ -222,8 +223,13 @@ public partial class MainWindow : Window
     /// <summary>只更新"显示出来的数字"，不碰控件值（拖动时逐帧调它）。</summary>
     private void UpdateDerivedLabels()
     {
-        // 解析期间可能被 Slider 的 Minimum/Maximum 触发，此时控件还没建全
-        if (ThresholdValue == null || SatValue == null || MaxMultValue == null || CurveHint == null)
+        /* 解析期间可能被 Slider 的 Minimum/Maximum 触发，此时后面的控件还没建出来。
+         * 这里把**本方法用到的每一个控件**都列进来了 —— 少列一个，就会在
+         * "用户刚好在这一刻拖了一下滑块"时炸 NullReference。 */
+        if (ThresholdValue == null || SatValue == null || MaxMultValue == null ||
+            CurveHint == null || TauValue == null || LatencyValue == null ||
+            BacklogValue == null || FpsValue == null || FpsManualGroup == null ||
+            RegexHint == null)
             return;
 
         var c = Services.Config;
@@ -235,6 +241,13 @@ public partial class MainWindow : Window
         TauValue.Text = $"{c.Smooth.TailTauMs:0} ms";
         LatencyValue.Text = $"{c.Smooth.MaxLatencyMs:0} ms";
         BacklogValue.Text = $"{c.Smooth.MaxBacklogNotches:0} 格";
+
+        // 自动时显示显示器实际刷新率（刷新率一变这里会跟着变），手动时显示选定值
+        FpsValue.Text = c.Smooth.AutoFps
+            ? RefreshRateMonitor.Describe()
+            : $"手动 · {c.Smooth.TargetFps} Hz（{1000.0 / c.Smooth.TargetFps:0.00} ms/帧）";
+        FpsManualGroup.IsEnabled = !c.Smooth.AutoFps;
+        FpsManualGroup.Opacity = c.Smooth.AutoFps ? 0.45 : 1.0;
 
         var pattern = c.Filter.TitleRegex;
         if (string.IsNullOrWhiteSpace(pattern))
@@ -569,6 +582,13 @@ public partial class MainWindow : Window
         Services.Config.Smooth.Scope = ScopeAlways.IsChecked == true
             ? SmoothScope.Always
             : SmoothScope.BoostedOnly;
+        Commit();
+    }
+
+    private void AutoFps_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        Services.Config.Smooth.AutoFps = AutoFpsSwitch.IsChecked == true;
         Commit();
     }
 

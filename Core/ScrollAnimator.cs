@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace MouseWheelEnhancement.Core;
 
@@ -11,14 +12,29 @@ namespace MouseWheelEnhancement.Core;
 /// 所以钩子只负责"要不要接管 + 这一下总共该滚多少"，把结果丢进这里，
 /// 由一个带高精度计时的专用线程按帧发出去。
 ///
+/// # 出帧节奏 = 显示器刷新率
+///
+/// 帧间隔取自 <see cref="RefreshRateMonitor"/>（光标所在显示器的当前刷新率），
+/// 不再是固定的 60/90/120/144。道理很简单：注入的一小步只有在"下一个刷新周期"
+/// 才可能被画出来，节奏对不上就会出现"几步挤在一帧里、然后空好几帧"的抖动。
+///
+/// # 为什么用可等待定时器，而不是 Sleep / 事件超时
+///
+/// <c>AutoResetEvent.WaitOne(ms)</c> 的超时精度受系统计时器分辨率限制（默认 15.6 ms，
+/// 提到 1 ms 得动 <c>timeBeginPeriod</c> 这种全局设置）。在 200 Hz 屏上（5 ms 一帧）
+/// 这种精度根本不够，实际出帧会变成 5、6、5、7 这样参差。
+///
+/// <c>CreateWaitableTimerEx(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)</c>（Win10 1803+）
+/// 精度约 0.5 ms，**只影响这一只定时器**，不改全局计时精度、也不额外费电。
+/// 它还顺带解决了"新输入到来要立刻出帧"：等两个句柄即可。
+///
 /// # 摊帧算法
 ///
 /// 每一帧发出去的量 = <c>max(指数曲线, 截止期限均摊)</c>：
 ///   · **指数曲线** <c>pending · (1 − e^(−dt/τ))</c> 决定手感 —— τ 越小越干脆，
 ///     越大越"绵"，也就是触控板那种惯性尾巴；
-///   · **截止期限均摊** <c>pending · dt / 剩余时间</c> 是一道保险：
-///     保证无论曲线多慢，输入后 <c>MaxLatencyMs</c> 内一定发完。
-///     没有它的话，τ 调大之后尾巴会拖到用户觉得"卡住了"。
+///   · **截止期限均摊** <c>pending · dt / 剩余时间</c> 是保险：保证无论曲线多慢，
+///     输入后 <c>MaxLatencyMs</c> 内一定发完；
 ///   · 每帧至少推进 <c>UnitsPerFrame</c>（默认 30 单位 = 1/4 格），否则尾巴会
 ///     退化成一点一点挪，看起来像掉帧。
 ///
@@ -49,6 +65,12 @@ internal sealed class ScrollAnimator : IDisposable
     private long _nextFrameTicks;
     private long _lastFrameTicks;
 
+    /* 出帧用的高精度可等待定时器；0 表示创建失败，退回"事件超时 + 1ms 计时精度" */
+    private IntPtr _frameTimer;
+    private IntPtr _wakeHandle;
+    private IntPtr[]? _waitHandles;
+    private bool _timerPrecision;
+    private bool _waitFailedLogged;
 
     public ScrollAnimator()
     {
@@ -57,6 +79,9 @@ internal sealed class ScrollAnimator : IDisposable
 
     /// <summary>还有多少没发完（单位）。</summary>
     public double PendingUnits => Interlocked.Read(ref _pendingMilli) / Milli;
+
+    /// <summary>是不是走的高精度定时器（诊断用）。</summary>
+    public bool UsingHighResolutionTimer => _frameTimer != IntPtr.Zero;
 
     public void UpdateSettings(RuntimeSettings s) => Volatile.Write(ref _settings, s);
 
@@ -90,9 +115,7 @@ internal sealed class ScrollAnimator : IDisposable
          * 不丢的话，用户往回滚的那一瞬间会先继续往前冲一小段（积压还在往外发），
          * 手感就是"往回想滚却滚不动"。 */
         if (s.FlushOnReverse && sign != 0 && Math.Sign(total) != sign)
-        {
             Interlocked.Exchange(ref _pendingMilli, (long)units * (long)Milli);
-        }
 
         var now = _clock.ElapsedTicks;
         var deadline = now + MsToTicks(s.MaxLatencyMs);
@@ -100,7 +123,7 @@ internal sealed class ScrollAnimator : IDisposable
         /* 积压超过上限 → 把截止时间压到下一帧，逼它一次性发完。
          * 连续甩动时积压会越滚越大，不设这道闸的话延迟会线性增长。 */
         if (Math.Abs(Interlocked.Read(ref _pendingMilli)) > s.MaxBacklogUnits * Milli)
-            deadline = now + MsToTicks(Math.Max(2, s.FrameMs * 2L));
+            deadline = now + MsToTicks(Math.Max(2.0, s.FrameIntervalMs * 2));
 
         Interlocked.Exchange(ref _deadlineTicks, deadline);
         _wake.Set();
@@ -114,10 +137,7 @@ internal sealed class ScrollAnimator : IDisposable
     }
 
     /// <summary>直接丢弃积压，一个字节都不发。</summary>
-    public void Clear()
-    {
-        Interlocked.Exchange(ref _pendingMilli, 0);
-    }
+    public void Clear() => Interlocked.Exchange(ref _pendingMilli, 0);
 
     /// <summary>测试与自检用的同步调用：绕过线程，按给定参数算一帧该发多少。</summary>
     public static int ComputeFrame(double pendingUnits, double dtMs, double remainingMs,
@@ -146,32 +166,46 @@ internal sealed class ScrollAnimator : IDisposable
         return v;
     }
 
-    private long MsToTicks(double ms) => (long)(ms * Stopwatch.Frequency / 1000.0);
+    private long MsToTicks(double ms) => (long)Math.Max(1, ms * Stopwatch.Frequency / 1000.0);
     private double TicksToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+
+    /* ══════════════ 线程主体 ══════════════ */
 
     private void Loop()
     {
+        // 高精度定时器：只影响这一只定时器，不改全局计时精度
+        var timer = Native.CreateWaitableTimerEx(IntPtr.Zero, null,
+            Native.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, Native.TIMER_ALL_ACCESS);
+        if (timer != IntPtr.Zero)
+        {
+            _frameTimer = timer;
+        }
+        else
+        {
+            Log.Warn("高精度定时器创建失败（错误码 " + Marshal.GetLastWin32Error() +
+                     "），退回毫秒级等待；高刷新率屏幕上的帧节奏会略抖");
+        }
+
         try
         {
+            _wakeHandle = _wake.SafeWaitHandle.DangerousGetHandle();
+            _waitHandles = new[] { _frameTimer, _wakeHandle };
+
             _lastFrameTicks = _clock.ElapsedTicks;
             _nextFrameTicks = _lastFrameTicks;
 
             while (_alive)
             {
                 var s = Volatile.Read(ref _settings);
-                var frameTicks = Math.Max(1, MsToTicks(s.FrameMs));
+                var frameTicks = MsToTicks(s.FrameIntervalMs);
 
-                long pendingMilli = Interlocked.Read(ref _pendingMilli);
+                var pendingMilli = Interlocked.Read(ref _pendingMilli);
                 var now = _clock.ElapsedTicks;
 
                 if (pendingMilli == 0)
                 {
-                    /* 没活干：**先把计时精度还给系统**再阻塞等待。
-                     *
-                     * 原来是一进线程就 TimeBeginPeriod(1) 并一直持有到进程退出。
-                     * 那个请求会让整机更难进入低功耗计时状态 —— 对一个 90% 时间
-                     * 都闲着、只在用户甩滚轮那几百毫秒才干活的小工具来说完全不值。
-                     * 现在只在"真有量要发"的这段时间里申请，发完立刻释放。 */
+                    /* 没活干：先把手里的计时精度还给系统（只有兜底路径会申请），
+                     * 然后无限期等下一次输入 —— 一个核都不占。 */
                     ReleaseTimerPrecision();
                     _lastFrameTicks = now;
                     _nextFrameTicks = now;
@@ -179,24 +213,19 @@ internal sealed class ScrollAnimator : IDisposable
                     continue;
                 }
 
-                // 要让 WaitOne 的超时精度到 1ms 附近，否则 8ms 的帧会被系统凑整成 15.6ms
-                RequestTimerPrecision();
-
-                var waitTicks = _nextFrameTicks - now;
-                if (waitTicks > 0)
+                if (_nextFrameTicks > now)
                 {
-                    var waitMs = (int)Math.Clamp(TicksToMs(waitTicks), 1, 200);
-                    _wake.WaitOne(waitMs);
-                    if (!_alive) break;
+                    if (!WaitUntil(_nextFrameTicks)) break;
                     now = _clock.ElapsedTicks;
-                    if (now < _nextFrameTicks) continue; // 只是被唤醒，还没到帧边界
+                    // 被新输入叫醒但还没到帧点：回去继续等，别提前出帧
+                    if (now < _nextFrameTicks) continue;
                 }
 
                 s = Volatile.Read(ref _settings);
                 pendingMilli = Interlocked.Read(ref _pendingMilli);
                 if (pendingMilli == 0) continue;
 
-                var dtMs = Math.Clamp(TicksToMs(now - _lastFrameTicks), 1.0, 50.0);
+                var dtMs = Math.Clamp(TicksToMs(now - _lastFrameTicks), 0.2, 50.0);
                 _lastFrameTicks = now;
 
                 var pendingUnits = pendingMilli / Milli;
@@ -222,12 +251,12 @@ internal sealed class ScrollAnimator : IDisposable
                              * 丢掉这份积压，否则它会一直重试、越积越多。 */
                             Interlocked.Exchange(ref _pendingMilli, 0);
                             Log.Warn("SendInput 失败（错误码 " +
-                                     System.Runtime.InteropServices.Marshal.GetLastWin32Error() +
-                                     "），已丢弃积压");
+                                     Marshal.GetLastWin32Error() + "），已丢弃积压");
                         }
                     }
                 }
 
+                // 绝对时间推进：不累积漂移；落后太多就重新对齐，而不是"追帧"猛发
                 _nextFrameTicks += frameTicks;
                 if (_nextFrameTicks < now) _nextFrameTicks = now + frameTicks;
             }
@@ -239,11 +268,55 @@ internal sealed class ScrollAnimator : IDisposable
         finally
         {
             ReleaseTimerPrecision();
+            if (_frameTimer != IntPtr.Zero)
+            {
+                Native.CloseHandle(_frameTimer);
+                _frameTimer = IntPtr.Zero;
+            }
         }
     }
 
-    /// <summary>当前是否持有"1ms 计时精度"的请求（必须成对释放，否则会把精度永久占住）。</summary>
-    private bool _timerPrecision;
+    /// <summary>等到某个绝对时间点。返回 false 表示线程要退出了。</summary>
+    private bool WaitUntil(long targetTicks)
+    {
+        var delta = targetTicks - _clock.ElapsedTicks;
+        if (delta <= 0) return _alive;
+
+        if (_frameTimer != IntPtr.Zero && _waitHandles != null)
+        {
+            // 负值 = 相对时间，单位 100 纳秒
+            var due = -(long)Math.Max(1L, delta * 10_000_000L / Stopwatch.Frequency);
+            if (Native.SetWaitableTimer(_frameTimer, ref due, 0, IntPtr.Zero, IntPtr.Zero, false))
+            {
+                var r = Native.WaitForMultipleObjects(2, _waitHandles, false, Native.INFINITE);
+                if (r == 0xFFFFFFFF)
+                {
+                    /* WAIT_FAILED：句柄出问题（极少见）。
+                     * 千万不能在这里 return false —— 那等于把整个平滑线程安静地关掉，
+                     * 用户会觉得"平滑突然失效了，重启才好"。记一次日志，本帧退回毫秒等待。 */
+                    if (!_waitFailedLogged)
+                    {
+                        _waitFailedLogged = true;
+                        Log.Warn("WaitForMultipleObjects 失败（错误码 " + Marshal.GetLastWin32Error() +
+                                 "），本帧改用毫秒级等待");
+                    }
+                }
+                else
+                {
+                    // 定时器到点、或新输入先到 —— 都回外层重新判断时间
+                    return _alive;
+                }
+            }
+        }
+
+        // 兜底路径：毫秒级等待（这时才需要 1ms 计时精度）
+        RequestTimerPrecision();
+        var ms = (int)Math.Clamp(TicksToMs(delta), 1.0, 200.0);
+        _wake.WaitOne(ms);
+        return _alive;
+    }
+
+    /* ══════════════ 兜底路径的计时精度（成对申请/释放） ══════════════ */
 
     private void RequestTimerPrecision()
     {

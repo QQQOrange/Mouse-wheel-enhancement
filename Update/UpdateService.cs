@@ -48,7 +48,13 @@ public sealed record CheckOutcome(UpdateInfo? Info, string? Error)
 /// </summary>
 public sealed class UpdateService
 {
-    /// <summary>发布包里 exe 的固定名字（发版时用它上传资产）。</summary>
+    /// <summary>
+    /// **远端资产名**（发版时上传的文件名）。
+    ///
+    /// 刻意没有跟着本地文件名改成 <c>MouseWheelEnhancement.App.exe</c>：
+    /// v1.1.0 的客户端会按这个名字去找更新包，改名会让它们全部更新失败
+    /// （报"这个版本里没有更新包"）。本地文件名与它无关 —— 见 <see cref="StagedPath"/>。
+    /// </summary>
     public const string AssetName = "MouseWheelEnhancement.exe";
 
     private const string DefaultRepo = "QQQOrange/Mouse-wheel-enhancement";
@@ -117,9 +123,14 @@ public sealed class UpdateService
 
     public static string ExeDir => Path.GetDirectoryName(ExePath) ?? AppContext.BaseDirectory;
 
-    /// <summary>更新包落点：必须和 exe 同目录（替换时要做同目录内的两次改名）。</summary>
-    public static string StagedPath => Path.Combine(ExeDir, AssetName + ".new");
-    public static string OldPath => Path.Combine(ExeDir, AssetName + ".old");
+    /// <summary>
+    /// 更新包落点：**和当前 exe 同目录、并以当前 exe 的名字为前缀**。
+    /// 替换时要在这个目录里做两次改名，跨盘会失败；而以自己名字为前缀，
+    /// 就等于"启动器版（.App.exe）"和"旧单文件版"各自落在各自的位置上。
+    /// </summary>
+    public static string StagedPath => ExePath + ".new";
+
+    public static string OldPath => ExePath + ".old";
 
     /// <summary>程序所在目录能不能写 —— 装在 Program Files 且非管理员时不能。</summary>
     public bool CanSelfUpdate(out string reason)

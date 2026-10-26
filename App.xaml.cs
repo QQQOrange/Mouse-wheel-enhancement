@@ -143,10 +143,15 @@ public partial class App : System.Windows.Application
             var beforeBoost = Services.Engine.BoostedCount;
             var beforePass = Services.Engine.PassedCount;
             var sent = 0;
+            /* 用 Stopwatch 定绝对时间点、Sleep(0) 让出，而不是 Thread.Sleep(18)：
+             * 后者受系统计时器粒度影响（默认 15.6ms），实际间隔会在 18~31ms 之间乱跳，
+             * 于是"倍率"读数每次都不一样，这条检查就没有回归价值了。 */
+            var injectClock = System.Diagnostics.Stopwatch.StartNew();
             for (var i = 0; i < 16; i++)
             {
                 if (InputInjector.SendWheelWith(Native.WHEEL_DELTA, ForeignSignature)) sent++;
-                Thread.Sleep(18);
+                var due = 18 * (i + 1);
+                while (injectClock.ElapsedMilliseconds < due) Thread.Sleep(0);
             }
             Thread.Sleep(400);
 
@@ -164,6 +169,9 @@ public partial class App : System.Windows.Application
                 Log.Error("smoke: 注入成功但钩子没有接管 —— 链路没通");
                 code = 5;
             }
+
+            Log.Info($"smoke: 刷新率 {RefreshRateMonitor.Hz} Hz（{RefreshRateMonitor.FrameIntervalMs:0.00} ms/帧），" +
+                     $"高精度定时器={(Services.Engine.Animator.UsingHighResolutionTimer ? "可用" : "不可用（已退回毫秒等待）")}");
 
             ReportResources(sw);
 

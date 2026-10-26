@@ -85,6 +85,59 @@ internal static class Native
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+
+    /// <summary>显示器信息（含设备名，用来查那台显示器当前的刷新率）。</summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MONITORINFOEX
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szDevice;
+    }
+
+    /// <summary>
+    /// 显示模式。字段顺序与 wingdi.h 的 DEVMODEW 一致，总长 220 字节。
+    /// <c>dmDisplayFrequency</c> 就是当前模式标称的刷新率（1 = "硬件默认"，不可用）。
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DEVMODEW
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public ushort dmSpecVersion;
+        public ushort dmDriverVersion;
+        public ushort dmSize;
+        public ushort dmDriverExtra;
+        public uint dmFields;
+        public int dmPositionX;
+        public int dmPositionY;
+        public uint dmDisplayOrientation;
+        public uint dmDisplayFixedOutput;
+        public short dmColor;
+        public short dmDuplex;
+        public short dmYResolution;
+        public short dmTTOption;
+        public short dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public ushort dmLogPixels;
+        public uint dmBitsPerPel;
+        public uint dmPelsWidth;
+        public uint dmPelsHeight;
+        public uint dmDisplayFlags;
+        public uint dmDisplayFrequency;
+        public uint dmICMMethod;
+        public uint dmICMIntent;
+        public uint dmMediaType;
+        public uint dmDitherType;
+        public uint dmReserved1;
+        public uint dmReserved2;
+        public uint dmPanningWidth;
+        public uint dmPanningHeight;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct DATA_BLOB
     {
         public int cbData;
@@ -201,6 +254,47 @@ internal static class Native
 
     [DllImport("kernel32.dll")]
     public static extern IntPtr LocalFree(IntPtr hMem);
+
+    /* ══════════════ 显示器 / 刷新率 ══════════════ */
+
+    public const int ENUM_CURRENT_SETTINGS = -1;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumDisplaySettingsEx(string? lpszDeviceName, int iModeNum, ref DEVMODEW lpDevMode, uint dwFlags);
+
+    /* ══════════════ 高精度定时器（按显示器刷新率出帧） ══════════════ */
+
+    /// <summary>CreateWaitableTimerEx 的标志：高精度（Win10 1803+），精度约 0.5 ms。</summary>
+    public const uint CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x00000002;
+    public const uint TIMER_ALL_ACCESS = 0x1F0003;
+    public const uint WAIT_OBJECT_0 = 0;
+    public const uint WAIT_TIMEOUT = 258;
+    public const uint INFINITE = 0xFFFFFFFF;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateWaitableTimerEx(IntPtr lpTimerAttributes, string? lpTimerName,
+        uint dwFlags, uint dwDesiredAccess);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetWaitableTimer(IntPtr hTimer, ref long lpDueTime, int lPeriod,
+        IntPtr pfnCompletionRoutine, IntPtr lpArgToCompletionRoutine,
+        [MarshalAs(UnmanagedType.Bool)] bool fResume);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint WaitForMultipleObjects(uint nCount, IntPtr[] lpHandles,
+        [MarshalAs(UnmanagedType.Bool)] bool bWaitAll, uint dwMilliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
 
     /// <summary>进程当前的 GDI / USER 句柄数（0=GDI，1=USER）。查句柄泄漏用。</summary>
     [DllImport("user32.dll")]

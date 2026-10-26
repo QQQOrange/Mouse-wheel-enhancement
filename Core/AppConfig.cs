@@ -66,7 +66,15 @@ public sealed class SmoothConfig
 
     public SmoothScope Scope { get; set; } = SmoothScope.BoostedOnly;
 
-    /// <summary>注入帧率。120 已经很顺，再高只是多耗电。</summary>
+    /// <summary>
+    /// 注入帧率是否自动跟随显示器刷新率（默认**开**）。
+    ///
+    /// 手动选 60/90/120/144 在 165Hz、200Hz 这类屏幕上注定对不上 ——
+    /// 帧率低于刷新率会觉得一顿一顿，高于刷新率则白算白耗电。
+    /// </summary>
+    public bool AutoFps { get; set; } = true;
+
+    /// <summary>手动指定时的注入帧率（<see cref="AutoFps"/> 为 false 才生效）。</summary>
     public int TargetFps { get; set; } = 120;
 
     /// <summary>

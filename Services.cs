@@ -47,8 +47,21 @@ internal static class Services
         Store = new ConfigStore();
         Store.Changed += OnConfigChanged;
 
+        /* 帧率要跟着显示器走：先把当前刷新率读出来，再让引擎按它烘焙第一份快照。
+         * 之后刷新率一变（换分辨率、插拔电源、动态刷新率），重建快照即可 —— 
+         * 动画线程每帧都会读最新的那份。 */
+        RefreshRateMonitor.Start();
+
         Engine = new WheelEngine();
         Engine.Apply(Store.Config);
+
+        /* 订阅要放在 Engine 建好之后：这个回调会用到 Engine，
+         * 早订一毫秒就多一次 NullReference 的机会（刷新率变化正好撞在初始化窗口上）。 */
+        RefreshRateMonitor.Changed += _ =>
+        {
+            Engine.Apply(Config);
+            Notify();
+        };
         Engine.Faulted += msg =>
         {
             Log.Error("引擎异常：" + msg);
@@ -128,6 +141,7 @@ internal static class Services
         try { Store?.SaveNow(); } catch { }
         try { Store?.Dispose(); } catch { }
         try { Tray?.Dispose(); } catch { }
+        try { RefreshRateMonitor.Stop(); } catch { }
         Log.Info("==== 退出 ====");
         Log.Flush();
     }
