@@ -57,6 +57,12 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>待发量，单位是"unit × 1000"。</summary>
     private long _pendingMilli;
 
+    /// <summary>最后一次收到滚轮的时刻（滑行判定用）。</summary>
+    private long _lastInputTicks;
+
+    /// <summary>本轮滑行开始的时刻；0 = 当前不在滑行。</summary>
+    private long _glideStartTicks;
+
     /// <summary>这一段积压最晚什么时候必须发完（Stopwatch ticks）。</summary>
     private long _deadlineTicks;
 
@@ -126,6 +132,13 @@ internal sealed class ScrollAnimator : IDisposable
             deadline = now + MsToTicks(Math.Max(2.0, s.FrameIntervalMs * 2));
 
         Interlocked.Exchange(ref _deadlineTicks, deadline);
+
+        /* 记下"刚有输入"的时刻：动画线程靠它判断用户是不是已经松手。
+         * 顺便把滑行起点清零 —— 新输入意味着这一轮滑行结束了，
+         * 再滚就是"跟手"阶段，要重新按 deadline 走。 */
+        Interlocked.Exchange(ref _lastInputTicks, now);
+        Interlocked.Exchange(ref _glideStartTicks, 0);
+
         _wake.Set();
     }
 
@@ -137,19 +150,43 @@ internal sealed class ScrollAnimator : IDisposable
     }
 
     /// <summary>直接丢弃积压，一个字节都不发。</summary>
-    public void Clear() => Interlocked.Exchange(ref _pendingMilli, 0);
+    public void Clear()
+    {
+        Interlocked.Exchange(ref _pendingMilli, 0);
+        Interlocked.Exchange(ref _glideStartTicks, 0);
+    }
 
     /// <summary>测试与自检用的同步调用：绕过线程，按给定参数算一帧该发多少。</summary>
     public static int ComputeFrame(double pendingUnits, double dtMs, double remainingMs,
-        double tauMs, int unitsPerFrame, bool smooth)
+        double tauMs, int unitsPerFrame, bool smooth, bool glide = false)
     {
         if (pendingUnits == 0) return 0;
-        if (!smooth || remainingMs <= 0) return RoundUnits(pendingUnits);
+        if (!smooth) return RoundUnits(pendingUnits);
+
+        /* 截止期已过（或者本来就没有截止期）→ 一次性发完。
+         * 但**滑行期必须排除在外**：松手之后 remainingMs 几乎必然已经 ≤ 0，
+         * 走这条捷径就等于把整个惯性吃掉，滑行永远不会发生。 */
+        if (!glide && remainingMs <= 0) return RoundUnits(pendingUnits);
 
         var f = 1.0 - Math.Exp(-dtMs / Math.Max(1.0, tauMs));
         var byCurve = pendingUnits * f;
-        var byDeadline = pendingUnits * Math.Min(1.0, dtMs / Math.Max(dtMs, remainingMs));
-        var emit = Math.Max(byCurve, byDeadline);
+
+        double emit;
+        if (glide)
+        {
+            /* 滑行期：**只用**指数衰减，不再赶截止期限。
+             *
+             * remainingMs 那套的存在意义是"保证跟手"——一次输入最多拖 MaxLatencyMs。
+             * 但松手之后已经没有"跟手"这回事了：继续按 deadline 发完，表现就是
+             * 内容流畅地滚一下、然后咔一下停死，也就是用户说的"段落式的停"。
+             * 去掉这个约束，剩下的量才会像有惯性一样慢慢滑到静止。 */
+            emit = byCurve;
+        }
+        else
+        {
+            var byDeadline = pendingUnits * Math.Min(1.0, dtMs / Math.Max(dtMs, remainingMs));
+            emit = Math.Max(byCurve, byDeadline);
+        }
 
         if (Math.Abs(emit) < unitsPerFrame && Math.Abs(pendingUnits) > unitsPerFrame)
             emit = Math.Sign(pendingUnits) * unitsPerFrame;
@@ -207,6 +244,7 @@ internal sealed class ScrollAnimator : IDisposable
                     /* 没活干：先把手里的计时精度还给系统（只有兜底路径会申请），
                      * 然后无限期等下一次输入 —— 一个核都不占。 */
                     ReleaseTimerPrecision();
+                    Interlocked.Exchange(ref _glideStartTicks, 0);
                     _lastFrameTicks = now;
                     _nextFrameTicks = now;
                     _wake.WaitOne(Timeout.Infinite);
@@ -231,8 +269,25 @@ internal sealed class ScrollAnimator : IDisposable
                 var pendingUnits = pendingMilli / Milli;
                 var remainingMs = TicksToMs(Interlocked.Read(ref _deadlineTicks) - now);
 
+                /* 松手判定：超过 GlideDelayMs 没有新输入，就认为手指/滚轮停了，
+                 * 从这一刻起不再受截止期约束，按 GlideTauMs 指数衰减地滑行。
+                 * GlideMaxMs 是硬上限 —— 连甩之后积压量大，不能让内容飘半秒。 */
+                var glide = false;
+                if (s.SmoothEnabled && s.GlideTauMs > 0)
+                {
+                    var idleMs = TicksToMs(now - Interlocked.Read(ref _lastInputTicks));
+                    if (idleMs > s.GlideDelayMs)
+                    {
+                        if (Interlocked.Read(ref _glideStartTicks) == 0)
+                            Interlocked.Exchange(ref _glideStartTicks, now);
+
+                        glide = TicksToMs(now - Interlocked.Read(ref _glideStartTicks)) < s.GlideMaxMs;
+                    }
+                }
+
+                var tau = glide ? s.GlideTauMs : s.TauMs;
                 var units = ComputeFrame(pendingUnits, dtMs, remainingMs,
-                    s.TauMs, s.UnitsPerFrame, s.SmoothEnabled);
+                    tau, s.UnitsPerFrame, s.SmoothEnabled, glide);
 
                 if (units != 0)
                 {

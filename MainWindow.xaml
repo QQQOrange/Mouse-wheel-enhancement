@@ -504,6 +504,32 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
+                                        <TextBlock Text="松手后的惯性" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="滚轮停下之后，内容还会顺着原方向滑一小段再慢慢停住。0 = 松手即停（干脆，但收尾有点「段落感」）；调大尾巴更长、更接近触控板。" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="GlideValue" Grid.Column="1" Style="{StaticResource Value}"
+                                               Text="110 ms" />
+                                </Grid>
+                                <Slider x:Name="GlideSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
+                                        Minimum="0" Maximum="300" SmallChange="10" LargeChange="20"
+                                        TickFrequency="10" IsSnapToTickEnabled="True"
+                                        ValueChanged="Glide_Changed" />
+                                <!-- 两项参数打架时给一句人话：光开滑行没用，跟手期得有量留下 -->
+                                <TextBlock x:Name="GlideHint" Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                           TextWrapping="Wrap" Visibility="Collapsed"
+                                           Foreground="{StaticResource WarnBrush}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
                                         <TextBlock Text="最大延迟" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
                                                    Text="一次滚动最多拖这么久必须发完。这是体感延迟的硬上限，调大平滑更明显但会有「跟不上手」的感觉。" />

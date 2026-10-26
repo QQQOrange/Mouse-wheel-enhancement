@@ -35,6 +35,7 @@ internal static class SelfTest
             TestReversal();
             TestRounding();
             TestFrameSpreading();
+            TestGlide();
             TestFrameRateFollowsDisplay();
             TestVersionCompare();
             TestShaParse();
@@ -241,6 +242,80 @@ internal static class SelfTest
             if (d.Boosted && Math.Abs(d.OutputUnits) < 120) neverShrinks = false;
         }
         Check("加速后单次输出不少于原样一格", neverShrinks);
+    }
+
+    /// <summary>
+    /// 松手滑行：这次改动的核心 —— 停止输入后不该"咔"一下停住。
+    /// </summary>
+    private static void TestGlide()
+    {
+        Section("松手滑行（惯性）");
+
+        const double Pending = 360.0;   // 3 格
+        const double Dt = 8.0;          // 120fps
+        const double Deadline = 60.0;
+
+        // ① 跟手期：必须在截止期内发完（这是低延迟的保证）
+        //    remaining 要逐帧递减 —— 真实循环里它就是 deadline - now，
+        //    越接近截止时间，"按期限均摊"那一项压得越狠，最后会一次发完。
+        //    固定传 60 的话永远只是指数衰减，模拟不出"到期收尾"。
+        var hand = Pending;
+        var handFrames = 0;
+        var remain = Deadline;
+        while (hand > 0.5 && handFrames < 100)
+        {
+            var e = ScrollAnimator.ComputeFrame(hand, Dt, remain, 45, 30, true, glide: false);
+            if (e == 0) break;
+            if (e > hand) e = (int)hand;
+            hand -= e;
+            handFrames++;
+            remain -= Dt;
+        }
+        Check("跟手期在截止期内发完（≤9 帧 / 72ms）", handFrames <= 9, handFrames + " 帧");
+
+        // ② 滑行期：同样 360 单位，同样的 dt，应该拖得明显更久
+        var glide = Pending;
+        var glideFrames = 0;
+        var glideSent = 0.0;
+        while (glide > 0.5 && glideFrames < 300)
+        {
+            var e = ScrollAnimator.ComputeFrame(glide, Dt, Deadline, 110, 30, true, glide: true);
+            if (e == 0) break;
+            if (e > glide) e = (int)glide;
+            glide -= e;
+            glideSent += e;
+            glideFrames++;
+        }
+        Check("滑行期明显比跟手期长（>2 倍帧数）", glideFrames > handFrames * 2,
+            $"{glideFrames} vs {handFrames} 帧");
+        Check("滑行不发少也不发多（总量一单位不差）", Math.Abs(glideSent - Pending) < 0.51,
+            glideSent.ToString("0"));
+
+        // ③ 滑行期"截止期已过"不能变成一次性倾泻 —— 这是最容易写错的一处
+        var late = ScrollAnimator.ComputeFrame(360, Dt, -50, 110, 30, true, glide: true);
+        Check("滑行期不受过期截止期影响（不会一次发完）", late < 360, late + " 单位");
+
+        // ④ 关掉滑行（τ=0 走不走 glide 分支）应与跟手一致
+        var off = ScrollAnimator.ComputeFrame(360, Dt, Deadline, 45, 30, true, glide: false);
+        Check("关闭滑行时维持原来的跟手行为", off > 0);
+
+        // ⑤ 越小的滑行 τ 收得越快（单调）
+        var slow = ScrollAnimator.ComputeFrame(360, Dt, 60, 200, 30, true, glide: true);
+        var fast = ScrollAnimator.ComputeFrame(360, Dt, 60, 60, 30, true, glide: true);
+        Check("滑行 τ 越大，单帧发得越少（尾巴越长）", slow < fast, $"{slow} vs {fast}");
+
+        // ⑥ 配置项要能整格化、且默认开启
+        var c = AppConfig.Default();
+        Check("默认开启滑行（GlideTauMs > 0）", c.Smooth.GlideTauMs > 0, c.Smooth.GlideTauMs.ToString());
+        Check("默认滑行上限在合理范围", c.Smooth.GlideMaxMs >= 120 && c.Smooth.GlideMaxMs <= 800,
+            c.Smooth.GlideMaxMs.ToString());
+        c.Smooth.GlideTauMs = 999;
+        c.Smooth.GlideMaxMs = 5000;
+        c.Smooth.GlideDelayMs = 1;
+        c.Normalize();
+        Check("越界的滑行参数会被夹回", c.Smooth.GlideTauMs <= 400 && c.Smooth.GlideMaxMs <= 800 &&
+                                        c.Smooth.GlideDelayMs >= 10,
+            $"{c.Smooth.GlideTauMs}/{c.Smooth.GlideMaxMs}/{c.Smooth.GlideDelayMs}");
     }
 
     private static void TestFrameSpreading()

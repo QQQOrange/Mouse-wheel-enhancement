@@ -40,6 +40,15 @@ public sealed class RuntimeSettings
     public double MaxLatencyMs { get; init; }
     public double MaxBacklogUnits { get; init; }
 
+    /// <summary>松手后滑行的时间常数；0 = 不滑行（松手即停）。</summary>
+    public double GlideTauMs { get; init; }
+
+    /// <summary>滑行最长持续多久，超过就一次性收尾。</summary>
+    public double GlideMaxMs { get; init; }
+
+    /// <summary>停止输入多久算"松手"。</summary>
+    public double GlideDelayMs { get; init; }
+
     public bool IgnoreCtrlAlt { get; init; }
     public bool IgnoreShift { get; init; }
     public bool InvertDirection { get; init; }
@@ -112,6 +121,9 @@ public sealed class RuntimeSettings
             TauMs = c.Smooth.TailTauMs,
             MaxLatencyMs = c.Smooth.MaxLatencyMs,
             MaxBacklogUnits = c.Smooth.MaxBacklogNotches * Native.WHEEL_DELTA,
+            GlideTauMs = Math.Max(0, c.Smooth.GlideTauMs),
+            GlideMaxMs = Math.Max(60, c.Smooth.GlideMaxMs),
+            GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
             IgnoreCtrlAlt = c.Input.IgnoreCtrlAltWheel,
             IgnoreShift = c.Input.IgnoreShiftWheel,
             InvertDirection = c.Input.InvertDirection,

@@ -91,6 +91,40 @@ public sealed class SmoothConfig
 
     /// <summary>允许积压多少格。防止连续甩动时积雪越滚越远。</summary>
     public double MaxBacklogNotches { get; set; } = 5.0;
+
+    /// <summary>
+    /// 松手后继续滑行的时间常数（毫秒）。**0 = 关闭惯性，松手即停。**
+
+    /// <para>
+    /// 前面那几个参数只解决"滚动**过程中**平滑"：一次输入被摊成若干帧，
+    /// 但仍在 <see cref="MaxLatencyMs"/> 内发完，发完就静止 —— 手感是
+    /// "流畅地滚一下，然后咔一下停住"，也就是段落式。
+    /// </para>
+    /// <para>
+    /// 这一项管的是**结尾**：滚轮停止输入超过 <see cref="GlideDelayMs"/> 之后，
+    /// 剩下的量不再受截止期约束，改为按这个时间常数指数衰减地继续发。
+    /// 110ms 大约是"松手后还滑小半格"，200ms 以上会明显发飘。
+    /// </para>
+    /// </summary>
+    public int GlideTauMs { get; set; } = 110;
+
+    /// <summary>
+    /// 滑行最多持续多少毫秒，超过就一次性收尾。
+    /// <para>
+    /// 不加这个上限的话，快速连甩后积压量大（最多 <see cref="MaxBacklogNotches"/> 格），
+    /// 按指数衰减能拖到半秒以上 —— 用户手早就停了，内容还在往下飘，很怪。
+    /// </para>
+    /// </summary>
+    public int GlideMaxMs { get; set; } = 280;
+
+    /// <summary>
+    /// 停止输入多少毫秒算"松手"、可以开始滑行。
+    /// <para>
+    /// 太小（比如 10ms）会把同一次滚动的两格之间也判成松手，尾巴一顿一顿；
+    /// 太大则松手后要愣一下才开始滑，像卡了一下。26ms 大约是两帧。
+    /// </para>
+    /// </summary>
+    public int GlideDelayMs { get; set; } = 26;
 }
 
 public sealed class FilterConfig
@@ -227,6 +261,9 @@ public sealed class AppConfig
         Smooth.TailTauMs = Whole(Clamp(Smooth.TailTauMs, 5, 200));
         Smooth.MaxLatencyMs = Whole(Clamp(Smooth.MaxLatencyMs, 10, 240));
         Smooth.MaxBacklogNotches = Whole(Clamp(Smooth.MaxBacklogNotches, 1, 20));
+        Smooth.GlideTauMs = Whole(Clamp(Smooth.GlideTauMs, 0, 400));
+        Smooth.GlideMaxMs = Whole(Clamp(Smooth.GlideMaxMs, 60, 800));
+        Smooth.GlideDelayMs = Whole(Clamp(Smooth.GlideDelayMs, 10, 150));
 
         if (Filter.Apps == null) Filter.Apps = new();
         Filter.Apps = Filter.Apps
