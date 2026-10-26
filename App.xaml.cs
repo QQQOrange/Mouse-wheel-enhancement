@@ -254,7 +254,10 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            sb.AppendLine("异常：" + ex.GetType().Name + "：" + ex.Message);
+            // 把整条异常链打出来：真正的原因十有八九在最里面那层
+            sb.AppendLine("失败：");
+            for (var e2 = ex; e2 != null; e2 = e2.InnerException)
+                sb.AppendLine($"  {e2.GetType().Name}: {e2.Message}");
             return WriteCliResult("checkupdate.txt", sb.ToString(), 2);
         }
         return WriteCliResult("checkupdate.txt", sb.ToString(), 0);

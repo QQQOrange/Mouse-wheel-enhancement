@@ -90,7 +90,10 @@ public sealed class UpdateService
          * 见 FetchIntoAsync 里的 idle 超时。 */
         var dl = new SocketsHttpHandler
         {
-            ConnectTimeout = TimeSpan.FromSeconds(10),
+            /* 20 秒而不是 10 秒：发布资产会 302 到 release-assets.githubusercontent.com，
+             * 走代理时首次连接（代理侧要重新解析/建隧道）经常超过 10 秒，直接判失败
+             * 会让"检查更新一切正常、点下载就报错"这种最难受的状态反复出现。 */
+            ConnectTimeout = TimeSpan.FromSeconds(20),
             AutomaticDecompression = DecompressionMethods.None, // Range + 解压混在一起容易算错字节
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
         };
@@ -581,6 +584,14 @@ public sealed class UpdateService
         try
         {
             resp = await _download.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            /* 这里最容易踩的坑：连接阶段超时抛的是 TaskCanceledException
+             * （"The operation was canceled."），用户完全看不懂 —— 而这句
+             * 话以前会原样出现在界面上。翻成"连不上下载服务器"。 */
+            throw new DlFailure($"连接下载服务器超时（{new Uri(url).Host}）—— " +
+                                "网络或代理不允许访问这个域名", keepPartial: have > 0);
         }
         catch (HttpRequestException e)
         {

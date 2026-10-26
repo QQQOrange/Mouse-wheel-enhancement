@@ -525,6 +525,7 @@ v1.0.0 是「自包含单文件」发布：把整个 .NET 运行时和 WPF/WinFo
 | 8 | 空闲时仍持有 1 ms 计时精度 | 钩子线程和动画线程都常年 `TimeBeginPeriod(1)` | 整机更难进入低功耗计时状态，笔记本更费电 | 钩子线程不需要，删掉；动画线程改为**有活才申请、发完立刻释放** |
 | 9 | 无用代码与未用互操作声明 | 迭代过程中留下的死代码 | 增加阅读与维护成本 | 删掉未使用的 P/Invoke（`GetClassName`/`ShowWindow`/`SetForegroundWindow` 等）、`Log.Tail`、未使用的计数器 |
 | 10 | 没有第二条退出路径 | 只有托盘菜单能退出；托盘异常时用户只能结束进程 | 极端情况下的可用性缺陷 | 「关于」页新增「退出程序」按钮 |
+| 11 | 走代理时"检查更新正常、点下载就失败"，且报错是 `The operation was canceled` | 下载连接超时设 10 s，而发布资产会 302 到 `release-assets.githubusercontent.com`，代理侧首次建隧道经常超过 10 s；连接阶段超时抛的是 `TaskCanceledException`，而代码只 catch 了 `HttpRequestException` | 用户完全无法自助排查（报错里没有一个字提到网络或域名） | 连接超时放宽到 20 s；补 catch `OperationCanceledException` 并翻成"连接下载服务器超时（域名）——网络或代理不允许访问"；`--checkupdate` 打印完整异常链 |
 
 ### 12.6 评估过但不做的
 
