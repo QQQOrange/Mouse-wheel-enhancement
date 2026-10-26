@@ -22,7 +22,16 @@ namespace MouseWheelEnhancement.Launcher
     internal static class Program
     {
         internal const string ProductName = "鼠标滚轮增强";
-        internal const string AppExeName = "MouseWheelEnhancement.App.exe";
+        /// <summary>
+        /// 主程序的位置。
+        ///
+        /// <para>
+        /// 刻意放在 <c>app\</c> 子目录里，而不是和启动器并排：两个 exe 摆在同一个文件夹，
+        /// 用户会以为装了两份软件（"哪个才是真的？另一个能删吗？"）。
+        /// 挪进子目录之后，文件夹里只剩**一个 exe 图标**，主程序在 app\ 里安静地待着。
+        /// </para>
+        /// </summary>
+        internal const string AppExeName = @"app\MouseWheelEnhancement.App.exe";
         internal const string DownloadUrl = "https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0";
 
         private const string DataFolderName = "Mouse wheel enhancement data";
@@ -71,8 +80,9 @@ namespace MouseWheelEnhancement.Launcher
             {
                 Log("找不到主程序：" + exe);
                 MessageBox.Show(
-                    "安装不完整：这个文件夹里没有 " + AppExeName + "。\r\n\r\n" +
-                    "请把压缩包里的所有文件都解压到同一个文件夹再运行。",
+                    "安装不完整：缺少 app 文件夹里的主程序。\r\n\r\n" +
+                    "请把压缩包**整包**解压到同一个文件夹（app 子文件夹要一起解压出来），" +
+                    "再运行本程序。",
                     ProductName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return 4;
             }
@@ -81,9 +91,23 @@ namespace MouseWheelEnhancement.Launcher
             {
                 var psi = new ProcessStartInfo(exe)
                 {
-                    WorkingDirectory = dir,
+                    WorkingDirectory = Path.GetDirectoryName(exe) ?? dir,
                     UseShellExecute = false,
                 };
+
+                /* 把数据目录钉在**安装目录**下，而不是主程序所在的 app\。
+                 *
+                 * 主程序自己会算"数据放我旁边"，那在 app\ 里就变成
+                 * app\Mouse wheel enhancement data\ —— 用户会看到设置跑到子文件夹里，
+                 * 而且升级时容易被当成垃圾清掉。这里用环境变量明确指过去，
+                 * 保证数据始终在用户放软件的那个文件夹里。
+                 *
+                 * ⚠ 必须用 Environment.SetEnvironmentVariable 而不是
+                 * psi.EnvironmentVariables["..."]：后者一被访问就会把当前环境复制进一个
+                 * **区分大小写**的字典，而代理软件经常同时留下 HTTPS_PROXY 和 https_proxy
+                 * —— 于是抛"已添加项。字典中的关键字…"，主程序根本起不来（实测踩到）。
+                 * 设到当前进程上让子进程继承，就没有这个问题。 */
+                Environment.SetEnvironmentVariable("MWE_DATA_DIR", Path.Combine(dir, DataFolderName));
                 var quoted = QuoteArgs(args);
                 if (quoted.Length > 0) psi.Arguments = quoted;
 

@@ -51,6 +51,25 @@ public static class AppPaths
             return d;
         }
 
+        /* 主程序被放在 <安装目录>\app\ 里时，数据目录仍然应该在**安装目录**下。
+         * 正常路径走不到这里（启动器已经用 MWE_DATA_DIR 指过去了），
+         * 但用户完全可能直接双击 app\ 里的 exe —— 那时不能让他的设置"凭空消失"。
+         * 判据：父目录里已经有数据文件夹，或者有启动器。 */
+        var self = ExeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var parent = Directory.GetParent(self)?.FullName;
+        if (!string.IsNullOrEmpty(parent))
+        {
+            var upData = Path.Combine(parent, DataFolderName);
+            if (Directory.Exists(upData) || File.Exists(Path.Combine(parent, "MouseWheelEnhancement.exe")))
+            {
+                if (TryEnsure(upData))
+                {
+                    IsFallback = false;
+                    return upData;
+                }
+            }
+        }
+
         var local = Path.Combine(ExeDir, DataFolderName);
         if (TryEnsure(local))
         {

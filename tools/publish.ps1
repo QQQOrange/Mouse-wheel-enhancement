@@ -6,9 +6,9 @@
 #   tools\publish.ps1 -OutDir "D:\somewhere"   # 换安装目录
 #   tools\publish.ps1 -NoInstall               # 只发布，不覆盖本机那份
 #
-# 产物是**两个**文件：
-#   MouseWheelEnhancement.exe      启动器（.NET Framework 4.8，约 23 KB）—— 检查 .NET 10，缺了弹窗给下载按钮
-#   MouseWheelEnhancement.App.exe  主程序（.NET 10 WPF）
+# 产物结构（用户在文件夹里只看到**一个** exe）：
+#   MouseWheelEnhancement.exe           启动器（.NET Framework 4.8，37 KB）—— 检查 .NET 10，缺了弹窗给下载按钮
+#   app\MouseWheelEnhancement.App.exe   主程序（.NET 10 WPF，约 435 KB）
 # 另外打一个 zip，便于整包分发。
 #
 # 为什么写成脚本而不是让人记命令：
@@ -46,12 +46,16 @@ if ($LASTEXITCODE -ne 0) { throw "发布失败（dotnet publish 退出码 $LASTE
 $app = Join-Path $stage "MouseWheelEnhancement.App.exe"
 if (-not (Test-Path $app)) { throw "没找到主程序产物：$app" }
 
-# 把两个文件凑成一个安装包目录
+# 安装包结构：一个 exe + 一个 app 子目录
+#   MouseWheelEnhancement.exe       启动器（用户双击的就是它）
+#   app\MouseWheelEnhancement.App.exe 主程序
+# 之所以不把两个 exe 并排放：用户会以为装了两份软件。
 $pkg = Join-Path $root "bin\package"
 Remove-Item $pkg -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $pkg "app") | Out-Null
 Copy-Item $launcher (Join-Path $pkg "MouseWheelEnhancement.exe") -Force
-Copy-Item $app (Join-Path $pkg "MouseWheelEnhancement.App.exe") -Force
+Copy-Item $app (Join-Path $pkg "app\MouseWheelEnhancement.App.exe") -Force
 
 $zip = Join-Path $root "bin\MouseWheelEnhancement-win-x64.zip"
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
@@ -84,9 +88,17 @@ Get-Process -Name "MouseWheelEnhancement*" -ErrorAction SilentlyContinue | ForEa
     $_.WaitForExit(3000) | Out-Null
 }
 
+# 清掉旧布局：v1.2.x / v1.3.0 早期是把 .App.exe 并排放在根目录的
+$legacy = Join-Path $OutDir "MouseWheelEnhancement.App.exe"
+if (Test-Path $legacy) {
+    Remove-Item $legacy -Force
+    Write-Host "    清理旧布局：根目录下的 MouseWheelEnhancement.App.exe" -ForegroundColor Yellow
+}
+
+New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "app") | Out-Null
 Copy-Item (Join-Path $pkg "MouseWheelEnhancement.exe") (Join-Path $OutDir "MouseWheelEnhancement.exe") -Force
-Copy-Item (Join-Path $pkg "MouseWheelEnhancement.App.exe") (Join-Path $OutDir "MouseWheelEnhancement.App.exe") -Force
-Write-Host "    已安装到：$OutDir" -ForegroundColor Green
+Copy-Item (Join-Path $pkg "app\MouseWheelEnhancement.App.exe") (Join-Path $OutDir "app\MouseWheelEnhancement.App.exe") -Force
+Write-Host "    已安装到：$OutDir（1 个 exe + app\ 子目录）" -ForegroundColor Green
 
 Write-Host "==> 自检" -ForegroundColor Cyan
 & (Join-Path $OutDir "MouseWheelEnhancement.exe") --dialogtest | Out-Null
@@ -94,7 +106,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "    启动器自检失败！看 $(Join-Path $OutDir 'Mouse wheel enhancement data\launcher-selftest.txt')" -ForegroundColor Red
     exit $LASTEXITCODE
 }
-& (Join-Path $OutDir "MouseWheelEnhancement.App.exe") --selftest | Out-Null
+& (Join-Path $OutDir "app\MouseWheelEnhancement.App.exe") --selftest | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "    主程序自检失败！看 $(Join-Path $OutDir 'Mouse wheel enhancement data\selftest.txt')" -ForegroundColor Red
     exit $LASTEXITCODE
