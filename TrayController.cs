@@ -66,7 +66,17 @@ internal sealed class TrayController : IDisposable
             ContextMenuStrip = menu,
             Text = Tooltip(),
         };
+        /* 打开设置：双击为主，单击也认。
+         *
+         * 单击也绑上不是偷懒 —— NotifyIcon.DoubleClick 依赖 Shell 的两次单击间隔判定，
+         * 在高 DPI / 远程桌面 / 某些触控板驱动下经常**根本不触发**，用户看到的就是
+         * "点了没反应"。而"点托盘图标把窗口叫出来"是这个软件最常用的入口，
+         * 宁可多绑一个幂等的单击，也不能让它偶尔失灵。 */
         _icon.DoubleClick += (_, _) => Services.ShowWindow();
+        _icon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) Services.ShowWindow();
+        };
 
         Services.StateChanged += RefreshVisual;
     }

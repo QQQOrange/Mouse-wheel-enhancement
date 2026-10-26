@@ -869,4 +869,60 @@ MouseWheelEnhancement.App.exe --taskcheck --delete  # 真的删除（需管理�
 
 ---
 
+## 17. 一个 exe：把主程序嵌进启动器（v1.3.0）
+
+### 17.1 被问到第三次的问题
+
+"为什么有两个软件？37 KB 那个是干嘛的？能删吗？"
+
+功能上两个文件都是必需的（37 KB 负责"缺 .NET 时弹窗"，435 KB 才是程序本体），
+但**用户看到两个 exe 就以为装了两份**，然后纠结该点哪个、删掉会不会坏。
+这不是用户的问题，是交付形态的问题。
+
+### 17.2 做法
+
+```
+MouseWheelEnhancement.exe   ← 唯一交付物（约 0.47 MB）
+  ├ 外壳：.NET Framework 4.8（Win10/11 内置，零安装）
+  ├ 职责一：探测 .NET 10 桌面运行时，缺了弹窗 + 打开官方下载页
+  ├ 职责二：把内嵌的主程序释放到 %LOCALAPPDATA%\MouseWheelEnhancement\app\<版本>\ 再启动
+  └ 内嵌资源：MouseWheelEnhancement.App.exe（.NET 10 WPF，435 KB）
+```
+
+构建顺序不能反：**先发布主程序，再把它的产物当 EmbeddedResource 编进启动器**。
+`publish.ps1` 里就是这两步，版本号从主程序的 FileVersion 传给启动器，保证两边一致。
+
+### 17.3 三个必须处理好的细节
+
+| 细节 | 处理 |
+|---|---|
+| 自动更新后版本不能被打回去 | 释放前比较版本：缓存里的主程序 **≥** 启动器自带的就直接用。主程序自己更新过（1.3.1），启动器（1.3.0）不会再覆盖回去 |
+| 正在运行的 exe 不能覆盖 | 缓存按**版本号分目录**；同目录要覆盖时先改名再放新的（Windows 允许改名正在运行的 exe） |
+| 数据目录不能跟着跑到缓存里 | 启动器用 `MWE_DATA_DIR` 把数据钉在**安装目录**下；主程序另有兜底：从缓存目录直接双击时，会向上找父目录的数据文件夹 |
+
+踩到的坑：最初用 `psi.EnvironmentVariables["MWE_DATA_DIR"] = ...` 设这个变量，
+一访问就会把当前环境复制进一个**区分大小写**的字典，而代理软件同时留了
+`HTTPS_PROXY` 和 `https_proxy` → 抛"已添加项。字典中的关键字…"，主程序根本起不来。
+改成 `Environment.SetEnvironmentVariable` 设到当前进程，子进程继承。
+
+### 17.4 验证
+
+```
+安装目录：D://software//myself 里只有一个 MouseWheelEnhancement.exe（483,840 B）
+释放缓存：%LOCALAPPDATA%\MouseWheelEnhancement\app\1.3.0\MouseWheelEnhancement.App.exe
+自检    ：通过启动器转发 --selftest → 107 项全过（走的就是「释放→启动」真实链路）
+弹窗    ：dotnet 根指到空目录 → 日志 Missing + 窗口出现 + 关闭退出码 2
+```
+
+### 17.5 托盘图标的打开方式
+
+设置窗口的入口有三条，都要能用：托盘菜单「打开设置」、**双击托盘图标**、以及**单击**。
+
+单击也绑是因为 `NotifyIcon.DoubleClick` 依赖 Shell 的两次单击间隔判定，
+在高 DPI / 远程桌面 / 某些触控板驱动下经常根本不触发 —— 用户看到的就是"点了没反应"。
+而"点托盘图标把窗口叫出来"是这个软件最常用的入口，多绑一个幂等的单击比让它偶尔失灵划算。
+
+
+---
+
 MIT License · © 2026 QQQOrange

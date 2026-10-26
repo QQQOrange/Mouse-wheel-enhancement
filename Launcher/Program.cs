@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Reflection;
 using System.IO;
 using System.Collections.Generic;
 using System.Text;
@@ -23,15 +24,16 @@ namespace MouseWheelEnhancement.Launcher
     {
         internal const string ProductName = "鼠标滚轮增强";
         /// <summary>
-        /// 主程序的位置。
+        /// 主程序的资源名，也是释放到缓存时的文件名。
         ///
         /// <para>
-        /// 刻意放在 <c>app\</c> 子目录里，而不是和启动器并排：两个 exe 摆在同一个文件夹，
-        /// 用户会以为装了两份软件（"哪个才是真的？另一个能删吗？"）。
-        /// 挪进子目录之后，文件夹里只剩**一个 exe 图标**，主程序在 app\ 里安静地待着。
+        /// 主程序**不是**和启动器并排放的独立文件，而是作为嵌入资源打进这个 exe 里，
+        /// 运行时释放到 %LOCALAPPDATA%\MouseWheelEnhancement\app\&lt;版本&gt;\ 再启动。
+        /// 这样用户看到的、能拷走的、能删的，都只有一个 exe。
         /// </para>
         /// </summary>
-        internal const string AppExeName = @"app\MouseWheelEnhancement.App.exe";
+        internal const string AppExeName = "MouseWheelEnhancement.App.exe";
+
         internal const string DownloadUrl = "https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0";
 
         private const string DataFolderName = "Mouse wheel enhancement data";
@@ -74,16 +76,19 @@ namespace MouseWheelEnhancement.Launcher
         private static int Launch(string[] args)
         {
             var dir = BaseDir();
-            var exe = Path.Combine(dir, AppExeName);
 
-            if (!File.Exists(exe))
+            string exe;
+            try
             {
-                Log("找不到主程序：" + exe);
+                exe = EnsureAppExtracted();
+            }
+            catch (Exception ex0)
+            {
+                Log("释放主程序失败：" + ex0);
                 MessageBox.Show(
-                    "安装不完整：缺少 app 文件夹里的主程序。\r\n\r\n" +
-                    "请把压缩包**整包**解压到同一个文件夹（app 子文件夹要一起解压出来），" +
-                    "再运行本程序。",
-                    ProductName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "没能把主程序释放出来：\r\n\r\n" + ex0.Message +
+                    "\r\n\r\n如果反复出现，请重新下载完整的安装包。",
+                    ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 4;
             }
 
@@ -233,6 +238,97 @@ namespace MouseWheelEnhancement.Launcher
             foreach (var a in args)
                 if (string.Equals(a, name, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
+        }
+
+        /// <summary>
+        /// 把内嵌的主程序释放到本地缓存，返回可执行文件的完整路径。
+        ///
+        /// <para>
+        /// 缓存位置：<c>%LOCALAPPDATA%\MouseWheelEnhancement\app\&lt;版本&gt;\</c>。
+        /// 用**版本号做子目录**有两个原因：
+        /// </para>
+        /// <list type="number">
+        ///   <item>自动更新时主程序会替换掉正在用的那个文件，跟旧版本换个目录就永远不会
+        ///         "删不掉正在运行的文件"；</item>
+        ///   <item>换新安装包时目录也跟着换，旧的那份直接被丢掉，不会用到混合状态。</item>
+        /// </list>
+        ///
+        /// <para>
+        /// 版本比较是刻意的：如果缓存里的主程序**比启动器自带的还新**（说明它自己更新过），
+        /// 就不要再覆盖回去 —— 否则每次启动都会把用户刚更新好的版本打回旧版。
+        /// </para>
+        /// </summary>
+        private static string EnsureAppExtracted()
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var myVer = asm.GetName().Version;
+
+            var root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MouseWheelEnhancement", "app", myVer.ToString(3));
+            var exe = Path.Combine(root, AppExeName);
+
+            if (File.Exists(exe))
+            {
+                var cached = ReadFileVersion(exe);
+                if (cached != null && cached >= myVer) return exe;
+            }
+
+            Directory.CreateDirectory(root);
+
+            var tmp = exe + ".tmp";
+            using (var src = asm.GetManifestResourceStream(AppExeName))
+            {
+                if (src == null)
+                    throw new InvalidOperationException("这个 exe 里没有内嵌的主程序（打包不完整）。");
+
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                    src.CopyTo(fs);
+            }
+
+            try
+            {
+                File.Copy(tmp, exe, true);
+                File.Delete(tmp);
+            }
+            catch (IOException)
+            {
+                /* 目标正在被运行中的实例占用。Windows 不允许覆盖正在运行的 exe，
+                 * 但允许**改名** —— 把它挪开再放新的。 */
+                var old = exe + ".old-" + DateTime.Now.Ticks;
+                File.Move(exe, old);
+                File.Move(tmp, exe);
+                try { File.Delete(old); } catch { /* 还占着，下次再说 */ }
+            }
+
+            CleanOldVersions(Path.GetDirectoryName(root), myVer.ToString(3));
+            return exe;
+        }
+
+        /// <summary>读一个 exe 的文件版本（失败返回 null）。</summary>
+        private static Version ReadFileVersion(string path)
+        {
+            try
+            {
+                var text = FileVersionInfo.GetVersionInfo(path).FileVersion;
+                Version v;
+                return Version.TryParse(text, out v) ? v : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>清掉缓存里旧版本的目录（正在使用的删不掉，忽略即可）。</summary>
+        private static void CleanOldVersions(string appRoot, string keep)
+        {
+            try
+            {
+                foreach (var d in Directory.GetDirectories(appRoot))
+                {
+                    if (string.Equals(Path.GetFileName(d), keep, StringComparison.OrdinalIgnoreCase)) continue;
+                    try { Directory.Delete(d, true); } catch { }
+                }
+            }
+            catch { }
         }
 
         private static string BaseDir()

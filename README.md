@@ -2,7 +2,7 @@
 
 > 普通滚动一个字都不改，只在**快速拨动滚轮**时按可调倍率加速；可选平滑推进；可按应用启用/禁用。
 
-Windows 桌面小工具 · **一个 exe 0.46 MB（含 app 子目录）** · 无驱动 · 无后台服务 · 数据就在软件自己的文件夹里
+Windows 桌面小工具 · **就一个 exe，0.47 MB** · 无驱动 · 无后台服务 · 数据就在软件自己的文件夹里
 
 - 中文名：**鼠标滚轮增强**
 - 英文名：**Mouse wheel enhancement**
@@ -71,21 +71,23 @@ tools\publish.ps1                  # 框架依赖，两个文件共约 0.46 MB�
 tools\publish.ps1 -SelfContained   # 自包含，约 67 MB（目标机器没装 .NET 时用）
 ```
 
-产物结构（**文件夹里只有一个 exe 图标**）：
+产物就是**一个 exe**（约 0.47 MB）：
 
 ```
-MouseWheelEnhancement.exe            37 KB   启动器 —— 双击的就是它
-app\MouseWheelEnhancement.App.exe    435 KB  主程序（.NET 10 WPF）
-Mouse wheel enhancement data\        你的设置和日志
+MouseWheelEnhancement.exe          双击它就完事
+Mouse wheel enhancement data\      你的设置和日志（第一次运行后生成）
 ```
+
+主程序（.NET 10 WPF）作为**嵌入资源**打在这个 exe 里，运行时自动释放到
+`%LOCALAPPDATA%\MouseWheelEnhancement\app\<版本>\` 再启动。用户看到的、
+能拷走的、能删的，都只有一个文件。
+
+> **为什么要藏一个主程序在里面**：主程序是框架依赖的 .NET 10 应用，缺运行时时
+> .NET 的 apphost 会在加载我们任何一行代码之前就失败 —— 所以"缺环境时弹窗告诉用户去装"
+> 必须有一个不依赖 .NET 10 的进程先跑起来（这个 exe 的外壳是 .NET Framework 4.8，
+> Win10/11 内置）。把主程序嵌进去，就既能弹窗、又只需要一个文件。
 
 打包产物 `MouseWheelEnhancement-win-x64.zip` 里就是上面这个目录结构，整包解压即可。
-
-> **为什么不是一个单 exe**：主程序是框架依赖的 .NET 10 应用，缺运行时时 .NET 的 apphost
-> 会在加载我们任何一行代码之前就失败 —— 所以"缺环境时弹窗告诉用户去装"必须有一个
-> 不依赖 .NET 10 的进程先跑起来，那就是这 37 KB 的启动器（.NET Framework 4.8，Win10/11 内置）。
->
-> **为什么主程序藏在 app 子目录**：两个 exe 并排放，会让人以为装了两份软件。
 
 > 编译启动器需要 .NET Framework 4.8 参考程序集（装了 Visual Studio 的机器都有）。
 
