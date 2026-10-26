@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>MouseWheelEnhancement</AssemblyName>
+    <RootNamespace>MouseWheelEnhancement</RootNamespace>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Product>鼠标滚轮增强</Product>
+    <AssemblyTitle>鼠标滚轮增强</AssemblyTitle>
+    <Company>QQQOrange</Company>
+    <Description>保持普通滚动体验不变，只增强快速滚动的鼠标滚轮工具</Description>
+    <Copyright>© 2026 QQQOrange</Copyright>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <!-- 中文界面，不生成语言资源卫星包 -->
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- WinForms 会抱怨清单里写了 DPI；WPF 必须写在清单里，这里忽略该建议 -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+  </PropertyGroup>
+
+  <!-- 单文件发布时把 WPF 依赖打进一个 exe（另见 README 的发布命令） -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <!--
+    WPF + WinForms 双栈项目里，WindowsDesktop SDK 默认会把 System.Drawing 和
+    System.Windows.Forms 塞进隐式 using，于是 Brush / MessageBox / Application
+    在 WPF 文件里全部变成"引用不明确"，而 System.IO 反而不在里面。
+    这里把这两个全局 using 拿掉（TrayController 自己显式 using），
+    再把真正到处要用的命名空间补回来。
+  -->
+  <ItemGroup>
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+    <Using Include="System.Collections.ObjectModel" />
+  </ItemGroup>
+
+</Project>

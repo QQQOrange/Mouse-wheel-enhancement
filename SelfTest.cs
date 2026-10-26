@@ -1,0 +1,441 @@
+using System.Text;
+using System.Text.Json;
+using MouseWheelEnhancement.Core;
+using MouseWheelEnhancement.Update;
+
+namespace MouseWheelEnhancement;
+
+/// <summary>
+/// `--selftest`：把纯逻辑（速度曲线、平滑摊帧、版本比较、令牌清洗、名单匹配）
+/// 跑一遍断言。
+///
+/// 这些东西的共同点是**没法靠肉眼验**：曲线差 5%、摊帧少发一格、版本号比较
+/// 用了字符串序，界面上都看不出来，只有用户滚起来觉得"哪里怪怪的"。
+/// 所以把它们钉成断言，改完随手跑一次就知道有没有踩坏。
+/// 不依赖鼠标、窗口、网络，任何机器上都能跑。
+/// </summary>
+internal static class SelfTest
+{
+    private static readonly StringBuilder Report = new();
+    private static int _pass;
+    private static int _fail;
+
+    public static int Run()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Mouse wheel enhancement 自检  v{Log.Version}");
+        sb.AppendLine($"时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine(new string('-', 64));
+
+        try
+        {
+            TestBoostCurve();
+            TestVelocityTracking();
+            TestPrecisionInput();
+            TestReversal();
+            TestRounding();
+            TestFrameSpreading();
+            TestVersionCompare();
+            TestShaParse();
+            TestTokenSanitize();
+            TestFilter();
+            TestRepoNormalize();
+            TestConfigRoundTrip();
+        }
+        catch (Exception ex)
+        {
+            _fail++;
+            sb.AppendLine($"✗ 自检本身抛异常：{ex}");
+        }
+
+        sb.AppendLine(new string('-', 64));
+        sb.AppendLine($"通过 {_pass} 项，失败 {_fail} 项 —— {(_fail == 0 ? "全部通过" : "有失败项")}");
+
+        var text = sb.ToString() + Environment.NewLine + Report;
+        var outPath = Path.Combine(AppPaths.DataDir, "selftest.txt");
+        try { File.WriteAllText(outPath, text, new UTF8Encoding(false)); } catch { }
+
+        // 从终端启动时把结果打回终端（WinExe 没有自己的控制台，要借父进程的）
+        try
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            Console.Out.Write(text);
+            Console.Out.Write($"\n结果已写入：{outPath}\n");
+            Console.Out.Flush();
+        }
+        catch { }
+
+        return _fail == 0 ? 0 : 1;
+    }
+
+    /* ══════════════ 断言工具 ══════════════ */
+
+    private static void Check(string name, bool ok, string? detail = null)
+    {
+        if (ok)
+        {
+            _pass++;
+            Report.AppendLine($"  ✓ {name}");
+        }
+        else
+        {
+            _fail++;
+            Report.AppendLine($"  ✗ {name}{(detail == null ? "" : "  ← " + detail)}");
+        }
+    }
+
+    private static void Near(string name, double actual, double expected, double tol = 0.001)
+        => Check(name, Math.Abs(actual - expected) <= tol, $"实际 {actual:0.####}，期望 {expected:0.####}");
+
+    private static void Section(string title) => Report.AppendLine($"\n[{title}]");
+
+    /* ══════════════ 曲线 ══════════════ */
+
+    private static void TestBoostCurve()
+    {
+        Section("倍率曲线");
+        var cfg = AppConfig.Default().Boost;
+
+        Near("阈值以下正好 1.0×", WheelVelocityTracker.MultiplierFor(0, cfg), 1.0);
+        Near("阈值处正好 1.0×（无跳变）", WheelVelocityTracker.MultiplierFor(cfg.FastThresholdPerSec, cfg), 1.0);
+        Near("饱和点达到上限", WheelVelocityTracker.MultiplierFor(cfg.SaturationPerSec, cfg), cfg.MaxMultiplier);
+        Near("超过饱和点仍是上限（不无限放大）",
+            WheelVelocityTracker.MultiplierFor(500, cfg), cfg.MaxMultiplier);
+
+        // 单调不减，且没有跳变
+        var prev = WheelVelocityTracker.MultiplierFor(0, cfg);
+        var mono = true;
+        var smooth = true;
+        for (var r = 0.0; r <= 60; r += 0.5)
+        {
+            var m = WheelVelocityTracker.MultiplierFor(r, cfg);
+            if (m < prev - 1e-9) mono = false;
+            if (m - prev > 0.12) smooth = false; // 0.5 格/秒的步长不该带来超过 12% 的跳变
+            prev = m;
+        }
+        Check("倍率随速度单调不减", mono);
+        Check("曲线无台阶（渐变）", smooth);
+
+        // 默认值本身要合理：阈值 10 格/秒、上限 3 倍
+        Near("默认阈值 10 格/秒", cfg.FastThresholdPerSec, 10);
+        Near("默认上限 3.0×", cfg.MaxMultiplier, 3.0);
+    }
+
+    private static void TestVelocityTracking()
+    {
+        Section("速度判定");
+        var cfg = AppConfig.Default().Boost;
+        var t = new WheelVelocityTracker();
+        var now = 1000L;
+
+        // 慢滚：每 200ms 一格 = 5 格/秒 → 必须原样放行
+        BoostDecision d = default;
+        var slowAllNative = true;
+        for (var i = 0; i < 6; i++)
+        {
+            d = t.Sample(120, now, cfg, false, false);
+            if (d.Boosted || d.OutputUnits != 120) slowAllNative = false;
+            now += 200;
+        }
+        Check("慢滚一律不接管、输出 = 原样一格", slowAllNative);
+
+        // 快滚：每 20ms 一格 = 50 格/秒 → 加速到上限
+        t.Reset();
+        now = 5000;
+        t.Sample(120, now, cfg, false, false);
+        for (var i = 0; i < 12; i++)
+        {
+            now += 20;
+            d = t.Sample(120, now, cfg, false, false);
+        }
+        Check("快滚会接管", d.Boosted);
+        Near("快滚倍率到上限", d.Multiplier, cfg.MaxMultiplier, 0.02);
+        Near("输出 = 一格 × 倍率", d.OutputUnits, 360, 2);
+
+        // 方向反转（负 delta 用绝对值对称）
+        t.Reset();
+        now = 9000;
+        t.Sample(-120, now, cfg, false, false);
+        for (var i = 0; i < 10; i++) { now += 20; d = t.Sample(-120, now, cfg, false, false); }
+        Check("反向滚动同样能加速", d.Boosted && d.OutputUnits < 0, $"out={d.OutputUnits}");
+    }
+
+    private static void TestPrecisionInput()
+    {
+        Section("高精度输入（触控板 / 自由滚轮）");
+        var cfg = AppConfig.Default().Boost;
+        var t = new WheelVelocityTracker();
+        var now = 0L;
+        var allNative = true;
+        BoostDecision d = default;
+
+        // 触控板：每 4ms 一个 15 单位的 delta（频率极高，但绝不能当成"快滚"）
+        for (var i = 0; i < 40; i++)
+        {
+            d = t.Sample(15, now, cfg, false, false);
+            if (d.Boosted || d.OutputUnits != 15) allNative = false;
+            now += 4;
+        }
+        Check("默认不增强高精度输入，原样放行", allNative);
+
+        // 显式允许后才接管
+        t.Reset();
+        now = 100000;
+        for (var i = 0; i < 40; i++)
+        {
+            d = t.Sample(15, now, cfg, false, true);
+            now += 4;
+        }
+        Check("打开开关后高精度输入也能增强", d.Boosted, $"mult={d.Multiplier:0.00}");
+    }
+
+    private static void TestReversal()
+    {
+        Section("反向纠正");
+        var cfg = AppConfig.Default().Boost;
+        var t = new WheelVelocityTracker();
+        var now = 0L;
+        for (var i = 0; i < 12; i++) { t.Sample(120, now, cfg, false, false); now += 20; }
+
+        // 突然往回滚一格：必须立刻按原样 1:1 发出，不能继续往前加速
+        var d = t.Sample(-120, now + 20, cfg, false, false);
+        Check("反向那一格不加速", !d.Boosted && d.OutputUnits == -120, $"out={d.OutputUnits}");
+        Near("反向后速度清零重算", t.RatePerSec, 0, 0.001);
+    }
+
+    private static void TestRounding()
+    {
+        Section("倍率取整不丢量");
+        // 1.37 倍：单次 120 → 164.4，必须靠余量累积让长期平均正好是 1.37
+        var cfg = new BoostConfig
+        {
+            FastThresholdPerSec = 1,
+            SaturationPerSec = 1.2,
+            MinMultiplier = 1.37,
+            MaxMultiplier = 1.37,
+        };
+        var t = new WheelVelocityTracker();
+        var now = 0L;
+        var total = 0;
+        for (var i = 0; i < 100; i++)
+        {
+            now += 12;
+            total += t.Sample(120, now, cfg, false, false).OutputUnits;
+        }
+        Near("100 格 ×1.37 的总量（长跑不漂移）", total, 120 * 100 * 1.37, 12);
+        // 直接用"总输出 / 总输入 = 倍率"来断言更直观
+        var ratio = total / (120.0 * 100);
+        Check("长期平均倍率等于配置值", Math.Abs(ratio - 1.37) < 0.02, $"实际 {ratio:0.000}");
+
+        // 任何一次输出都不能小于输入（否则"加速"反而变慢）
+        var t2 = new WheelVelocityTracker();
+        var neverShrinks = true;
+        now = 0;
+        for (var i = 0; i < 50; i++)
+        {
+            now += 10;
+            var d = t2.Sample(120, now, cfg, false, false);
+            if (d.Boosted && Math.Abs(d.OutputUnits) < 120) neverShrinks = false;
+        }
+        Check("加速后单次输出不少于原样一格", neverShrinks);
+    }
+
+    private static void TestFrameSpreading()
+    {
+        Section("平滑摊帧");
+        // 360 单位在 60ms 内、8ms 一帧、τ=45 → 必须摊成多帧、且刚好发完
+        var pending = 360.0;
+        var frames = 0;
+        var maxPerFrame = 0;
+        var sum = 0;
+        var remaining = 60.0;
+
+        while (pending > 0 && frames < 40)
+        {
+            var emit = ScrollAnimator.ComputeFrame(pending, 8, remaining, 45, 30, true);
+            if (emit <= 0) break;          // 卡住不发 = 失败，pending 会留下证据
+            if (emit > pending + 0.001) break; // 发超了也是失败
+            pending -= emit;
+            sum += emit;
+            maxPerFrame = Math.Max(maxPerFrame, emit);
+            frames++;
+            remaining -= 8;
+        }
+
+        Check("能在截止时间内发完", pending <= 0.5, $"剩余 {pending}");
+        Check("总量一单位不差", sum == 360, $"发出 {sum}");
+        Check("确实摊成了多帧（不是一次性甩出）", frames >= 3, $"用了 {frames} 帧");
+        Check("每帧不超过原样一格（看着才顺）", maxPerFrame <= 120, $"最大 {maxPerFrame}");
+
+        // 关闭平滑时必须一次性发完
+        var one = ScrollAnimator.ComputeFrame(360, 8, 60, 45, 30, false);
+        Check("关闭平滑时一次发完", one == 360, $"实际 {one}");
+
+        // 到期必须整块冲掉（不能让尾巴无限拖）
+        var flush = ScrollAnimator.ComputeFrame(360, 8, 0, 45, 30, true);
+        Check("超过截止时间立刻发完", flush == 360, $"实际 {flush}");
+    }
+
+    /* ══════════════ 更新 ══════════════ */
+
+    private static void TestVersionCompare()
+    {
+        Section("版本号比较");
+        Check("1.10.0 > 1.9.0（按数字不是字符串）", UpdateService.IsNewer("1.10.0", "1.9.0"));
+        Check("1.2.1 > 1.2.0", UpdateService.IsNewer("1.2.1", "1.2.0"));
+        Check("2.0.0 > 1.99.99", UpdateService.IsNewer("2.0.0", "1.99.99"));
+        Check("同版本不算新", !UpdateService.IsNewer("1.2.0", "1.2.0"));
+        Check("带 v 前缀能比", UpdateService.IsNewer("v1.3.0", "1.2.0"));
+        Check("1.2 与 1.2.0 视为相同", !UpdateService.IsNewer("1.2", "1.2.0"));
+        Check("解析不了一律不催升级", !UpdateService.IsNewer("abc", "1.2.0"));
+        Check("空串不催升级", !UpdateService.IsNewer("", "1.2.0"));
+    }
+
+    private static void TestShaParse()
+    {
+        Section("从发布说明里取 SHA256");
+        var sha = new string('A', 64);
+        Check("能抠出 64 位十六进制", UpdateService.ShaFromNotes($"修复若干\nSHA256: {sha}") == sha);
+        Check("小写也认且统一成大写",
+            UpdateService.ShaFromNotes("sha256: " + new string('b', 64)) == new string('B', 64));
+        Check("没有就返回空串", UpdateService.ShaFromNotes("这段说明里没有校验值") == "");
+        Check("长度不足的十六进制不算", UpdateService.ShaFromNotes("sha256: abcdef") == "");
+    }
+
+    private static void TestTokenSanitize()
+    {
+        Section("GitHub 令牌清洗");
+        Check("空串 → 没填", Text.SanitizeToken("") == null);
+        Check("只有空白 → 没填", Text.SanitizeToken("  \n\t ") == null);
+        Check("普通令牌原样", Text.SanitizeToken("ghp_abc123") == "ghp_abc123");
+        Check("去掉粘贴带来的引号与换行", Text.SanitizeToken("  \"ghp_abc\"\n") == "ghp_abc");
+        Check("去掉中间夹的换行", Text.SanitizeToken("ghp_a\nbc") == "ghp_abc");
+        Check("兼容 用户名:令牌 老格式", Text.SanitizeToken("octocat:ghp_abc") == "ghp_abc");
+        Check("冒号在末尾时不吞字符", Text.SanitizeToken("ghp_abc:") == "ghp_abc:");
+        Check("细粒度令牌的下划线不被洗掉",
+            Text.SanitizeToken("github_pat_11A_ bbb") == "github_pat_11A_bbb");
+        Check("显示时打码，不暴露完整令牌",
+            !Text.MaskToken("ghp_1234567890abcdef").Contains("7890abcd"));
+    }
+
+    /* ══════════════ 名单与配置 ══════════════ */
+
+    private static void TestFilter()
+    {
+        Section("黑名单 / 白名单");
+        var cfg = AppConfig.Default();
+        cfg.Filter.Mode = FilterMode.Blacklist;
+        cfg.Filter.Apps.Clear();
+        cfg.Filter.Apps.Add(new AppRule { Exe = "game.exe" });
+        var s = RuntimeSettings.From(cfg);
+
+        Check("黑名单：名单里不增强", !s.IsAppEnabled("game.exe", "标题"));
+        Check("黑名单：名单外增强", s.IsAppEnabled("notepad.exe", "标题"));
+        Check("大小写不敏感（已归一）", !s.IsAppEnabled("GAME.EXE".ToLowerInvariant(), ""));
+        Check("解析失败（空 exe）时放行，不误伤", s.IsAppEnabled("", ""));
+
+        var wl = AppConfig.Default();
+        wl.Filter.Mode = FilterMode.Whitelist;
+        wl.Filter.Apps.Clear();
+        wl.Filter.Apps.Add(new AppRule { Exe = "code.exe" });
+        var ws = RuntimeSettings.From(wl);
+        Check("白名单：名单里增强", ws.IsAppEnabled("code.exe", ""));
+        Check("白名单：名单外不增强", !ws.IsAppEnabled("notepad.exe", ""));
+
+        // 标题正则
+        var rx = AppConfig.Default();
+        rx.Filter.Apps.Clear();
+        rx.Filter.TitleRegex = "远程|remote";
+        var rs = RuntimeSettings.From(rx);
+        Check("标题正则命中 → 不增强", !rs.IsAppEnabled("foo.exe", "远程桌面连接"));
+        Check("标题正则不命中 → 增强", rs.IsAppEnabled("foo.exe", "记事本"));
+
+        // 写坏的正则不该让程序崩，只是失效
+        var bad = AppConfig.Default();
+        bad.Filter.TitleRegex = "([";
+        var bs = RuntimeSettings.From(bad);
+        Check("非法正则被安全忽略", bs.TitleRegex == null && bs.IsAppEnabled("foo.exe", "x"));
+
+        Check("exe 名归一：去路径、补扩展名、转小写",
+            AppRuleName.Normalize(@"C:\Program Files\App\Foo.EXE") == "foo.exe");
+        Check("exe 名归一：没扩展名也补上", AppRuleName.Normalize("Foo") == "foo.exe");
+    }
+
+    private static void TestRepoNormalize()
+    {
+        Section("仓库地址");
+        Check("默认仓库正确", AppConfig.Default().Update.Repo == "QQQOrange/Mouse-wheel-enhancement");
+        Check("去掉网址前缀", AppConfig.NormalizeRepo("https://github.com/a/b") == "a/b");
+        Check("去掉 .git 后缀", AppConfig.NormalizeRepo("a/b.git") == "a/b");
+        Check("去掉多余斜杠与空格", AppConfig.NormalizeRepo("  a/b/  ") == "a/b");
+        Check("填坏了退回默认", AppConfig.NormalizeRepo("") == "QQQOrange/Mouse-wheel-enhancement");
+        var u = new UpdateService(new ConfigStore(Path.Combine(Path.GetTempPath(), "mwe-selftest-cfg")));
+        Check("API 地址里带仓库名",
+            u.LatestApi.Contains("repos/QQQOrange/Mouse-wheel-enhancement/releases/latest"), u.LatestApi);
+        Check("网页地址正确",
+            u.LatestWeb == "https://github.com/QQQOrange/Mouse-wheel-enhancement/releases/latest", u.LatestWeb);
+    }
+
+    private static void TestConfigRoundTrip()
+    {
+        Section("配置读写");
+        var tmp = Path.Combine(Path.GetTempPath(), "mwe-selftest-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            var store = new ConfigStore(tmp);
+            var c = store.Config;
+
+            // 默认值
+            Near("默认触发阈值", c.Boost.FastThresholdPerSec, 10);
+            Near("默认最大倍率", c.Boost.MaxMultiplier, 3.0);
+            Check("默认开启平滑", c.Smooth.Enabled);
+            Check("默认只平滑加速过的滚动", c.Smooth.Scope == SmoothScope.BoostedOnly);
+            Check("默认黑名单模式", c.Filter.Mode == FilterMode.Blacklist);
+            Check("默认名单里有远程桌面", c.Filter.Apps.Any(a => a.Exe == "mstsc.exe"));
+
+            // 改 → 存 → 读
+            c.Boost.MaxMultiplier = 4.5;
+            c.Filter.Apps.Add(new AppRule { Exe = "Test.EXE", Note = "x" });
+            store.SaveNow();
+
+            var store2 = new ConfigStore(tmp);
+            Near("倍率持久化", store2.Config.Boost.MaxMultiplier, 4.5);
+            Check("名单持久化且已归一",
+                store2.Config.Filter.Apps.Any(a => a.Exe == "test.exe"), "应存在 test.exe");
+            store2.Dispose();
+            store.Dispose();
+
+            // 越界值必须被夹回来
+            var c2 = AppConfig.Default();
+            c2.Boost.MaxMultiplier = 999;
+            c2.Boost.FastThresholdPerSec = -5;
+            c2.Smooth.TargetFps = 5000;
+            c2.Smooth.FramesPerNotch = 7;
+            c2.Normalize();
+            Near("倍率上限夹到 8.0", c2.Boost.MaxMultiplier, 8.0);
+            Near("阈值下限夹到 2", c2.Boost.FastThresholdPerSec, 2);
+            Check("帧率夹到 240", c2.Smooth.TargetFps == 240, c2.Smooth.TargetFps.ToString());
+            Check("每格帧数取 120 的约数", 120 % c2.Smooth.FramesPerNotch == 0,
+                c2.Smooth.FramesPerNotch.ToString());
+
+            // 损坏的配置要被备份而不是覆盖
+            File.WriteAllText(Path.Combine(tmp, "config.json"), "{ 这不是 json ");
+            var store3 = new ConfigStore(tmp);
+            Check("损坏配置能被识别并给出提示", store3.LoadWarning != null);
+            Check("损坏文件被保留成备份",
+                Directory.GetFiles(tmp, "config.corrupt-*.json").Length == 1);
+            store3.Dispose();
+
+            // 空 JSON 对象也要能读（字段缺失走默认值）
+            File.WriteAllText(Path.Combine(tmp, "config.json"), "{}");
+            var store4 = new ConfigStore(tmp);
+            Near("缺字段时用默认值", store4.Config.Boost.MaxMultiplier, 3.0);
+            Check("配置对象不为 null", store4.Config.Filter.Apps != null);
+            store4.Dispose();
+        }
+        finally
+        {
+            try { Directory.Delete(tmp, true); } catch { }
+        }
+    }
+}

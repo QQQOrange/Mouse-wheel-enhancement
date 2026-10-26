@@ -1,0 +1,22 @@
+# 构建产物
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# 运行时数据（用户自己的设置与日志，不进仓库）
+Mouse wheel enhancement data/
+WheelBoost-data/
+*.log
+
+# 发布/打包临时产物
+publish/
+*.exe.new
+*.exe.old
+*.pdb
+
+# 编辑器
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,261 @@
+using System.Runtime.InteropServices;
+
+namespace MouseWheelEnhancement.Core;
+
+/// <summary>
+/// 滚轮增强引擎：安装低层鼠标钩子、判定要不要接管、把量交给平滑动画器。
+///
+/// # 核心承诺：普通滚动一个字节都不改
+///
+/// 钩子里只要判定"不该接管"，就直接 <c>CallNextHookEx</c> 放行 ——
+/// 系统按它原本的方式处理这次滚轮，加速/平滑代码根本没有参与。
+/// 这就是"不改变普通滚动体验"的实现方式：不是"用倍率 1.0 重新发一遍"
+/// （那样时序、精度、驱动特性都会变），而是**真的不碰**。
+///
+/// # 什么时候接管
+///
+/// 两条任一满足：
+///   ① 速度超过阈值且倍率确实 &gt; 1（快滚加速）；
+///   ② 平滑模式选了"所有滚动"（此时普通滚动也会被接管，仅拆帧不改量）。
+/// 其余情况全部原样放行。
+/// </summary>
+public sealed class WheelEngine : IDisposable
+{
+    private readonly TargetResolver _targets = new();
+    private readonly WheelVelocityTracker _tracker = new();
+    private readonly ScrollAnimator _animator = new();
+    private readonly ManualResetEventSlim _hookReady = new(false);
+
+    /// <summary>关掉加速时仍要用它走一遍速度估计（好让界面还能显示速度）。</summary>
+    private static readonly BoostConfig NoBoostView = new()
+    {
+        MinMultiplier = 1.0,
+        MaxMultiplier = 1.0,
+        FastThresholdPerSec = 10,
+        SaturationPerSec = 40,
+    };
+
+    private RuntimeSettings _settings = RuntimeSettings.From(AppConfig.Default());
+
+    private Thread? _thread;
+    private uint _threadId;
+    private IntPtr _hook;
+    private Native.LowLevelMouseProc? _proc;
+    private volatile bool _running;
+
+    private long _events;
+    private long _boosted;
+    private long _passed;
+    private long _lastErrorMs;
+    private double _lastMultiplier = 1.0;
+    private double _lastRate;
+    private TargetInfo _lastTarget = TargetInfo.Unknown;
+
+    /// <summary>钩子安装/运行出问题时抛给界面（只抛一次，不刷屏）。</summary>
+    public event Action<string>? Faulted;
+
+    internal ScrollAnimator Animator => _animator;
+    public TargetResolver Targets => _targets;
+    public bool IsRunning => _running && _hook != IntPtr.Zero;
+    public TargetInfo LastTarget => _lastTarget;
+    public double LastMultiplier => Volatile.Read(ref _lastMultiplier);
+    public double LastRatePerSec => Volatile.Read(ref _lastRate);
+    public long EventCount => Interlocked.Read(ref _events);
+    public long BoostedCount => Interlocked.Read(ref _boosted);
+    public long PassedCount => Interlocked.Read(ref _passed);
+
+    /// <summary>把一份配置烘焙成运行时快照，原子替换。</summary>
+    public void Apply(AppConfig cfg)
+    {
+        var s = RuntimeSettings.From(cfg);
+        Volatile.Write(ref _settings, s);
+        _animator.UpdateSettings(s);
+    }
+
+    public bool Start()
+    {
+        if (_running) return IsRunning;
+
+        _animator.Start();
+        _running = true;
+        _hookReady.Reset();
+
+        _thread = new Thread(HookThread)
+        {
+            IsBackground = true,
+            Name = "MouseWheelEnhancement-Hook",
+            // 略高：钩子在系统输入链路上，被调度慢会拖累所有鼠标操作
+            Priority = ThreadPriority.AboveNormal,
+        };
+        _thread.Start();
+
+        // 等它真的装好（或明确失败），最多 2 秒。这样调用方拿到的返回值是可信的。
+        _hookReady.Wait(2000);
+        if (!IsRunning)
+        {
+            _running = false;
+            Log.Error($"滚轮钩子安装失败，错误码 {Marshal.GetLastWin32Error()}");
+            return false;
+        }
+        Log.Info("滚轮钩子已安装");
+        return true;
+    }
+
+    public void Stop()
+    {
+        if (!_running && _thread == null) return;
+        _running = false;
+
+        _animator.Clear();
+        try { if (_threadId != 0) Native.PostThreadMessage(_threadId, Native.WM_QUIT, IntPtr.Zero, IntPtr.Zero); }
+        catch { /* 线程已经退出 */ }
+
+        try { _thread?.Join(600); } catch { }
+        _thread = null;
+        _threadId = 0;
+        _tracker.Reset();
+        Log.Info("滚轮钩子已停止");
+    }
+
+    /// <summary>界面上的"重启钩子"。系统在钩子卡死时会静默摘掉它，这是唯一的恢复手段。</summary>
+    public bool Restart()
+    {
+        Stop();
+        return Start();
+    }
+
+    private void HookThread()
+    {
+        _threadId = Native.GetCurrentThreadId();
+        Native.TimeBeginPeriod(1);
+        try
+        {
+            _proc = HookProc;
+            _hook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, _proc, Native.GetModuleHandle(null), 0);
+            if (_hook == IntPtr.Zero)
+            {
+                _hookReady.Set();
+                Faulted?.Invoke($"钩子安装失败（错误码 {Marshal.GetLastWin32Error()}）");
+                return;
+            }
+            _hookReady.Set();
+
+            while (Native.GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+            {
+                // 低层钩子的回调由系统在消息泵里投递，这里转发一下就够了
+                _ = msg;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("钩子线程异常", ex);
+            Faulted?.Invoke("钩子线程异常：" + ex.Message);
+            _hookReady.Set();
+        }
+        finally
+        {
+            if (_hook != IntPtr.Zero)
+            {
+                Native.UnhookWindowsHookEx(_hook);
+                _hook = IntPtr.Zero;
+            }
+            Native.TimeEndPeriod(1);
+        }
+    }
+
+    private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode < 0) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+        try
+        {
+            /* ⚠ 这一段运行在系统输入链路上，必须**又快又不抛**。
+             *   微软的 LowLevelHooksTimeout 是个硬闸：超时后系统会直接把钩子摘掉，
+             *   而且不会有任何提示 —— 表现就是"用着用着突然失灵了"。
+             *   所以这里不做任何 IO、不做日志、不做正则编译。 */
+            if ((int)wParam != Native.WM_MOUSEWHEEL)
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            var data = Marshal.PtrToStructure<Native.MSLLHOOKSTRUCT>(lParam);
+
+            // 自己注入的事件：原样放行，否则会无限自我放大
+            if (data.dwExtraInfo == InputInjector.Signature)
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            var s = Volatile.Read(ref _settings);
+            if (!s.Enabled)
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            var delta = (short)((data.mouseData >> 16) & 0xFFFF);
+            if (delta == 0)
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            // Ctrl/Alt + 滚轮 = 缩放，必须 1:1；Shift + 滚轮 = 横向，交回系统
+            if (s.IgnoreCtrlAlt && (Native.IsKeyDown(Native.VK_CONTROL) || Native.IsKeyDown(Native.VK_MENU)))
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            if (s.IgnoreShift && Native.IsKeyDown(Native.VK_SHIFT))
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            var target = _targets.ResolveForWheel();
+            _lastTarget = target;
+
+            // "打开设置面板时暂停"：对本程序自己的窗口不增强
+            if (s.SkipSelf && s.OwnExe.Length > 0 &&
+                string.Equals(target.Exe, s.OwnExe, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_animator.PendingUnits != 0) _animator.FlushSoon();
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
+            // 黑白名单
+            if (!s.IsAppEnabled(target.Exe, target.Title))
+            {
+                if (_animator.PendingUnits != 0) _animator.FlushSoon();
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
+            var nowMs = Environment.TickCount64;
+            var decision = _tracker.Sample(delta, nowMs,
+                s.BoostEnabled ? s.BoostView : NoBoostView,
+                s.InvertDirection, s.EnhancePrecisionInput);
+
+            Interlocked.Increment(ref _events);
+            Volatile.Write(ref _lastRate, decision.RatePerSec);
+
+            var shouldSmooth = s.SmoothEnabled && (decision.Boosted || s.SmoothAlways);
+            if (!decision.Boosted && !shouldSmooth)
+            {
+                // 完全原生放行；若动画器还有上一段的尾巴，催它立刻发完
+                if (_animator.PendingUnits != 0) _animator.FlushSoon();
+                Interlocked.Increment(ref _passed);
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
+            Volatile.Write(ref _lastMultiplier, decision.Multiplier);
+            _animator.Push(decision.OutputUnits);
+            Interlocked.Increment(ref _boosted);
+
+            // 吞掉原事件：这一下由我们自己按计算好的量发出去
+            return (IntPtr)1;
+        }
+        catch (Exception ex)
+        {
+            /* 出错就放行 —— 宁可这一次不加速，也不能让钩子抛异常把整条输入链路拖垮。
+             * 日志节流：这种异常一旦发生往往是连续发生的，不节流会瞬间刷爆硬盘。 */
+            var now = Environment.TickCount64;
+            if (now - Interlocked.Read(ref _lastErrorMs) > 5000)
+            {
+                Interlocked.Exchange(ref _lastErrorMs, now);
+                Log.Error("钩子回调异常（已放行）", ex);
+            }
+            return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+    }
+
+    public void Dispose()
+    {
+        Stop();
+        _animator.Dispose();
+        _hookReady.Dispose();
+    }
+}
