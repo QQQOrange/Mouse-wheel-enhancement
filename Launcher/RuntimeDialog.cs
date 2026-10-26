@@ -59,14 +59,14 @@ namespace MouseWheelEnhancement.Launcher
 
             Controls.Add(new Label
             {
-                Text = "需要 .NET 10 桌面运行时",
+                Text = "未检测到 .NET 环境",
                 Bounds = new Rectangle(62, 18, 440, 28),
                 Font = new Font(Font.FontFamily, 14F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0x16, 0x1A, 0x22),
             });
             Controls.Add(new Label
             {
-                Text = "这台电脑还没有安装「鼠标滚轮增强」需要的运行环境，所以现在无法启动。",
+                Text = "这台电脑上还没有安装「鼠标滚轮增强」需要的 .NET 10 桌面运行时，所以现在无法启动。",
                 Bounds = new Rectangle(62, 48, 440, 18),
                 ForeColor = Color.FromArgb(0x5A, 0x62, 0x72),
             });
@@ -77,10 +77,10 @@ namespace MouseWheelEnhancement.Launcher
                 Bounds = new Rectangle(16, 70, 488, 90),
                 ForeColor = Color.FromArgb(0x22, 0x27, 0x33),
                 Text =
-                    "点下面的「下载 .NET 10」会用默认浏览器打开微软官方下载页；" +
-                    "在那页里选 Desktop Runtime（桌面运行时）x64 下载安装即可" +
+                    "点下面的「去下载 .NET 10」，会用默认浏览器打开微软官方的 .NET 10 下载页；" +
+                    "在那页里选 Desktop Runtime（桌面运行时）→ x64 下载安装即可" +
                     "（不需要 SDK，也不需要装 Visual Studio）。\r\n\r\n" +
-                    "装好之后回到这个窗口点「重新检测」，程序就会正常启动。",
+                    "装好之后回到这个窗口点「重新检测」，程序就会正常启动 —— 不用重新运行。",
             });
 
             // ── 检测详情
@@ -117,20 +117,20 @@ namespace MouseWheelEnhancement.Launcher
             Controls.Add(_status);
 
             // ── 按钮：下载在左（主操作），退在最右
-            _download = MakeButton("下载 .NET 10", 202, 110, primary: true);
+            _download = MakeButton("去下载 .NET 10", 190, 130, primary: true);
             _download.Click += (s, e) =>
             {
                 OpenDownloadPage();
-                _status.Text = "已经帮你在浏览器里打开了下载页。\r\n" +
-                               "装好 Desktop Runtime x64 之后，回到这里点「重新检测」。";
+                _status.Text = "已经在浏览器里打开了微软官方下载页。\r\n" +
+                               "装好 Desktop Runtime x64 之后，回到这里点「重新检测」即可。";
             };
             Controls.Add(_download);
 
-            var redetect = MakeButton("重新检测", 320, 100, primary: false);
+            var redetect = MakeButton("重新检测", 330, 100, primary: false);
             redetect.Click += (s, e) => Redetect();
             Controls.Add(redetect);
 
-            var quit = MakeButton("退出", 428, 76, primary: false);
+            var quit = MakeButton("退出", 440, 64, primary: false);
             quit.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
             Controls.Add(quit);
 
