@@ -182,40 +182,16 @@ internal sealed class TrayController : IDisposable
 
     /* ══════════════ 图标绘制 ══════════════ */
 
-    /// <summary>运行时画托盘图标（32×32）：一个滚轮 + 向上箭头，暂停时变灰。</summary>
+    /// <summary>
+    /// 运行时画托盘图标（32×32）：浅色鼠标轮廓 + 顶部按键缝 + 亮蓝滚轮，暂停时整体变灰。
+    ///
+    /// 形状数据和 <c>tools/make-icon.js</c>（app.ico）是同一份 —— 剖面控制点、
+    /// 滚轮尺寸、按键缝长度都照抄。两处必须一致，否则任务栏图标和托盘图标
+    /// 会是「长得像但不是同一个」的尴尬关系。
+    /// </summary>
     private static (Icon Icon, IntPtr HIcon) BuildIcon(bool on)
     {
-        const int n = 32;
-        using var bmp = new Bitmap(n, n);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.Transparent);
-
-            var accent = on ? Color.FromArgb(0x5B, 0x8C, 0xFF) : Color.FromArgb(0x6B, 0x74, 0x86);
-            var accentSoft = on ? Color.FromArgb(0x8F, 0xB0, 0xFF) : Color.FromArgb(0x8A, 0x92, 0xA1);
-
-            using var bg = new SolidBrush(Color.FromArgb(0x0F, 0x11, 0x17));
-            g.FillEllipse(bg, 0, 0, n - 1, n - 1);
-
-            // 滚轮胶囊
-            using var wheel = new SolidBrush(accent);
-            g.FillRectangle(wheel, 12, 5, 8, 22);
-            g.FillEllipse(wheel, 12, 3, 8, 8);
-            g.FillEllipse(wheel, 12, 21, 8, 8);
-
-            // 两道刻线
-            using var notch = new SolidBrush(Color.FromArgb(0x0F, 0x11, 0x17));
-            g.FillRectangle(notch, 14, 11, 4, 1.6f);
-            g.FillRectangle(notch, 14, 15, 4, 1.6f);
-
-            // 右侧小箭头：提示"增强"
-            using var pen = new Pen(accentSoft, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawLine(pen, 22, 16, 26, 12);
-            g.DrawLine(pen, 26, 12, 26, 17);
-            g.DrawLine(pen, 26, 12, 21, 12);
-        }
-
+        var bmp = DrawIconBitmap(on);
         /* 直接用 HICON 包一个 Icon。
          *
          * 这里刻意**不做** "Clone 之后 DestroyIcon" 那一套：Icon.Clone() 在某些
@@ -225,6 +201,90 @@ internal sealed class TrayController : IDisposable
          * 保存并在 Dispose 里 DestroyIcon —— 见 _hiconOn / _hiconOff。 */
         var hicon = bmp.GetHicon();
         return (Icon.FromHandle(hicon), hicon);
+    }
+
+    /// <summary>
+    /// 把托盘图标渲染成字符画（只给 --smoke 用）。
+    ///
+    /// 托盘图标是唯一常驻可见的东西，它画坏了（空白、错位、多边形自交导致填充成怪形）
+    /// 在日志里毫无痕迹 —— 只能靠人盯着托盘看。转成字符画就能在测试里直接看形状。
+    /// </summary>
+    internal static string AsciiDump(bool on)
+    {
+        using var bmp = DrawIconBitmap(on);
+        return AsciiOf(bmp);
+    }
+
+    /// <summary>把任意位图转成字符画（托盘图标与 exe 内嵌图标的回归检查共用）。</summary>
+    internal static string AsciiOf(Bitmap bmp)
+    {
+        var sb = new System.Text.StringBuilder();
+
+        for (var y = 0; y < bmp.Height; y++)
+        {
+            for (var x = 0; x < bmp.Width; x++)
+            {
+                var c = bmp.GetPixel(x, y);
+                if (c.A < 30) { sb.Append(' '); continue; }
+                if (c.B - c.R > 55) { sb.Append('B'); continue; } // 蓝滚轮
+                var lum = (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
+                var idx = Math.Clamp((int)Math.Round(lum * c.A / 255.0 * 9), 1, 9);
+                sb.Append(" .:-=+*#%@"[idx]);
+            }
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    private static Bitmap DrawIconBitmap(bool on)
+    {
+        const float N = 32f;
+
+        // 暂停态：不改变色相，只降明度 —— 一眼能看出「灰了」，而不是变成了别的图标
+        var shell = on ? Color.FromArgb(0xE9, 0xEF, 0xFB) : Color.FromArgb(0xBF, 0xC6, 0xD3);
+        var edge = on ? Color.FromArgb(0x3A, 0x4A, 0x66) : Color.FromArgb(0x62, 0x6B, 0x7A);
+        var wheelTop = on ? Color.FromArgb(0x93, 0xBC, 0xFF) : Color.FromArgb(0x9A, 0xA3, 0xB4);
+        var wheelBot = on ? Color.FromArgb(0x39, 0x6A, 0xE8) : Color.FromArgb(0x5E, 0x66, 0x78);
+        var baseBg = Color.FromArgb(0x10, 0x15, 0x20);
+
+        var bmp = new Bitmap((int)N, (int)N);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.Clear(Color.Transparent);
+
+            // ① 圆角底板
+            using (var bgPath = RoundedRect(0.4f, 0.4f, N - 0.8f, N - 0.8f, 7.4f))
+            using (var bg = new SolidBrush(baseBg))
+                g.FillPath(bg, bgPath);
+
+            // ② 鼠标外壳（剖面采样成多边形）
+            using (var body = MouseBodyPath())
+            {
+                using (var br = new SolidBrush(shell))
+                    g.FillPath(br, body);
+
+                // ③ 贴边的一道暗线：深底上白蛋形才不飘，也更像鼠标的分模线
+                using (var pen = new Pen(edge, 0.6f))
+                    g.DrawPath(pen, body);
+
+                // ④ 顶部按键缝。用鼠标路径当裁剪区，缝就不会长出壳外
+                var st = g.Save();
+                g.SetClip(body, CombineMode.Replace);
+                using (var pen = new Pen(baseBg, 1.35f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    g.DrawLine(pen, 16f, 4.6f, 16f, 10.4f);
+                g.Restore(st);
+            }
+
+            // ⑤ 滚轮：竖向渐变胶囊（32px 太小，不放刻线 —— 会和抗锯齿糊成脏点）
+            const float wx = 16f - 2.78f, wy = 9.4f, ww = 5.56f, wh = 8.6f;
+            using (var wPath = RoundedRect(wx, wy, ww, wh, 2.78f))
+            using (var wb = new LinearGradientBrush(new RectangleF(wx, wy, ww, wh), wheelTop, wheelBot, 90f))
+                g.FillPath(wb, wPath);
+        }
+
+        return bmp;
     }
 
     public void Dispose()
@@ -240,5 +300,66 @@ internal sealed class TrayController : IDisposable
         _iconOff.Dispose();
         if (_hiconOn != IntPtr.Zero) Native.DestroyIcon(_hiconOn);
         if (_hiconOff != IntPtr.Zero) Native.DestroyIcon(_hiconOff);
+    }
+
+    /// <summary>圆角矩形路径。</summary>
+    private static GraphicsPath RoundedRect(float x, float y, float w, float h, float r)
+    {
+        var p = new GraphicsPath();
+        var d = r * 2;
+        p.AddArc(x, y, d, d, 180, 90);
+        p.AddArc(x + w - d, y, d, d, 270, 90);
+        p.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+        p.AddArc(x, y + h - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+
+    /// <summary>
+    /// 鼠标轮廓：半宽剖面控制点。
+    /// **必须和 tools/make-icon.js 里的 PROFILE 一致**（改一处就得改另一处）。
+    /// </summary>
+    private static readonly float[,] MouseProfile =
+    {
+        { 3.9f, 0.3f }, { 4.4f, 3.6f }, { 5.6f, 5.1f }, { 7.4f, 6.2f },
+        { 10.0f, 7.0f }, { 14.0f, 7.6f }, { 18.0f, 7.8f }, { 22.0f, 7.4f },
+        { 25.0f, 6.5f }, { 27.0f, 4.8f }, { 28.1f, 0.3f },
+    };
+
+    /// <summary>按剖面插值求某一高度处的半宽（与脚本里的 smoothstep 插值一致）。</summary>
+    private static float MouseHalfW(float y)
+    {
+        var p = MouseProfile;
+        var last = p.GetLength(0) - 1;
+        if (y <= p[0, 0] || y >= p[last, 0]) return 0f;
+
+        for (var i = 0; i < last; i++)
+        {
+            float y0 = p[i, 0], w0 = p[i, 1], y1 = p[i + 1, 0], w1 = p[i + 1, 1];
+            if (y < y0 || y > y1) continue;
+            var t = (y - y0) / (y1 - y0);
+            return w0 + (w1 - w0) * (t * t * (3f - 2f * t));
+        }
+        return 0f;
+    }
+
+    /// <summary>把剖面采样成闭合多边形（右侧自上而下 + 左侧自下而上）。</summary>
+    private static GraphicsPath MouseBodyPath()
+    {
+        const int Steps = 96;
+        float yTop = MouseProfile[0, 0], yBot = MouseProfile[MouseProfile.GetLength(0) - 1, 0];
+
+        var pts = new PointF[Steps * 2];
+        for (var i = 0; i < Steps; i++)
+        {
+            var y = yTop + (yBot - yTop) * i / (Steps - 1f);
+            var hw = MouseHalfW(y);
+            pts[i] = new PointF(16f + hw, y);              // 右侧
+            pts[Steps * 2 - 1 - i] = new PointF(16f - hw, y); // 左侧（反向补齐）
+        }
+
+        var path = new GraphicsPath();
+        path.AddPolygon(pts);
+        return path;
     }
 }

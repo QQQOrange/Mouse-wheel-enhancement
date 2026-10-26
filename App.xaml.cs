@@ -170,6 +170,10 @@ public partial class App : System.Windows.Application
                 code = 5;
             }
 
+            /* 托盘图标是 GDI+ 现画的，编译期查不出错；日志里放一份字符画，
+             * 这样"图标画成了什么"有据可查，而不是只能盯着托盘猜。 */
+            Log.Info("smoke: 托盘图标（启用态）\n" + TrayController.AsciiDump(true));
+
             Log.Info($"smoke: 刷新率 {RefreshRateMonitor.Hz} Hz（{RefreshRateMonitor.FrameIntervalMs:0.00} ms/帧），" +
                      $"高精度定时器={(Services.Engine.Animator.UsingHighResolutionTimer ? "可用" : "不可用（已退回毫秒等待）")}");
 
