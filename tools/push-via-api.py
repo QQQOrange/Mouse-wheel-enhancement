@@ -161,8 +161,11 @@ for sha in commits:
 api("PATCH", "/repos/%s/git/refs/heads/%s" % (REPO, BRANCH), {"sha": parent, "force": True})
 print("已更新 %s → %s" % (BRANCH, parent))
 
-if parent != local_head:
-    sys.exit("\n注意：远程 SHA 与本地 HEAD 不一致。请执行：\n"
-             "  git update-ref refs/remotes/origin/main %s" % parent)
+# 同步本地的远程跟踪引用。不做这一步的话，git status 会一直显示 [ahead N]，
+# 而实际上远程已经推完了 —— 用户会以为没推成功，再推一次又是"已经是最新"，很困惑。
+subprocess.run(["git", "update-ref", "refs/remotes/origin/%s" % BRANCH, parent], cwd=ROOT)
 
-print("本地与远程已对齐。")
+if parent != local_head:
+    sys.exit("\n注意：远程 SHA 与本地 HEAD 不一致（内容相同）。本地引用已同步到远程。")
+
+print("本地与远程已对齐（SHA 逐位相同）。")
