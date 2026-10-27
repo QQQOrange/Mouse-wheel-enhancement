@@ -385,6 +385,26 @@ internal static class SelfTest
             SystemWheelLines.WholeEventsFor(1, 1) == 1);
         Check("档数有上限，不会一次怼出几十个事件",
             SystemWheelLines.WholeEventsFor(8, 8) == 24);
+
+        /* ⚠ 回归：v1.6.0 的加速就是死在这两条上 ——
+         * 补偿把输出乘了 3，但积压上限和单帧量没跟着放大，
+         * 5× 加速（3000 单位）被截回 600，只发出五分之一，表现成"加速失效"。 */
+        Section("补偿之后边界也要放大");
+
+        Check("单帧量按补偿放大（8 帧/格、3× → 每帧 45）",
+            RuntimeSettings.ScaledUnitsPerFrame(8, 3) == 45);
+        Check("没接管时单帧量不变（8 帧/格 → 15）",
+            RuntimeSettings.ScaledUnitsPerFrame(8, 1) == 15);
+        Check("积压上限按补偿放大（5 格、3× → 1800）",
+            RuntimeSettings.ScaledBacklog(5.0, 3) == 1800);
+        Check("没接管时积压上限不变（5 格 → 600）",
+            RuntimeSettings.ScaledBacklog(5.0, 1) == 600);
+
+        /* 关键不变式：5 倍加速在补偿之后**不能被积压上限截断**。 */
+        const double fiveTimesOut = Native.WHEEL_DELTA * 5;
+        Check("5× 加速（3× 补偿下 1800 单位）不会被积压上限截断",
+            fiveTimesOut * 3 <= RuntimeSettings.ScaledBacklog(5.0, 3),
+            $"需要 {fiveTimesOut * 3} / 上限 {RuntimeSettings.ScaledBacklog(5.0, 3)}");
     }
 
     private static void TestPrecisionInput()

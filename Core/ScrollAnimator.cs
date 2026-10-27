@@ -138,16 +138,14 @@ internal sealed class ScrollAnimator : IDisposable
 
     private volatile bool _wholeNotch;
 
-    /// <summary>
-    /// 整格模式下，两档之间至少隔这么久。
-    ///
-    /// <para>
-    /// 帧间隔只有 6 ms（160Hz），三档挤在 19 ms 里人眼还是"一下就跳过去了"。
-    /// 人感知"过程"大约需要 40~60 ms，所以这里刻意把步进压到 16 ms：
-    /// 三档 ≈ 48 ms、五档 ≈ 80 ms —— 既能看清推进，又不至于慢得像卡顿。
-    /// </para>
-    /// </summary>
-    private const double WholeStepMs = 16.0;
+    /// <summary>整格模式下，两档之间的最小间隔（毫秒）。档多时用它，避免拖在手后面。</summary>
+    private const double WholeStepMinMs = 6.0;
+
+    /// <summary>整格模式下，两档之间的最大间隔。档少时用它 —— 三档 ≈ 48 ms，看得清是三步。</summary>
+    private const double WholeStepMaxMs = 16.0;
+
+    /// <summary>整段整格推进的总时长预算（毫秒）。步长按档数在上下限之间反解，保证不超过它。</summary>
+    private const double WholeBudgetMs = 90.0;
 
     /// <summary>上一档是什么时候发出去的（毫秒，整格模式专用）。</summary>
     private long _lastWholeMs;
@@ -419,11 +417,16 @@ internal sealed class ScrollAnimator : IDisposable
                 int units;
                 if (_wholeNotch)
                 {
-                    /* 整格模式：一帧最多一档，而且两档之间至少隔 WholeStepMs。
-                     * 这一步是"看得见的平滑"的关键 —— 帧间隔 6 ms 太密，
-                     * 三档挤在 19 ms 里仍然是一次跳。 */
+                    /* 整格模式：一帧最多一档，两档之间留出看得见的间隔。
+                     *
+                     * 步长按"还剩几档"自适应：档少时用 16 ms（三档 = 48 ms，人眼能看清
+                     * 是三步而不是一步）；档多时自动收紧，保证整段不超过 90 ms ——
+                     * 否则 5× 加速要发 15 档 × 16 ms = 240 ms，画面会明显拖在手后面。 */
+                    var pendNotches = Math.Max(1.0, Math.Abs(pendingUnits) / Native.WHEEL_DELTA);
+                    var stepMs = Math.Clamp(WholeBudgetMs / pendNotches, WholeStepMinMs, WholeStepMaxMs);
+
                     var nowMsWhole = TicksToMs(now);
-                    units = nowMsWhole - Interlocked.Read(ref _lastWholeMs) >= WholeStepMs
+                    units = nowMsWhole - Interlocked.Read(ref _lastWholeMs) >= stepMs
                         ? WholeNotchFrame(pendingUnits)
                         : 0;
                     if (units != 0) Interlocked.Exchange(ref _lastWholeMs, (long)nowMsWhole);

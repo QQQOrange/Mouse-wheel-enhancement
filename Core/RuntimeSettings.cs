@@ -93,6 +93,22 @@ public sealed class RuntimeSettings
 
     private static long _revision;
 
+    /// <summary>
+    /// 一帧发多少单位。**必须跟着补偿倍数放大**，否则同样的位移要发 3 倍的帧数，
+    /// 摊帧被拖成三倍长，手感变黏。
+    /// </summary>
+    public static int ScaledUnitsPerFrame(int framesPerNotch, int compensation) =>
+        Math.Max(1, (int)Math.Round(
+            Native.WHEEL_DELTA * Math.Max(1, compensation) / (double)Math.Max(1, framesPerNotch)));
+
+    /// <summary>
+    /// 积压上限（单位）。**必须跟着补偿倍数放大**，否则加速会被它截断 ——
+    /// 5 格 × 5 倍 = 3000 单位，上限还是 600 的话只能发出五分之一，
+    /// 现象就是"加速失效"（v1.6.0 的真实 bug）。
+    /// </summary>
+    public static double ScaledBacklog(double maxBacklogNotches, int compensation) =>
+        Math.Max(1.0, maxBacklogNotches) * Native.WHEEL_DELTA * Math.Max(1, compensation);
+
     public static RuntimeSettings From(AppConfig c)
     {
         /* 帧间隔：
@@ -121,6 +137,10 @@ public sealed class RuntimeSettings
             }
         }
 
+        /* 「系统滚动行数」的补偿倍数。接管之后注入侧要发 comp 倍的量才能维持同样的位移，
+         * 所以下面所有"以单位计的边界"都必须跟着放大（见下面两处的注释）。 */
+        var comp = Math.Max(1, SystemWheelLines.Compensation);
+
         return new RuntimeSettings
         {
             Revision = Interlocked.Increment(ref _revision),
@@ -135,9 +155,18 @@ public sealed class RuntimeSettings
             SmoothAlways = c.Smooth.Scope == SmoothScope.Always,
             FrameIntervalMs = frameMs,
             AutoFps = c.Smooth.AutoFps,
-            UnitsPerFrame = Math.Max(1, (int)Math.Round(Native.WHEEL_DELTA / (double)framesPerNotch)),
+            /* ⚠ 下面两个量都必须乘上"系统滚动行数"的补偿倍数。
+             *
+             * 接管系统行数之后，注入侧要发 comp 倍的量才能维持同样的位移
+             * （见 SystemWheelLines）。如果这两个边界不跟着放大，后果是：
+             *   · 积压上限还是 5 格（600）→ 5× 加速本来要发 1800，
+             *     被**截断回 600**，加速等于失效（实测就是这么坏的）；
+             *   · 单帧量还是 15 → 每帧只发 15，同样的位移要发 3 倍的帧数，
+             *     摊帧被拖成三倍长，手感变得又慢又黏。
+             * 乘上之后，帧数、时长、平滑度全部和接管前一致，只有每帧的"单位数"变大。 */
+            UnitsPerFrame = ScaledUnitsPerFrame(framesPerNotch, comp),
             TauMs = c.Smooth.TailTauMs,
-            MaxBacklogUnits = c.Smooth.MaxBacklogNotches * Native.WHEEL_DELTA,
+            MaxBacklogUnits = ScaledBacklog(c.Smooth.MaxBacklogNotches, comp),
             GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
             IgnoreCtrlAlt = c.Input.IgnoreCtrlAltWheel,
