@@ -22,7 +22,7 @@ namespace MouseWheelEnhancement.Core;
 /// 4. 读不出来（损坏 / 手改坏了）→ 原文件改名成 `config.corrupt-时间戳.json`
 ///    保留证据，然后用默认值继续跑。**绝不静默覆盖用户的文件。**
 /// </summary>
-public sealed class ConfigStore
+public sealed class ConfigStore : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

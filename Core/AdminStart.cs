@@ -3,7 +3,13 @@ using System.Runtime.InteropServices;
 namespace MouseWheelEnhancement.Core;
 
 /// <summary>
-/// 「以管理员身份开机启动」——用 Windows 计划任务实现。
+/// 「以管理员身份运行」的**开机自启那一半** —— 用 Windows 计划任务实现。
+///
+/// <para>
+/// 另一半（手动双击启动）不走计划任务：进程启动时发现自己是普通权限，
+/// 就自己用 <c>runas</c> 提权重启一次。两条路合起来才是设置里那一个开关的完整含义，
+/// 见 <see cref="ShouldElevate"/> 与 DESIGN 第 27 节。
+/// </para>
 ///
 /// <para>
 /// 为什么不能用注册表：<c>HKCU\...\Run</c> 里的程序**一律以普通权限启动**，
@@ -30,6 +36,18 @@ public static class AdminStart
 {
     /// <summary>计划任务名（在「任务计划程序」里显示为这个，用户能自己找到并删掉）。</summary>
     public const string TaskName = "鼠标滚轮增强（管理员）";
+
+    /// <summary>
+    /// 启动命令行的"这次启动已经试过提权"标记。
+    ///
+    /// <para>
+    /// 提权重启的接班人带上它，用来断掉死循环：万一提权没生效（组策略把
+    /// <c>runas</c> 拦了、UAC 被点了取消、镜像里根本没有提权能力），
+    /// 新进程会发现自己仍然不是管理员 —— 没有这个标记的话它会再提权一次，
+    /// 于是用户面前会无限循环地弹确认框。带标记的这次不再尝试，直接以普通权限跑。
+    /// </para>
+    /// </summary>
+    public const string ElevateAttemptArg = "--elevate-attempt";
 
     /// <summary>
     /// 启动器把自己的路径通过这个环境变量传给主程序。
@@ -232,6 +250,20 @@ public static class AdminStart
         }
         catch { return false; }
     }
+
+    /// <summary>
+    /// 这次启动要不要自己提权。
+    ///
+    /// <para>
+    /// 抽成纯函数是为了能在自检里把四种组合都断言一遍 —— 这个判断错了的表现是
+    /// "用户明明开了开关，界面还说不是管理员"，肉眼很难验证。
+    /// </para>
+    /// </summary>
+    /// <param name="isElevated">当前进程是不是已经是管理员。</param>
+    /// <param name="runAsAdmin">配置里的「以管理员身份运行」。</param>
+    /// <param name="alreadyTried">命令行里已经带了 <see cref="ElevateAttemptArg"/>（上一轮试过了）。</param>
+    public static bool ShouldElevate(bool isElevated, bool runAsAdmin, bool alreadyTried)
+        => runAsAdmin && !isElevated && !alreadyTried;
 
     /// <summary>
     /// 创建（<paramref name="on"/> = true）或删除计划任务。

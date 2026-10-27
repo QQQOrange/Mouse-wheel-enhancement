@@ -104,7 +104,7 @@
                 <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="24,0,0,0" VerticalAlignment="Center">
                     <TextBlock x:Name="PageTitle" Text="概览" Style="{StaticResource PageTitle}" />
                     <Border Style="{StaticResource Badge}" Margin="10,0,0,0">
-                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="v1.5.4" />
+                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="v1.5.5" />
                     </Border>
                 </StackPanel>
 
@@ -215,17 +215,21 @@
                                                   Unchecked="AutoStart_Changed" />
                                 </Grid>
 
-                                <!-- 从属于「开机自启」：父开关关掉时整行变灰 -->
+                                <!--
+                                    「以管理员身份运行」**不再从属于**「开机自启」：
+                                    它管的是每一次启动（手动双击也会提权），
+                                    有人就想要"平时以管理员跑，但别开机自己启动"。
+                                -->
                                 <Grid x:Name="AdminStartRow" Margin="0,14,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Margin="14,0,10,0">
-                                        <TextBlock Text="以管理员身份启动" FontWeight="SemiBold" />
+                                        <TextBlock Text="以管理员身份运行" FontWeight="SemiBold" />
                                         <TextBlock x:Name="AdminStartHint" Style="{StaticResource Caption}"
                                                    TextWrapping="Wrap"
-                                                   Text="登录后直接以管理员运行，对管理员程序的窗口也生效（普通权限会被系统拦住）。Windows 只会弹一次确认。" />
+                                                   Text="每次启动都以管理员身份运行。开机那次由计划任务直接给权限、不弹确认；手动打开时系统会问一次。" />
                                     </StackPanel>
                                     <ToggleButton x:Name="AdminStartSwitch" Grid.Column="1" Style="{StaticResource Switch}"
                                                   VerticalAlignment="Center"
@@ -325,7 +329,8 @@
                             <StackPanel>
                                 <TextBlock Text="权限提示" Style="{StaticResource H2}" Margin="0,0,0,8"
                                            Foreground="{DynamicResource WarnBrush}" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,12"
+                                <TextBlock x:Name="ElevationHint" Style="{StaticResource Caption}" Margin="0,0,0,12"
+                                           TextWrapping="Wrap"
                                            Text="当前不是管理员身份。Windows 不允许普通程序拦截更高权限窗口的输入，所以「以管理员身份运行的窗口」里的滚轮不会被增强（任务管理器、部分游戏启动器、安装程序等）。" />
                                 <Button Content="以管理员身份重启" Style="{StaticResource GhostButton}"
                                         HorizontalAlignment="Left" Click="RestartElevated_Click" />

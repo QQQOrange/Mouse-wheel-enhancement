@@ -15,6 +15,16 @@ public partial class App : System.Windows.Application
     private EventWaitHandle? _activateEvent;
 
     /// <summary>
+    /// 本次启动已经尝试过提权（命令行带 <see cref="Core.AdminStart.ElevateAttemptArg"/>）。
+    ///
+    /// <para>
+    /// 用来断掉"提权没生效 → 再提权 → 还没生效"的死循环。提权失败的原因通常是
+    /// 用户点了取消、组策略禁用 runas、或者凭据不对 —— 这些都不是重试能解决的。
+    /// </para>
+    /// </summary>
+    private static bool _elevateTried;
+
+    /// <summary>
     /// 「显示主窗口」的重入标记。
     /// 托盘双击会连发 MouseClick×2 + DoubleClick，三次调用可能落在同一次
     /// 消息处理里 —— 没有这道闸，窗口会在自己还没显示完的时候被再次 Show()。
@@ -110,9 +120,15 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        /* 这次启动是不是"上一轮提权重启的接班人"。
+         * 带这个标记有两层意思：① 别再提权了（防死循环）；② 抢互斥体时要肯等 ——
+         * 上一代进程正在退出，它手里的互斥体还要过几百毫秒才放开。 */
+        _elevateTried = e.Args.Any(a =>
+            a.Equals(Core.AdminStart.ElevateAttemptArg, StringComparison.OrdinalIgnoreCase));
+
         // 单实例：第二个进程只负责"把已有窗口叫出来"，然后自己退出
-        _mutex = new Mutex(true, MutexName, out var isFirst);
-        if (!isFirst)
+        _mutex = AcquireSingleInstance(_elevateTried ? TimeSpan.FromSeconds(6) : TimeSpan.Zero);
+        if (_mutex == null)
         {
             try
             {
@@ -176,9 +192,12 @@ public partial class App : System.Windows.Application
             args.SetObserved();
         };
 
+        /* 第一阶段初始化：只读配置、应用主题。
+         * 钩子和托盘留到确认"不需要提权重启"之后 —— 否则提权那一刻
+         * 用户会看到托盘图标闪一下又消失。 */
         try
         {
-            Services.Init();
+            Services.InitConfig();
         }
         catch (Exception ex)
         {
@@ -198,18 +217,81 @@ public partial class App : System.Windows.Application
          * 这样"提权重启自己"之后（新进程没有那个环境变量）仍然找得到同一个入口。 */
         ResolveStableEntry();
 
-        /* 提权重启后回来：把设置里的「开机自启 / 以管理员身份启动」真正落到系统里。
-         * 放在 Services.Init 之后（配置要等它加载），ShowMainWindow 之前
-         * （用户点完开关重启回来，第一眼就该看到开关已经是"开"的状态）。 */
+        /* 「以管理员身份运行」：手动启动也要算。
+         *
+         * 已经是普通权限的进程没法给自己提权，只能另起一个带 runas 的进程再退出。
+         * 判断放在这里是因为：再早读不到配置，再晚就已经装好钩子、建好托盘了。
+         *
+         * 这个判断以前根本不存在 —— 开关只管开机那次的计划任务，用户关掉软件
+         * 再双击打开就是普通权限，界面上还挂着"当前不是管理员身份"，
+         * 正是"我明明开了管理员启动"那个报障的根因。 */
+        if (TryRestartElevatedIfNeeded(e.Args)) return;
+
+        /* 提权重启后回来：把设置里的「开机自启 / 以管理员身份运行」真正落到系统里。
+         * 必须早于 InitRuntime —— 这一步可能又要提权重启（比如关掉管理员开关时要
+         * 删计划任务），早做就不用先装一遍钩子再拆掉。 */
         if (e.Args.Any(a => a.Equals("--apply-startup", StringComparison.OrdinalIgnoreCase)))
             ApplyStartupFromConfig();
         else
             RepairStartupIfNeeded();
 
+        /* 第二阶段：装钩子、起引擎、建托盘。到这一步基本不会再失败了，
+         * 万一失败也不能让进程半死不活地留在后台。 */
+        try
+        {
+            Services.InitRuntime();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("引擎/托盘初始化失败", ex);
+            MessageBox.Show($"初始化失败：{ex.Message}\n\n日志：{Log.FilePath}",
+                Services.AppTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(2);
+            return;
+        }
+
         var startMinimized = e.Args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
         if (!startMinimized) ShowMainWindow();
 
         if (Services.Config.Update.AutoCheck) _ = AutoCheckAsync();
+    }
+
+    /// <summary>
+    /// 抢单实例互斥体，抢不到就返回 <c>null</c>。
+    ///
+    /// <para>
+    /// 为什么不直接用 <c>new Mutex(true, name, out createdNew)</c>：那个写法只能回答
+    /// "这个名字是不是我刚创建的"，回答不了"上一代正在退出、我现在能不能接手"。
+    /// 提权重启的接班进程恰好就是后一种情况 —— 上一代还握着互斥体，几百毫秒后才放开。
+    /// 用 <c>createdNew</c> 判断的话，接班进程会把自己当成"第二个实例"直接退出，
+    /// 用户看到的现象是：点了开关，软件没了。
+    /// </para>
+    /// </summary>
+    /// <param name="wait">最多等多久（接班进程才需要等，普通启动传 <see cref="TimeSpan.Zero"/>）。</param>
+    private static Mutex? AcquireSingleInstance(TimeSpan wait)
+    {
+        var deadline = Environment.TickCount64 + (long)wait.TotalMilliseconds;
+        while (true)
+        {
+            Mutex m;
+            try { m = new Mutex(false, MutexName); }
+            catch { return null; }
+
+            try
+            {
+                if (m.WaitOne(0)) return m;          // 抢到了
+            }
+            catch (AbandonedMutexException)
+            {
+                /* 上一代是被强杀的（任务管理器结束进程 / 崩溃），互斥体没人释放。
+                 * 系统把它判成"已放弃"并交给我们 —— 这时我们就是持有者了。 */
+                return m;
+            }
+
+            m.Dispose();
+            if (Environment.TickCount64 >= deadline) return null;
+            Thread.Sleep(100);
+        }
     }
 
     /// <summary>
@@ -357,6 +439,86 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>
+    /// 「以管理员身份运行」开着、但这次是普通权限 → 提权重启自己。
+    ///
+    /// <para>
+    /// 这就是"我明明在设置里开了管理员启动，打开还是提示不是管理员"的修法。
+    /// 以前这个开关**只管开机自启**（计划任务），手动双击、更新完自动重启、
+    /// 从托盘退出再打开，全都是普通权限 —— 而界面上的字写的是"以管理员身份启动"，
+    /// 用户当然会认为它管所有启动。
+    /// </para>
+    ///
+    /// <returns>已经发起提权重启并退出（调用方应立刻返回）时为 true。</returns>
+    /// </summary>
+    private static bool TryRestartElevatedIfNeeded(string[] args)
+    {
+        if (!Core.AdminStart.ShouldElevate(Services.IsElevated, Services.Config.Behavior.RunAsAdmin, _elevateTried))
+            return false;
+
+        if (!RelaunchElevated(args))
+        {
+            /* 提权没成功：用户点了 UAC 的「否」、或者组策略禁止 runas。
+             * 不重试（会变成弹窗风暴）—— 把标记置上，本进程后面再遇到
+             * "需要管理员"的分支（--apply-startup 那条）也不会再弹一次。
+             * 以普通权限继续跑；界面上的「权限提示」卡片会说清楚原因。 */
+            _elevateTried = true;
+            Log.Warn("「以管理员身份运行」已开启，但本次提权没有成功，以普通权限继续");
+            return false;
+        }
+
+        Log.Info("「以管理员身份运行」已开启，正在以管理员权限重启");
+        ExitApp(0);
+        return true;
+    }
+
+    /// <summary>
+    /// 以管理员权限重新拉起自己。
+    ///
+    /// <para>
+    /// 拉起的目标是**稳定入口**（启动器）而不是主程序本体：主程序本体住在版本目录里，
+    /// 换个版本就找不到"启动器在哪"这个信息了；而走启动器还能顺带把
+    /// <c>MWE_LAUNCHER_PATH</c> 重新传一遍。
+    /// </para>
+    /// <para>
+    /// 自动附带 <see cref="Core.AdminStart.ElevateAttemptArg"/>：新进程据此知道
+    /// "这一轮已经试过了"，提权没生效时不会再提一次。
+    /// </para>
+    /// </summary>
+    /// <param name="args">要转发的开关（只收 <c>--xxx</c>，其余当噪音丢掉）。</param>
+    internal static bool RelaunchElevated(params string[] args)
+    {
+        try
+        {
+            var exe = Core.AdminStart.StableEntryPath;
+            if (!File.Exists(exe)) exe = UpdateService.ExePath;
+            if (!File.Exists(exe)) return false;
+
+            var forwarded = args
+                .Where(a => !string.IsNullOrWhiteSpace(a) &&
+                            a.StartsWith("--", StringComparison.Ordinal) &&
+                            !a.Equals(Core.AdminStart.ElevateAttemptArg, StringComparison.OrdinalIgnoreCase))
+                .Append(Core.AdminStart.ElevateAttemptArg)
+                .Select(a => "\"" + a.Replace("\"", "\\\"") + "\"");
+
+            var psi = new ProcessStartInfo(exe)
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+                Arguments = string.Join(" ", forwarded),
+            };
+            Process.Start(psi);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // 最常见的是 ERROR_CANCELLED(1223)：用户在 UAC 上点了「否」。
+            // 这不是程序错误，记一笔就够，别弹框吓人。
+            Log.Warn("提权重启失败：" + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 提权重启后回来：按配置把两种开机自启方式同步到系统。
     ///
     /// <para>
@@ -368,63 +530,31 @@ public partial class App : System.Windows.Application
     {
         var b = Services.Config.Behavior;
 
-        // 直接命令行跑 --apply-startup 而当前不是管理员：自己提权重来
-        if (b.RunAtLoginAsAdmin && !Core.Native.IsElevated())
+        /* 要动计划任务就必须是管理员：建任务、删任务都要。
+         *
+         * 多数时候这一条已经被 TryRestartElevatedIfNeeded 解决了（开关开着时它先把进程提上去）。
+         * 这里兜的是它不管的那条路：用户在设置里**关掉**「以管理员身份运行」——
+         * 此时 RunAsAdmin 已经是 false、不会触发自动提权，但旧任务还等着删。 */
+        var needAdmin = Core.AdminStart.IsEnabled() || (b.RunAtLogin && b.RunAsAdmin);
+        if (needAdmin && !Services.IsElevated && !_elevateTried)
         {
-            if (RelaunchElevated(new[] { "--apply-startup" }))
+            if (RelaunchElevated("--apply-startup"))
             {
-                Log.Info("需要管理员权限，已发起提权重启");
-                Application.Current.Shutdown(0);
-                Environment.Exit(0);
+                Log.Info("应用开机自启需要管理员权限，已发起提权重启");
+                ExitApp(0);
                 return;
             }
         }
 
-        if (AutoStart.Apply(b.RunAtLogin, b.RunAtLoginAsAdmin, out var error))
+        if (AutoStart.Apply(b.RunAtLogin, b.RunAsAdmin, out var error))
         {
-            Log.Info($"已按设置应用开机自启：开机启动={b.RunAtLogin}，管理员={b.RunAtLoginAsAdmin}");
+            Log.Info($"已按设置应用开机自启：开机启动={b.RunAtLogin}，管理员={b.RunAsAdmin}");
         }
         else
         {
             Log.Warn("应用开机自启失败：" + error);
             MessageBox.Show(error ?? "设置开机自启失败。", Services.AppTitle,
                 MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    /// <summary>
-    /// 以管理员权限重新拉起自己（带同样的参数）。
-    ///
-    /// <para>
-    /// 拉起的目标是**稳定入口**（启动器）而不是主程序本体：主程序本体住在版本目录里，
-    /// 换个版本就找不到"启动器在哪"这个信息了；而走启动器还能顺带把
-    /// <c>MWE_LAUNCHER_PATH</c> 重新传一遍。
-    /// </para>
-    /// </summary>
-    private static bool RelaunchElevated(string[] args)
-    {
-        try
-        {
-            var exe = Core.AdminStart.StableEntryPath;
-            if (!File.Exists(exe)) exe = UpdateService.ExePath;
-            if (!File.Exists(exe)) return false;
-
-            var psi = new ProcessStartInfo(exe)
-            {
-                UseShellExecute = true,
-                Verb = "runas",
-                // 只转发开关类参数：args[0] 是 exe 自己的路径，传过去只会变成噪音
-                Arguments = string.Join(" ", args
-                    .Where(a => a.StartsWith("--", StringComparison.Ordinal))
-                    .Select(a => "\"" + a.Replace("\"", "\\\"") + "\"")),
-            };
-            Process.Start(psi);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Log.Warn("提权重启失败：" + ex.Message);
-            return false;
         }
     }
 
@@ -450,12 +580,18 @@ public partial class App : System.Windows.Application
              * 这里曾经写成 `if (!b.RunAtLogin) return;` 之后再判断，
              * 结果"自启整体关闭 + 任务没删成功"这条最需要清理的路径被第一行挡住了：
              * 之后每次以管理员启动都不会再自愈，残留任务永远留着。 */
-            if (!b.RunAtLogin || !b.RunAtLoginAsAdmin)
+            if (!b.RunAtLogin || !b.RunAsAdmin)
             {
                 if (Services.IsElevated && AdminStart.IsEnabled())
                 {
                     AdminStart.Set(false, out _);
                     Log.Info("已清理残留的管理员自启任务");
+                }
+                else if (AdminStart.IsEnabled())
+                {
+                    // 没权限删：设置页的提示条会显示"任务多余"，让用户点「立即修复」
+                    Log.Warn("计划任务还在，但设置里已经关掉了管理员自启 —— 当前没有管理员权限，" +
+                             "无法自动清理，请在设置页点「立即修复」。");
                 }
                 return;
             }
@@ -1036,7 +1172,32 @@ public partial class App : System.Windows.Application
             return 0;
         }
 
-        Thread.Sleep(150);                 // 让光标落位，目标解析才认得出是自己
+        /* 先把窗口提到最前，再确认那个坐标底下**真的是我们自己的窗口**。
+         *
+         * 冒烟经常在浏览器/编辑器开着的时候跑：那个坐标上压着别人的窗口时，
+         * WindowFromPoint 解析出来是别人，这条断言就变成了"别人的窗口能不能被增强"，
+         * 结果必然是失败 —— 但代码其实没问题。所以这里做两件事：
+         * ① 临时置顶并激活，把窗口抢到最上面；
+         * ② 仍被别人压着（会话锁定、桌面切换中）就跳过，而不是误报失败。 */
+        var myHwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+        try
+        {
+            w.Activate();
+            w.Topmost = true;
+            w.Topmost = false;
+        }
+        catch { /* 抢不到前台不影响后面的判定 */ }
+
+        Thread.Sleep(180);                 // 让光标落位、窗口层级稳定，目标解析才认得出是自己
+
+        var under = Native.WindowFromPoint(new Native.POINT { X = (int)p.X, Y = (int)p.Y });
+        var root = under == IntPtr.Zero ? IntPtr.Zero : Native.GetAncestor(under, Native.GA_ROOT);
+        if (root != myHwnd)
+        {
+            Log.Warn("smoke: 光标位置被别的窗口占着（桌面上还有其它窗口压在上面），跳过自我增强检查");
+            return 0;
+        }
+
         var before = Services.Engine.BoostedCount;
         var sent = 0;
         var clock = System.Diagnostics.Stopwatch.StartNew();

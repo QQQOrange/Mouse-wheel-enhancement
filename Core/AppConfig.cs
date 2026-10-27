@@ -222,13 +222,30 @@ public sealed class AppBehaviorConfig
     public bool RunAtLogin { get; set; } = false;
 
     /// <summary>
-    /// 开机自启时以管理员身份启动（用计划任务实现，见 <see cref="AdminStart"/>）。
+    /// <b>始终以管理员身份运行</b> —— 手动双击启动也算，不只是开机那一次。
+    ///
     /// <para>
-    /// 只有 <see cref="RunAtLogin"/> 为 true 时才有意义 —— <see cref="Normalize"/> 会强制这一点。
-    /// 开启后注册表 Run 项会被删掉，改由计划任务以最高权限拉起。
+    /// 两种启动方式各走一条路：
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>开机自启：计划任务以最高权限拉起，**不弹 UAC**（见 <see cref="AdminStart"/>）；</item>
+    ///   <item>手动启动：进程启动时发现自己是普通权限，就用 <c>runas</c> 提权重启一次，
+    ///         用户会看到一次系统确认对话框。</item>
+    /// </list>
+    ///
+    /// <para>
+    /// 它**不再**从属于 <see cref="RunAtLogin"/>。旧版本把它当成"开机自启的一个可选形态"，
+    /// 于是用户开了这个开关、手动重启软件之后仍然是普通权限，界面上还挂着
+    /// "当前不是管理员身份" —— 见 DESIGN 第 27 节。
+    /// </para>
+    ///
+    /// <para>
+    /// 字段名保留 <c>runAtLoginAsAdmin</c> 是为了兼容老配置（改了键名，用户已有的设置就丢了）。
+    /// 代码里叫 <c>RunAsAdmin</c>，是因为"只在开机时"这个旧语义正是上面那个 bug 的根源。
     /// </para>
     /// </summary>
-    public bool RunAtLoginAsAdmin { get; set; } = false;
+    [JsonPropertyName("runAtLoginAsAdmin")]
+    public bool RunAsAdmin { get; set; } = false;
 
     /// <summary>关闭设置窗口时最小化到托盘而不是退出。</summary>
     public bool CloseToTray { get; set; } = true;
@@ -361,10 +378,11 @@ public sealed class AppConfig
         Update.GitHubTokenProtected ??= "";
         Update.LastCheckUtc ??= "";
 
-        // 「以管理员身份启动」只是「开机自启」的一种方式，父开关关掉时它没有意义。
-        // 这里强制拉平：否则会留下"自启关了、开关却还亮着"的矛盾状态，
-        // 用户下次打开设置会看到两行互相打架的界面。
-        if (!Behavior.RunAtLogin) Behavior.RunAtLoginAsAdmin = false;
+        /* 「以管理员身份运行」曾经被强制从属于「开机自启」：父开关一关就把它拉平。
+         *
+         * 那个约束的前提是"管理员只是开机自启的一种形态"。现在这个开关管的是
+         * **每一次启动**（手动双击也要提权），跟开不开机自启是两件事 ——
+         * 有人就想要"平时以管理员跑，但别开机自己启动"。所以这里不再拉平。 */
     }
 
     /// <summary>`owner/repo` 的基本清洗：去掉网址前缀、多余斜杠、`.git` 后缀。</summary>

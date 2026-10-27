@@ -32,7 +32,27 @@ internal static class Services
     public static AppConfig Config => Store.Config;
     public static string Version => Log.Version;
 
+    /// <summary>
+    /// 完整初始化（配置 + 引擎 + 托盘）。探针、冒烟测试这些"一条龙跑完就退出"的
+    /// 场景用它；正常启动走 <see cref="InitConfig"/> →（可能需要提权重启）→ <see cref="InitRuntime"/>。
+    /// </summary>
     public static void Init()
+    {
+        InitConfig();
+        InitRuntime();
+    }
+
+    /// <summary>
+    /// 第一阶段：目录、日志、配置、主题、刷新率。
+    ///
+    /// <para>
+    /// 和 <see cref="InitRuntime"/> 分开是有原因的：程序启动时可能要先判断
+    /// "配置里开了「以管理员身份运行」，但现在不是管理员，得提权重启"。
+    /// 如果配置文件还没读就先装了钩子、建了托盘图标，提权重启的那一刻
+    /// 用户会看到托盘图标闪一下又消失；那一步只需要配置。
+    /// </para>
+    /// </summary>
+    public static void InitConfig()
     {
         // 先把数据目录解析出来（可能要判可写性），日志才知道往哪写
         _ = AppPaths.DataDir;
@@ -58,7 +78,14 @@ internal static class Services
          * 之后刷新率一变（换分辨率、插拔电源、动态刷新率），重建快照即可 —— 
          * 动画线程每帧都会读最新的那份。 */
         RefreshRateMonitor.Start();
+    }
 
+    /// <summary>
+    /// 第二阶段：装钩子、起引擎、建托盘图标。
+    /// <para>调用前 <see cref="InitConfig"/> 必须已经跑过（引擎要用配置里的参数）。</para>
+    /// </summary>
+    public static void InitRuntime()
+    {
         Engine = new WheelEngine();
         Engine.Apply(Store.Config);
 

@@ -45,6 +45,7 @@ internal static class SelfTest
             TestConfigRoundTrip();
             TestStableEntry();
             TestLayoutJudgement();
+            TestAdminMode();
             TestTheme();
             TestSelfBoost();
         }
@@ -705,22 +706,26 @@ internal static class SelfTest
                 c3.Boost.SaturationPerSec >= c3.Boost.FastThresholdPerSec + 5,
                 $"{c3.Boost.SaturationPerSec} vs {c3.Boost.FastThresholdPerSec}");
 
-            // 「以管理员身份启动」从属于「开机自启」：父开关关掉时必须拉平
+            /* 「以管理员身份运行」不再从属于「开机自启」。
+             *
+             * 旧版本会在自启关掉时把这个开关强制拉平，于是用户关一次开机自启
+             * 就悄悄丢掉了管理员模式 —— 下次打开又看到"当前不是管理员身份"。
+             * 现在两者独立：可以只提权、不开机自启。 */
             var ca = AppConfig.Default();
             ca.Behavior.RunAtLogin = false;
-            ca.Behavior.RunAtLoginAsAdmin = true;
+            ca.Behavior.RunAsAdmin = true;
             ca.Normalize();
-            Check("自启关掉后，管理员启动被强制拉平", !ca.Behavior.RunAtLoginAsAdmin,
-                ca.Behavior.RunAtLoginAsAdmin.ToString());
+            Check("自启关掉时，管理员运行设置保留", ca.Behavior.RunAsAdmin,
+                ca.Behavior.RunAsAdmin.ToString());
 
             var cb2 = AppConfig.Default();
             cb2.Behavior.RunAtLogin = true;
-            cb2.Behavior.RunAtLoginAsAdmin = true;
+            cb2.Behavior.RunAsAdmin = true;
             cb2.Normalize();
-            Check("自启开着时，管理员启动保留", cb2.Behavior.RunAtLoginAsAdmin);
-            Check("默认不自启、也不以管理员启动",
+            Check("自启开着时，管理员运行设置保留", cb2.Behavior.RunAsAdmin);
+            Check("默认不自启、也不以管理员运行",
                 !AppConfig.Default().Behavior.RunAtLogin &&
-                !AppConfig.Default().Behavior.RunAtLoginAsAdmin);
+                !AppConfig.Default().Behavior.RunAsAdmin);
 
             // 越界值必须被夹回来
             var c2 = AppConfig.Default();
@@ -865,5 +870,54 @@ internal static class SelfTest
             !Core.AdminStart.IsVersionedBody(Path.Combine(root, "MouseWheelEnhancement.exe")),
             Path.Combine(root, "MouseWheelEnhancement.exe"));
         Check("空路径不算", !Core.AdminStart.IsVersionedBody(null));
+    }
+
+    /// <summary>
+    /// 「以管理员身份运行」—— 提权判定 + 旧配置兼容。
+    ///
+    /// <para>
+    /// 这条判定的错误表现是"用户明明开了开关，界面还说不是管理员"，
+    /// 触发条件分散在"是否已是管理员 / 是否开了开关 / 是不是第二轮"三者之间，
+    /// 靠手点很难穷举，所以把真值表钉死。
+    /// </para>
+    /// </summary>
+    private static void TestAdminMode()
+    {
+        Section("以管理员身份运行");
+
+        Check("开了开关、不是管理员、没试过 → 提权",
+            Core.AdminStart.ShouldElevate(false, true, false));
+        Check("已经是管理员 → 不再提权",
+            !Core.AdminStart.ShouldElevate(true, true, false));
+        Check("开关没开 → 不提权",
+            !Core.AdminStart.ShouldElevate(false, false, false));
+        Check("这一轮已经试过 → 不再提权（防 UAC 死循环）",
+            !Core.AdminStart.ShouldElevate(false, true, true));
+
+        /* 旧配置兼容：v1.5.4 及更早写的是 runAtLoginAsAdmin。
+         * 键名改了的话，用户已有的设置会在升级时被静默重置成 false ——
+         * 表现就是"升级完又变回普通权限"。 */
+        var dir = Path.Combine(Path.GetTempPath(), "mwe-admin-cfg-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "config.json"),
+                "{\"schemaVersion\":3,\"behavior\":{\"runAtLogin\":false,\"runAtLoginAsAdmin\":true}}",
+                new UTF8Encoding(false));
+
+            using var store = new ConfigStore(dir);
+            Check("旧配置的 runAtLoginAsAdmin 仍能读入",
+                store.Config.Behavior.RunAsAdmin, store.Config.Behavior.RunAsAdmin.ToString());
+            Check("旧配置不会被误当成「开机自启」",
+                !store.Config.Behavior.RunAtLogin, store.Config.Behavior.RunAtLogin.ToString());
+        }
+        catch (Exception ex)
+        {
+            Check("旧配置兼容性检查没有抛异常", false, ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { /* 测试目录清不掉无所谓 */ }
+        }
     }
 }
