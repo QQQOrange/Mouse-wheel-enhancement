@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using MouseWheelEnhancement.Core;
 using MouseWheelEnhancement.Update;
@@ -10,6 +13,82 @@ public partial class App : System.Windows.Application
 {
     private const string MutexName = @"Local\MouseWheelEnhancement.SingleInstance";
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
+
+    /// <summary>
+    /// 一行折合多少 DIP。WPF 自己按"行"滚时大约是 16~20 DIP 一行，
+    /// 取 20 让"一格"的位移和接管前基本一致，用户不会觉得滚得突然变远或变近。
+    /// </summary>
+    private const double PixelsPerLine = 20.0;
+
+    /// <summary>
+    /// 页面按像素滚动的入口（挂在 App.xaml 里那条隐式 ScrollViewer 样式上）。
+    ///
+    /// <para>
+    /// 为什么必须自己算：WPF 的 ScrollViewer **无视 delta 大小**，一个事件固定滚
+    /// <see cref="SystemParameters.WheelScrollLines"/> 行（官方 issue dotnet/wpf#5936，
+    /// 至今未改）。于是"一格"只能整块移动，我们的摊帧（把一格拆成 8 帧小 delta）
+    /// 全被它当成"又滚了一格"，平滑自然无从谈起。
+    /// </para>
+    /// <para>
+    /// 改成 <c>delta ÷ 120 × 行数 × 每行像素</c> 之后，滚动量就跟 delta 成正比了 ——
+    /// 和浏览器同一套语义。这时 8 帧摊帧才真正生效：每帧 15 单位 ≈ 7.5 DIP，
+    /// 八帧推完一格，肉眼看到的是连续推进而不是跳。
+    /// </para>
+    /// <para>
+    /// 注意乘的是**当前**的 <c>WheelScrollLines</c>：接管系统行数后它是 1、摊帧会发 3 倍量，
+    /// 两者相乘仍然是"一格 = 3 行"的位移；没接管时它是 3、摊帧发原量，乘积一样。
+    /// 所以开不开接管，这里都不用改。
+    /// </para>
+    /// </summary>
+    private void OnPreviewMouseWheelScroll(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Handled) return;
+        if (sender is not ScrollViewer sv) return;
+
+        /* 列表类容器（ListBox / ComboBox 下拉）是 CanContentScroll=true，按"项"滚。
+         * 对它们换算像素没有意义，直接交回系统。 */
+        if (sv.CanContentScroll) return;
+
+        /* 滚不动就别拦：让事件继续隧道，外层（或系统）接。
+         * 这一条同时解决了"页面到底了还吃掉滚轮"的老问题。 */
+        if (sv.ScrollableHeight <= 0) return;
+
+        /* Ctrl+滚轮是缩放、Shift+滚轮是横向，都不是我们要管的。 */
+        if ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != 0) return;
+
+        /* 鼠标正悬在**内层可滚容器**上（比如设置页里的黑名单列表）时让给它。
+         * Preview 是隧道、外层先收到，不判断就会把内层的滚动抢过来。 */
+        if (HasInnerScrollable(e.OriginalSource as DependencyObject, sv)) return;
+
+        var lines = SystemParameters.WheelScrollLines;
+        if (lines <= 0) return;   // -1 = "一次滚一页"，不归我们换算
+
+        var px = e.Delta * PixelsPerLine * lines / (double)Native.WHEEL_DELTA;
+        var target = Math.Clamp(sv.VerticalOffset - px, 0, sv.ScrollableHeight);
+
+        // 已经在边界上：不标 handled，让事件继续往上走
+        if (Math.Abs(target - sv.VerticalOffset) < 0.5) return;
+
+        sv.ScrollToVerticalOffset(target);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// <paramref name="source"/> 到 <paramref name="outer"/> 之间有没有别的、**还能滚**的
+    /// ScrollViewer。有就说明滚轮该归它。
+    /// </summary>
+    private static bool HasInnerScrollable(DependencyObject? source, ScrollViewer outer)
+    {
+        var node = source;
+        while (node != null && !ReferenceEquals(node, outer))
+        {
+            if (node is ScrollViewer inner && inner.ScrollableHeight > 0) return true;
+            node = node is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(node)
+                : LogicalTreeHelper.GetParent(node);
+        }
+        return false;
+    }
 
     private Mutex? _mutex;
     private EventWaitHandle? _activateEvent;

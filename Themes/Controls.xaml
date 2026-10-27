@@ -365,7 +365,26 @@
                     <Border x:Name="Bd" Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
                             CornerRadius="9" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <!--
+                            ⚠ 这里的局部 TextBlock 样式是必须的。
+
+                            文件开头有一条隐式样式 <Style TargetType="TextBlock">，
+                            它无条件把 Foreground 设成 TextPrimary（浅色主题下接近黑）。
+                            隐式样式的优先级**高于属性继承** —— 所以蓝底按钮上
+                            从 Button.Foreground 继承下来的白字会被它改回黑色，
+                            浅色主题下就成了"蓝底黑字"，正是用户报的那个看不清。
+
+                            在 ContentPresenter 自己的 Resources 里放一条就近的隐式样式，
+                            让它按按钮的 Foreground 走，就把这条覆盖掉了。
+                        -->
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground"
+                                            Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">

@@ -283,7 +283,12 @@ public sealed class WheelEngine : IDisposable
              * 否则全系统都会慢成 1/comp。没接管时它是 1，下面所有逻辑原样。 */
             var comp = SystemWheelLines.Compensation;
 
-            if (target.ScrollsOncePerEvent)
+            /* 本程序自己的窗口不走整格语义 —— 它的页面已经在 PreviewMouseWheel 里
+             * 按 delta 换算像素滚动（App.OnPreviewMouseWheelScroll），
+             * 语义上属于"按比例滚动"，直接吃摊帧就是浏览器级的手感。
+             * 判据放在这里而不是 ScrollSemantics 里：类名仍然是 HwndWrapper，
+             * "是不是自己"是进程维度的事，和框架无关。 */
+            if (target.ScrollsOncePerEvent && !s.IsOwnExe(target.Exe))
             {
                 /* 没接管系统行数、也没加速：让系统自己处理，零干预。 */
                 if (comp <= 1 && !decision.Boosted)

@@ -405,6 +405,16 @@ internal static class SelfTest
         Check("5× 加速（3× 补偿下 1800 单位）不会被积压上限截断",
             fiveTimesOut * 3 <= RuntimeSettings.ScaledBacklog(5.0, 3),
             $"需要 {fiveTimesOut * 3} / 上限 {RuntimeSettings.ScaledBacklog(5.0, 3)}");
+
+        /* 本程序自己的窗口要能认出来：它的页面按像素滚（PreviewMouseWheel），
+         * 所以不能走"整格语义"，否则滚过头、也丢掉摊帧的平滑。 */
+        Section("认出自己（设置窗口按比例滚）");
+        var own = RuntimeSettings.From(AppConfig.Default());
+        Check("认得出自己的 exe", own.IsOwnExe(Environment.ProcessPath),
+            $"own={own.OwnExe}");
+        Check("别的程序不算自己", !own.IsOwnExe("notepad.exe"));
+        Check("空 exe 不算自己", !own.IsOwnExe(""));
+        Check("null 不算自己", !own.IsOwnExe(null));
     }
 
     private static void TestPrecisionInput()

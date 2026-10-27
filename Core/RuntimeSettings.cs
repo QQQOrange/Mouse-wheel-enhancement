@@ -88,6 +88,23 @@ public sealed class RuntimeSettings
         && !string.IsNullOrEmpty(exe)
         && string.Equals(exe, OwnExe, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 这个 exe 是不是本程序自己。
+    ///
+    /// <para>
+    /// 用来把设置窗口从"按事件滚动"里摘出来：本程序的页面自己在
+    /// <c>PreviewMouseWheel</c> 里按 delta 换算像素滚（见 <c>App.OnPreviewMouseWheelScroll</c>），
+    /// 也就是**已经变成了按比例滚动**的语义。再按整格语义给它发大 delta，
+    /// 反而会让它滚得过远、也失去摊帧的平滑。
+    /// </para>
+    /// </summary>
+    public bool IsOwnExe(string? exe) =>
+        OwnExe.Length > 0
+        && !string.IsNullOrEmpty(exe)
+        /* 归一化必须在这里做：调用方传进来的可能是完整路径（Environment.ProcessPath），
+         * 也可能是裸文件名（从 pid 取到的那种），不能指望调用方先处理好。 */
+        && string.Equals(AppRuleName.Normalize(exe), OwnExe, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>给速度判定用的倍率配置（独立副本，不受用户后续改配置影响）。</summary>
     public BoostConfig BoostView { get; init; } = new();
 

@@ -18,6 +18,22 @@
                 <ResourceDictionary Source="Themes/Palette.Dark.xaml" />
                 <ResourceDictionary Source="Themes/Controls.xaml" />
             </ResourceDictionary.MergedDictionaries>
+
+            <!--
+                让本程序的页面**按像素滚动**，而不是按"行"。
+
+                WPF 的 ScrollViewer 有个老毛病：它无视 MouseWheelEventArgs.Delta 的大小，
+                一个滚轮事件固定滚 WheelScrollLines 行（dotnet/wpf#5936，官方至今未改）。
+                后果是"一格 = 一整行块"，再细的中间态都表达不出来 —— 所以本程序自己的
+                设置页滚起来也是一段一段跳，和浏览器那种连续推进完全不同。
+
+                这里改成按 delta 比例算像素（和浏览器同一套逻辑）。挂在这里而不是逐页挂，
+                是因为十四个页面各写一遍必然漏。先判断 CanContentScroll：列表类容器
+                本来就是按项滚，不能抢。
+            -->
+            <Style TargetType="{x:Type ScrollViewer}">
+                <EventSetter Event="PreviewMouseWheel" Handler="OnPreviewMouseWheelScroll" />
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>
