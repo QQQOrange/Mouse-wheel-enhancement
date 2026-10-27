@@ -66,77 +66,74 @@ def upload(name, path):
 
 
 # ── 发布说明 ──
-BODY = """## 修掉「VisualTarget 的根 Visual 不能具有父级」崩溃
+BODY = """## 修掉「开机自启没以管理员启动」—— 任务指向了被删掉的文件
 
-v1.5.1 之后用户报：点一下托盘图标，弹出"应用程序的组件中发生了未经处理的异常。
-如果单击\"继续\"……"，异常文本是 **VisualTarget 的根 Visual 不能具有父级**。
-点「继续」程序还能继续跑，但**日志里一条记录都没有**，事后完全无从查起。
+用户报：**「我设置了以管理员方式启动，结果启动的时候好像并没有以管理员方式启动。」**
 
-### ① 根因：异常从原生 WndProc 逃出去了，三条通道全接不住
+### ① 真相：不是"没以管理员启动"，是**开机根本没启动**
 
-托盘图标用的是 WinForms 的 `NotifyIcon`，它的鼠标消息走**原生 Win32 窗口过程**。
-异常从那里抛出来时：
+现场查到的任务配置**全对**：
 
-| 通道 | 接得住吗 | 原因 |
-|------|----------|------|
-| WPF `DispatcherUnhandledException` | ❌ | 那条通道只处理 `DispatcherOperation` 异常 |
-| `AppDomain.UnhandledException` | ❌ | 被 WinForms 的 `Application.ThreadException` 先一步拦下 |
-| WinForms `Application.ThreadException` | ✅ | 但**我们从没订阅它** |
+```
+RunLevel=Highest   LogonType=Interactive   登录触发 + 延迟 8 秒
+Actions: ...\\app\\1.4.0\\MouseWheelEnhancement.App.exe --minimized
+LastRunTime    = 11/30/1999 00:00:00     ← 从未运行过
+LastTaskResult = 0x41303                 ← SCHED_S_TASK_HAS_NOT_RUN
+```
 
-没订阅 → 走 WinForms 的**默认**处理：弹框架自带的那句弹窗。
-这与用户日志逐字吻合（崩溃窗口 3.3 秒内零 ERROR 记录）。
+唯独**目标文件不存在**：`app\\1.4.0\\` 那个目录早被升级清理掉了，现在只剩 `app\\1.5.2\\`。
 
-写了对照探针坐实：抛在 WinForms `Control` 的 WndProc 里能命中 `ThreadException`；
-抛在裸 `NativeWindow` 的 WndProc 里三条通道全不接、直接崩。
+任务被系统拉起时找不到 exe → 直接失败，而且**不弹任何窗、不写任何日志**，
+设置页的开关还照样显示"开"。这是最难查的一类问题：看起来一切正常，行为却是坏的。
 
-**现在**：`SetUnhandledExceptionMode(CatchException)` + 订阅 `ThreadException`，
-处理方式与 Dispatcher 一致（记日志 → 落盘取证 → 弹我们自己的框）。
-**用户永远不会再看到框架默认弹窗**，且每次崩溃必有 ERROR 日志 + `crash-*.txt` 完整堆栈。
+### ② 根因：任务指向了「版本目录」
 
-### ② 消除 Popup 风险面
+主程序本体并不住在用户放软件的那个文件夹里 —— 启动器把它作为嵌入资源释放到
+`%LOCALAPPDATA%\\MouseWheelEnhancement\\app\\<版本>\\` 再启动。
+而启动器在释放新版本后会把旧版本目录**删掉**。
 
-`ToolTip` / `ContextMenu` 底层都是 `Popup`，各自自建一个 `HwndSource`，
-并把该窗口的根 Visual 设成弹层内容。而 `SetRootVisual` 在
-"这个 Visual 已有父级、或已是某个 CompositionTarget 的根"时就会抛
-`VisualTarget 的根 Visual 不能具有父级`。
+计划任务的 Action 当时用的是**当前主程序本体的路径**，于是：
 
-规矩：**要动宿主窗口之前，先把弹层都关掉。** 新增 `PopupCleanup`：
+```
+升级 → 旧版本目录被删 → 任务指向的文件消失 → 开机静默失败
+```
 
-- 递归扫**视觉树**、**逻辑树**以及根元素 `Resources` 里声明的 `ContextMenu`，
-  把所有开着的 `Popup` 统统关掉
-- 关闭当前提示气泡：反射拿 `ToolTipService` 内部静态字段（依次试三个候选名），
-  拿不到就退回扫全部窗口的树
+注册表 `Run` 项是同一只 bug 的第二个入口，两个都会在下次升级后失效。
 
-接入三个点：窗口关闭前、切换主题按钮重新赋值 `ToolTip` 前、
-刷新令牌状态重新赋值 `ToolTip` 前（最后两处的场景正是
-"用户悬停在按钮上点了它、气泡正开着"）。
+### ③ 修法：指向「稳定入口」
 
-### ③ `ShowMainWindow` 加固
+真正稳定的位置是**启动器 exe**（用户放软件的那个文件夹里，升级不换位置），
+而且由它启动，开机那次也能走"释放最新版本"的流程。
 
-- 重入标记 + `PresentationSource` 存活检查
-- 异常后销毁重建窗口，不留半死状态
-- `Closed` 事件**身份校验** —— 修掉"旧窗口的 Closed 把新窗口引用清空"的隐患
-- `Topmost` 翻转独立包 try/catch，不再连累主流程
-- 托盘单击/双击合并为单次触发（400ms 延迟窗口），杜绝 `ShowWindow()` 三连发
+新增 `StableEntryPath`，解析顺序：
 
-### ④ 排查过程中实证排除的路径
+1. 环境变量 `MWE_LAUNCHER_PATH` —— 启动器拉起主程序时传过来
+2. 配置里记下的 `LauncherPath` —— 落盘，好让"提权重启自己"之后仍然找得到
+3. 都没有 → 当前 exe 本身
 
-- 滚轮钩子回调（独立线程 + 完整 try/catch + 异常节流记日志）—— 若在此抛出必留 ERROR 记录
-- 刷新率变化回调（try/catch 包裹）
-- 主题监听用的 `HwndSource`（未设 `RootVisual`）
-- 纯 WPF 上下文中的 Topmost 翻转 / Popup+Topmost / Hide→Show / 切主题 / 切页面 / 重入 Show
-- 真实 `NotifyIcon` 消息投递的 5 个场景
+计划任务的 Action 与注册表 `Run` 项**都改指它**。
 
-### ⑤ 探针保留为长期回归手段
+### ④ 失效要看得见
 
-`--probe` / `--wndprobe` / `--hover` / `--trayprobe` 四个取证探针保留在仓库里，
-各有独立 CLI 开关，不参与正常启动路径。
+已经指向坏路径的旧任务还在用户机器上，所以补了：
+
+- `IsStale()`：任务在，但目标文件没了 / 指向的不是稳定入口 → 判定已失效；
+- 启动自愈：**已是管理员**时自动重建；不是管理员时不写，改为在设置页显示提示条；
+- 设置页新增「**立即修复**」按钮：管理员直接重建，普通权限走提权重启流程；
+- `--taskcheck` 升级为真正的诊断：打印任务指向、目标是否存在、是否指向稳定入口、
+  是否已失效；`--create` / `--delete` 在非管理员下会**自动提权重启自己**再执行。
+
+### ⑤ 一个容易踩的坑
+
+提权（`runas`）启动的进程**不继承父进程的环境变量**。
+所以"把启动器路径放环境变量里"这个方案，只有在**经由启动器**的那条链路上才成立 ——
+任何"提权重启自己"的实现都必须以**启动器**为目标，不能以主程序本体为目标。
 
 ## 下载
 
 | 文件 | 用途 |
 |------|------|
-| `MouseWheelEnhancement.exe` | **下载这个**。单文件，0.52 MB，双击即用 |
+| `MouseWheelEnhancement.exe` | **下载这个**。单文件，0.53 MB，双击即用 |
 | `MouseWheelEnhancement-win-x64.zip` | 整包（内容同上，压缩后更小） |
 | `MouseWheelEnhancement.App.exe` | 主程序本体，供软件内自动更新用 |
 
@@ -146,16 +143,19 @@ Windows 11 x64 实测；Windows 10 上圆角自动降级为直角，其余功能
 ## 校验
 
 ```
-SHA256 94A7AEAB0E80E8FF36A66456E6E7063D85EAAE73A9F3E5973C00D87213DA61B9
+SHA256 145D8AB31749CC3740A92E252CA639DAB2A6B87562319DA5CA3339FD2AF912AF
 ```
 
-构建 0 警告 0 错误；`--selftest` / `--smoke` / `--probe` / `--wndprobe` / `--trayprobe` 全部通过。
+构建 0 警告 0 错误；`--selftest`（新增 6 条稳定入口断言）/ `--smoke` 全部通过。
+
+实机验证：重建任务后手动触发 → 进程正常启动、`LastTaskResult=0x0`，
+且普通权限进程对它 `Stop-Process` 直接"拒绝访问" —— 即高完整性（管理员）进程。
 """
 
 REL = api("POST", "/repos/%s/releases" % REPO, {
     "tag_name": TAG,
     "target_commitish": "main",
-    "name": "%s — 崩溃归因修复：接管 WinForms 异常通道 / 消除 Popup 风险面" % TAG,
+    "name": "%s — 开机自启指向稳定入口，修复任务静默失效" % TAG,
     "body": BODY,
     "draft": False,
     "prerelease": False,
