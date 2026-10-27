@@ -501,11 +501,15 @@
                             <StackPanel>
                                 <TextBlock Text="默认值为什么是这样" Style="{StaticResource H2}" Margin="0,0,0,10" />
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                           Text="这两个数字都是「速度」（格/秒），不是累计格数：滚得再多、只要慢，就永远不会加速。" />
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                            Text="10 格/秒 ≈ 每 100ms 拨一格。正常浏览网页、看文档基本都在这个节奏以下，所以不会误触发；而想快速翻页时人会下意识连拨，节奏立刻就到 20 格/秒以上。" />
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                            Text="40 格/秒 ≈ 每 25ms 拨一格，是明显的甩动。把满速点放在这里，意味着「越用力甩，加速越充分」，同时避免轻轻一抖就顶格。" />
                                 <TextBlock Style="{StaticResource Caption}"
                                            Text="3 倍是绝大多数人不需要二次调整的值：一屏变三分之一的滚动量，又不会失控到找不到位置。觉得不够就调高，8 倍是上限。" />
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                           Text="另外，一段滚动的头 3 格、以及持续不到 70ms 的抖动，一律不加速。轻轻一拨往往被鼠标拆成好几个事件、间隔只有几毫秒，按速度算会显得「极快」——这条护栏专门挡住它。" />
                             </StackPanel>
                         </Border>
 

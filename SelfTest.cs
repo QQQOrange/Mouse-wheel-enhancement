@@ -31,6 +31,7 @@ internal static class SelfTest
         {
             TestBoostCurve();
             TestVelocityTracking();
+            TestBurstGuard();
             TestPrecisionInput();
             TestReversal();
             TestRounding();
@@ -169,6 +170,137 @@ internal static class SelfTest
         Check("反向滚动同样能加速", d.Boosted && d.OutputUnits < 0, $"out={d.OutputUnits}");
     }
 
+    /// <summary>
+    /// 起步护栏：**轻轻一拨绝不能加速**。
+    ///
+    /// <para>
+    /// 这几条全部来自实机投诉："设了 9~10 格阈值，轻轻滚一下却整页翻过去。"
+    /// 根因是速度按"格/秒"算 —— 一拨散成 2~3 个事件、间隔 10 ms，算出来就是 13~25 格/秒，
+    /// 阈值越高越没用（阈值卡的是速度，而抖动时那个速度是假的）。
+    /// 现在一段滚动必须**同时**够长（> 3 格）又够久（> 70 ms）才会进入加速判定。
+    /// </para>
+    /// </summary>
+    private static void TestBurstGuard()
+    {
+        Section("起步护栏（轻拨不加速）");
+        var cfg = AppConfig.Default().Boost;
+        var t = new WheelVelocityTracker();
+
+        /* ① 最核心的一条：两个事件、间隔 10 ms。
+         *    旧算法：13 格/秒 → 越过默认阈值 → 约 1.4×。现在必须原样放行。 */
+        t.Reset();
+        var now = 1000L;
+        var d1 = t.Sample(120, now, cfg, false, false);
+        now += 10;
+        var d2 = t.Sample(120, now, cfg, false, false);
+        Check("两下 10ms 内的轻拨不加速",
+            !d1.Boosted && !d2.Boosted, $"d1={d1.OutputUnits} d2={d2.OutputUnits}");
+
+        /* ② 三个事件也一样 —— 主观上是"一下"，客观上是三条事件。 */
+        t.Reset();
+        now = 3000;
+        var boom = false;
+        for (var i = 0; i < 3; i++)
+        {
+            if (t.Sample(120, now, cfg, false, false).Boosted) boom = true;
+            now += 10;
+        }
+        Check("三下 10ms 内的连拨也不加速", !boom);
+
+        /* ③ 一次拨动连发六格、但整段只有 25 ms（解码器抖动 / 驱动拆分）。
+         *    格数护栏挡不住这种，所以必须有"够久"这条。 */
+        t.Reset();
+        now = 5000;
+        boom = false;
+        for (var i = 0; i < 6; i++)
+        {
+            if (t.Sample(120, now, cfg, false, false).Boosted) boom = true;
+            now += 5;
+        }
+        Check("六格却只有 25ms 的抖动爆发不加速", !boom);
+
+        /* ④ 慢滚六格（每格 200 ms）：每格间隔超过 120 ms，各自算新的一段。 */
+        t.Reset();
+        now = 7000;
+        boom = false;
+        for (var i = 0; i < 6; i++)
+        {
+            if (t.Sample(120, now, cfg, false, false).Boosted) boom = true;
+            now += 200;
+        }
+        Check("慢滚六格（每格 200ms）不加速", !boom);
+
+        /* ⑤ 真正的连续快滚：20 ms 一格、滚 15 格（300 ms）—— 必须加速。 */
+        t.Reset();
+        now = 9000;
+        var last = default(BoostDecision);
+        for (var i = 0; i < 15; i++)
+        {
+            last = t.Sample(120, now, cfg, false, false);
+            now += 20;
+        }
+        Check("持续 300ms 的快滚会加速", last.Boosted, $"mult={last.Multiplier:0.00}");
+        Near("快滚倍率到上限", last.Multiplier, cfg.MaxMultiplier, 0.05);
+
+        /* ⑥ 护栏刚过时倍率只放开一部分，不能从 1× 一步窜到上限。
+         *    60 ms 一格（≈16.7 格/秒）：第 4 格过护栏，此时倍率应明显低于上限。 */
+        t.Reset();
+        now = 12000;
+        BoostDecision at4 = default, at8 = default;
+        for (var i = 0; i < 8; i++)
+        {
+            var dd = t.Sample(120, now, cfg, false, false);
+            if (i == 3) at4 = dd;
+            if (i == 7) at8 = dd;
+            now += 60;
+        }
+        Check("护栏刚过时倍率没顶满（渐入）",
+            at4.Multiplier < cfg.MaxMultiplier * 0.8,
+            $"第4格 mult={at4.Multiplier:0.00} 上限={cfg.MaxMultiplier:0.0}");
+        Check("再滚几格才接近配置倍率",
+            at8.Multiplier > at4.Multiplier,
+            $"第8格 mult={at8.Multiplier:0.00}");
+
+        /* ⑦ dt 下限：两个"同一毫秒"到达的事件不该算出 1000 格/秒这种没有物理意义的数。 */
+        t.Reset();
+        now = 20000;
+        t.Sample(120, now, cfg, false, false);
+        t.Sample(120, now, cfg, false, false);
+        Check("同一毫秒到达的事件不会把速度算成上千格/秒",
+            t.RatePerSec < 200, $"rate={t.RatePerSec:0} 格/秒");
+
+        /* ⑧ 按投诉者的真实参数再跑一遍：阈值 9 格/秒、满速 40、上限 5×。
+         *    修复前，两下 10 ms 的轻拨会得到约 1.4×（一格变 168 单位），
+         *    在短页面上就是"整页翻过去"。现在必须原样一格。 */
+        var userCfg = new BoostConfig
+        {
+            FastThresholdPerSec = 9,
+            SaturationPerSec = 40,
+            MinMultiplier = 1,
+            MaxMultiplier = 5,
+        };
+
+        t.Reset();
+        now = 30000;
+        t.Sample(120, now, userCfg, false, false);
+        now += 10;
+        var u2 = t.Sample(120, now, userCfg, false, false);
+        Check("真实参数下轻拨只有一格（不多发）",
+            !u2.Boosted && u2.OutputUnits == 120, $"out={u2.OutputUnits} 单位");
+
+        /* 同一份配置下，真正的连续快滚仍然要吃满 5× —— 护栏不能把功能一起废掉。 */
+        t.Reset();
+        now = 40000;
+        BoostDecision fast = default;
+        for (var i = 0; i < 20; i++)
+        {
+            fast = t.Sample(120, now, userCfg, false, false);
+            now += 12;
+        }
+        Check("真实参数下连续快滚仍到 5×", fast.Boosted && fast.Multiplier > 4.5,
+            $"mult={fast.Multiplier:0.00}");
+    }
+
     private static void TestPrecisionInput()
     {
         Section("高精度输入（触控板 / 自由滚轮）");
@@ -225,16 +357,29 @@ internal static class SelfTest
         };
         var t = new WheelVelocityTracker();
         var now = 0L;
-        var total = 0;
+
+        /* 起步护栏会吃掉开头几格（3 格护栏 + 3 格渐入），所以"长期平均倍率"
+         * 只能从**预热之后**开始量。那之后的余量累积必须严丝合缝 ——
+         * 这正是这条断言原本要守的不变式。 */
+        const int warmup = 8;
+        var lead = 0;
+        var steady = 0;
         for (var i = 0; i < 100; i++)
         {
             now += 12;
-            total += t.Sample(120, now, cfg, false, false).OutputUnits;
+            var o = t.Sample(120, now, cfg, false, false).OutputUnits;
+            if (i < warmup) lead += o;
+            else steady += o;
         }
-        Near("100 格 ×1.37 的总量（长跑不漂移）", total, 120 * 100 * 1.37, 12);
+
+        Check("预热期不会超发（护栏 + 渐入）",
+            lead <= (int)(120 * warmup * 1.2), $"预热 {lead} 单位 / {warmup} 格");
+
+        Near("预热之后的总量（1.37× 不漂移）", steady, 120 * (100 - warmup) * 1.37, 12);
+
         // 直接用"总输出 / 总输入 = 倍率"来断言更直观
-        var ratio = total / (120.0 * 100);
-        Check("长期平均倍率等于配置值", Math.Abs(ratio - 1.37) < 0.02, $"实际 {ratio:0.000}");
+        var ratio = steady / (120.0 * (100 - warmup));
+        Check("预热之后的平均倍率等于配置值", Math.Abs(ratio - 1.37) < 0.02, $"实际 {ratio:0.000}");
 
         // 任何一次输出都不能小于输入（否则"加速"反而变慢）
         var t2 = new WheelVelocityTracker();
