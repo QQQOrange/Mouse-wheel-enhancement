@@ -250,134 +250,202 @@ internal static class SelfTest
     }
 
     /// <summary>
-    /// 松手滑行：这次改动的核心 —— 停止输入后不该"咔"一下停住。
+    /// 松手滑行与**收尾**：结尾不能"补一下"。
+    ///
+    /// <para>
+    /// 旧版在截止期（MaxLatencyMs）到点、或滑行上限（GlideMaxMs）到点时，
+    /// 会把剩余积压 <c>return</c> 出去 —— 指数曲线已经把速度降到 1~2 单位/帧，
+    /// 突然补一发 6~30 单位，就是用户说的"末尾一下刻度感"；
+    /// 而且积压越大补得越多，调大惯性反而更明显。
+    /// 新版只有一条指数曲线 + 单帧上限 + 最后 1 个单位收尾，下面是钉住它的断言。
+    /// </para>
     /// </summary>
     private static void TestGlide()
     {
-        Section("松手滑行（惯性）");
+        Section("松手滑行与收尾");
 
-        const double Pending = 360.0;   // 3 格
-        const double Dt = 8.0;          // 120fps
-        const double Deadline = 60.0;
+        const int Upf = 30;          // 每格拆 4 帧
+        const double Dt = 8.0;       // 120fps
+        const double Tau = 45;
 
-        // ① 跟手期：必须在截止期内发完（这是低延迟的保证）
-        //    remaining 要逐帧递减 —— 真实循环里它就是 deadline - now，
-        //    越接近截止时间，"按期限均摊"那一项压得越狠，最后会一次发完。
-        //    固定传 60 的话永远只是指数衰减，模拟不出"到期收尾"。
-        var hand = Pending;
-        var handFrames = 0;
-        var remain = Deadline;
-        while (hand > 0.5 && handFrames < 100)
+        static List<int> Drain(double pending, double dt, double tau, int upf, out int sent)
         {
-            var e = ScrollAnimator.ComputeFrame(hand, Dt, remain, 45, 30, true, glide: false);
-            if (e == 0) break;
-            if (e > hand) e = (int)hand;
-            hand -= e;
-            handFrames++;
-            remain -= Dt;
+            var seq = new List<int>();
+            var p = pending;
+            while (p > 0 && seq.Count < 400)
+            {
+                var e = ScrollAnimator.ComputeFrame(p, dt, tau, upf, true);
+                if (e <= 0) break;
+                if (e > p + 0.001) break;          // 发超了也算失败
+                p -= e;
+                seq.Add(e);
+            }
+            sent = (int)Math.Round(pending - p);
+            return seq;
         }
-        Check("跟手期在截止期内发完（≤9 帧 / 72ms）", handFrames <= 9, handFrames + " 帧");
 
-        // ② 滑行期：同样 360 单位，同样的 dt，应该拖得明显更久
-        var glide = Pending;
-        var glideFrames = 0;
-        var glideSent = 0.0;
-        while (glide > 0.5 && glideFrames < 300)
+        // ① 跟手曲线：总量守恒、能停下来、末尾单调不增
+        var hand = Drain(120, Dt, Tau, Upf, out var handSent);
+        Check("跟手期总量一单位不差", handSent == 120, $"发出 {handSent}");
+        Check("跟手期能停下来（不会一直 1 单位/帧 爬）", hand.Count < 60, $"{hand.Count} 帧");
+        Check("跟手期末尾不突增（允许舍入 ±1）", TailMonotone(hand, 8), string.Join("/", hand.TakeLast(8)));
+
+        // ② 滑行：τ 由「滑行时长」反解 —— 同样的积压要拖得更久，且结尾同样不突增
+        var glideTau = ScrollAnimator.GlideTau(120, 300);
+        Check("滑行 τ 由时长反解（比跟手 τ 大）", glideTau > Tau, $"{glideTau:0.0} ms");
+        var glide = Drain(120, Dt, glideTau, Upf, out var glideSent);
+        Check("滑行期总量一单位不差", glideSent == 120, $"发出 {glideSent}");
+        Check("滑行期明显比跟手期长（>1.3 倍帧数）", glide.Count > hand.Count * 1.3,
+            $"{glide.Count} vs {hand.Count} 帧");
+        Check("滑行期末尾不突增", TailMonotone(glide, 8), string.Join("/", glide.TakeLast(8)));
+
+        // ③ 积压越大，滑行 τ 越小（同样的时长走完更多量）—— 连甩之后才不会飘半秒
+        var small = ScrollAnimator.GlideTau(120, 300);
+        var big = ScrollAnimator.GlideTau(600, 300);
+        Check("积压越大滑行 τ 越小（时长恒定）", big < small, $"{big:0.0} vs {small:0.0}");
+        Check("滑行 τ 有下限（不会小到一帧发完）", big >= 12, $"{big:0.0}");
+
+        // ④ 单帧上限：追赶时也不许"一帧跨好几格"
+        var burst = ScrollAnimator.ComputeFrame(600, 16.7, Tau, Upf, true);
+        Check("单帧不超过 3 个标准帧量（默认 90 单位）", burst <= Upf * 3, $"{burst} 单位");
+
+        // ⑤ 关闭平滑仍然一次发完；只剩 1 单位时一次收掉
+        Check("关闭平滑时一次发完", ScrollAnimator.ComputeFrame(360, 8, 45, Upf, false) == 360);
+        Check("最后 1 个单位一次收掉（不留 1 单位/帧 的尾巴）",
+            ScrollAnimator.ComputeFrame(1, 8, 45, Upf, true) == 1);
+
+        // ⑥ 真实循环的整段模拟：跟手 → 松手（τ 平滑接管）→ 收尾
+        foreach (var (start, fps) in new[] { (120.0, 60.0), (120.0, 144.0), (360.0, 60.0), (600.0, 144.0) })
         {
-            var e = ScrollAnimator.ComputeFrame(glide, Dt, Deadline, 110, 30, true, glide: true);
-            if (e == 0) break;
-            if (e > glide) e = (int)glide;
-            glide -= e;
-            glideSent += e;
-            glideFrames++;
+            var seq = Simulate(start, fps, GlideMs: 300, out var frames);
+            var last = seq.Count == 0 ? 0 : seq[^1];
+            var maxFrame = seq.Count == 0 ? 0 : seq.Max();
+            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）总量守恒", frames == (int)start, $"{frames}");
+            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）末尾不突增", TailMonotone(seq, 10),
+                string.Join("/", seq.TakeLast(10)));
+            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）最后一帧 ≤ 2 单位（结尾不补发）",
+                last <= 2, $"{last} 单位");
+            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）单帧 ≤ 90 单位", maxFrame <= 90, $"{maxFrame} 单位");
         }
-        Check("滑行期明显比跟手期长（>2 倍帧数）", glideFrames > handFrames * 2,
-            $"{glideFrames} vs {handFrames} 帧");
-        Check("滑行不发少也不发多（总量一单位不差）", Math.Abs(glideSent - Pending) < 0.51,
-            glideSent.ToString("0"));
 
-        // ③ 滑行期"截止期已过"不能变成一次性倾泻 —— 这是最容易写错的一处
-        var late = ScrollAnimator.ComputeFrame(360, Dt, -50, 110, 30, true, glide: true);
-        Check("滑行期不受过期截止期影响（不会一次发完）", late < 360, late + " 单位");
-
-        // ④ 关掉滑行（τ=0 走不走 glide 分支）应与跟手一致
-        var off = ScrollAnimator.ComputeFrame(360, Dt, Deadline, 45, 30, true, glide: false);
-        Check("关闭滑行时维持原来的跟手行为", off > 0);
-
-        // ⑤ 越小的滑行 τ 收得越快（单调）
-        var slow = ScrollAnimator.ComputeFrame(360, Dt, 60, 200, 30, true, glide: true);
-        var fast = ScrollAnimator.ComputeFrame(360, Dt, 60, 60, 30, true, glide: true);
-        Check("滑行 τ 越大，单帧发得越少（尾巴越长）", slow < fast, $"{slow} vs {fast}");
-
-        // ⑥ 配置项要能整格化、且默认开启
+        // ⑦ 参数默认值与夹取
         var c = AppConfig.Default();
-        Check("默认开启滑行（GlideTauMs > 0）", c.Smooth.GlideTauMs > 0, c.Smooth.GlideTauMs.ToString());
-        Check("默认滑行上限在合理范围", c.Smooth.GlideMaxMs >= 120 && c.Smooth.GlideMaxMs <= 800,
-            c.Smooth.GlideMaxMs.ToString());
-        c.Smooth.GlideTauMs = 999;
-        c.Smooth.GlideMaxMs = 5000;
+        Check("默认开启滑行（GlideMs > 0）", c.Smooth.GlideMs > 0, c.Smooth.GlideMs.ToString());
+        Check("默认滑行时长合理（200~400ms）",
+            c.Smooth.GlideMs >= 200 && c.Smooth.GlideMs <= 400, c.Smooth.GlideMs.ToString());
+        c.Smooth.GlideMs = 9999;
         c.Smooth.GlideDelayMs = 1;
         c.Normalize();
-        Check("越界的滑行参数会被夹回", c.Smooth.GlideTauMs <= 400 && c.Smooth.GlideMaxMs <= 800 &&
-                                        c.Smooth.GlideDelayMs >= 10,
-            $"{c.Smooth.GlideTauMs}/{c.Smooth.GlideMaxMs}/{c.Smooth.GlideDelayMs}");
+        Check("越界的滑行参数会被夹回", c.Smooth.GlideMs <= 400 && c.Smooth.GlideDelayMs >= 10,
+            $"{c.Smooth.GlideMs}/{c.Smooth.GlideDelayMs}");
+    }
+
+    /// <summary>
+    /// 复刻动画线程的一整段：跟手 τ → 松手后按滑行时长反解 τ、55ms 过渡 → 收尾。
+    /// 返回每帧发出量；<paramref name="sent"/> 是总量。
+    /// </summary>
+    private static List<int> Simulate(double start, double fps, int GlideMs, out int sent)
+    {
+        const int Upf = 30;
+        const double GlideDelay = 30, Ramp = 55, Tau = 45;
+        var dt = 1000.0 / fps;
+        var seq = new List<int>();
+        var p = start;
+        var t = 0.0;
+        var glideStart = -1.0;
+        var glideTau = 0.0;
+        var lastInput = 0.0;
+
+        while (p > 0 && seq.Count < 400)
+        {
+            t += dt;
+            var tau = Tau;
+            if (GlideMs > 0 && t - lastInput > GlideDelay)
+            {
+                if (glideStart < 0)
+                {
+                    glideStart = t;
+                    glideTau = ScrollAnimator.GlideTau(p, GlideMs);
+                }
+                var w = Math.Clamp((t - glideStart) / Ramp, 0, 1);
+                w = w * w * (3 - 2 * w);
+                tau = Tau + (glideTau - Tau) * w;
+            }
+
+            var e = ScrollAnimator.ComputeFrame(p, dt, tau, Upf, true);
+            if (e <= 0) break;
+            if (e > p) break;
+            p -= e;
+            seq.Add(e);
+        }
+        sent = (int)Math.Round(start - p);
+        return seq;
+    }
+
+    /// <summary>末尾 <paramref name="n"/> 帧是否单调不增（允许 ±1 的舍入抖动）。</summary>
+    private static bool TailMonotone(List<int> seq, int n)
+    {
+        if (seq.Count < 2) return true;
+        var from = Math.Max(1, seq.Count - n);
+        for (var i = from; i < seq.Count; i++)
+            if (seq[i] > seq[i - 1] + 1) return false;
+        return true;
     }
 
     private static void TestFrameSpreading()
     {
         Section("平滑摊帧");
-        // 360 单位在 60ms 内、8ms 一帧、τ=45 → 必须摊成多帧、且刚好发完
+
+        const int Upf = 30;
+        const double Tau = 45;
+
+        // 360 单位、8ms 一帧、τ=45：必须摊成多帧、刚好发完、单帧不超过 1 格
         var pending = 360.0;
         var frames = 0;
         var maxPerFrame = 0;
         var sum = 0;
-        var remaining = 60.0;
 
         while (pending > 0 && frames < 40)
         {
-            var emit = ScrollAnimator.ComputeFrame(pending, 8, remaining, 45, 30, true);
-            if (emit <= 0) break;          // 卡住不发 = 失败，pending 会留下证据
+            var emit = ScrollAnimator.ComputeFrame(pending, 8, Tau, Upf, true);
+            if (emit <= 0) break;              // 卡住不发 = 失败
             if (emit > pending + 0.001) break; // 发超了也是失败
             pending -= emit;
             sum += emit;
             maxPerFrame = Math.Max(maxPerFrame, emit);
             frames++;
-            remaining -= 8;
         }
 
-        Check("能在截止时间内发完", pending <= 0.5, $"剩余 {pending}");
+        Check("能在合理帧数内发完", pending <= 0.5, $"剩余 {pending}");
         Check("总量一单位不差", sum == 360, $"发出 {sum}");
         Check("确实摊成了多帧（不是一次性甩出）", frames >= 3, $"用了 {frames} 帧");
         Check("每帧不超过原样一格（看着才顺）", maxPerFrame <= 120, $"最大 {maxPerFrame}");
 
         // 关闭平滑时必须一次性发完
-        var one = ScrollAnimator.ComputeFrame(360, 8, 60, 45, 30, false);
+        var one = ScrollAnimator.ComputeFrame(360, 8, Tau, Upf, false);
         Check("关闭平滑时一次发完", one == 360, $"实际 {one}");
 
-        // 到期必须整块冲掉（不能让尾巴无限拖）
-        var flush = ScrollAnimator.ComputeFrame(360, 8, 0, 45, 30, true);
-        Check("超过截止时间立刻发完", flush == 360, $"实际 {flush}");
+        /* 旧版这里有一条「超过截止时间立刻发完」的断言 —— 那正是要修的 bug。
+         * 现在同样的输入只能发一小段：没有截止期，也就没有倾泻。 */
+        var late = ScrollAnimator.ComputeFrame(360, 8, Tau, Upf, true);
+        Check("过期不会一次发完（没有截止期倾泻）", late < 120, $"{late} 单位");
 
         /* ── 单格滚动（120 单位）的平滑形态 ──
-         * 这是用户实测反馈的场景："一格一格拨，还是段落式的开始和结束"。
          * 修复前的每帧下限写死 30 单位（=1/4 格）：120 的积压被 30/30/30
          * 轰掉四分之三，剩下的再按截止期赶工 —— 开头就是一个大跳。
-         * 下限改成按比例给之后，开头必须是指数曲线那条平滑的递减序列。 */
-        var single = 120.0;
-        var remainOne = 100.0;                    // MaxLatencyMs 的默认值
-        var firstEmit = ScrollAnimator.ComputeFrame(single, 6.94, remainOne, 45, 30, true);
+         * 下限删掉之后，首帧必须是曲线本身给的那一小步。 */
+        var firstEmit = ScrollAnimator.ComputeFrame(120, 6.94, Tau, Upf, true);
         Check("单格滚动首帧不超过五分之一格（不突发）", firstEmit <= 24, $"首帧 {firstEmit}");
 
-        var p = single;
+        var p = 120.0;
         var seq = new List<int>();
         while (p > 0 && seq.Count < 200)
         {
-            var e = ScrollAnimator.ComputeFrame(p, 6.94, remainOne, 45, 30, true);
+            var e = ScrollAnimator.ComputeFrame(p, 6.94, Tau, Upf, true);
             if (e <= 0) break;
             if (e > p + 0.001) break;             // 发超了也是失败
             p -= e;
             seq.Add(e);
-            remainOne -= 6.94;
         }
         Check("单格滚动能完整发完", p <= 0.5, $"剩余 {p}");
         Check("单格滚动总量一单位不差", seq.Sum() == 120, $"发出 {seq.Sum()}");
@@ -386,6 +454,11 @@ internal static class SelfTest
         Check("单格滚动开头单调递减（不是 30/30/30 的阶梯）",
             seq.Count >= 7 && seq.Take(6).Zip(seq.Skip(1), (a, b) => b <= a).All(x => x),
             string.Join("/", seq.Take(8)));
+
+        /* 首帧 dt 极小（线程刚被唤醒时 dt≈0.2ms）时不能按"一个整帧量"发 ——
+         * 那会让每一格滚动的开头都先跳 15%。 */
+        var tiny = ScrollAnimator.ComputeFrame(120, 0.2, Tau, Upf, true);
+        Check("dt≈0 的首帧只发 1 单位（不按整帧量突发）", tiny <= 2, $"{tiny} 单位");
     }
 
     private static void TestFrameRateFollowsDisplay()
@@ -568,8 +641,8 @@ internal static class SelfTest
         legacy.Behavior.PauseWhileSettingsOpen = true;
         legacy.Normalize();
         Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
-        // v1 的配置会一路迁移到当前版本（v2 的自排除 + v3 的平滑范围）
-        Check("迁移后 schemaVersion 记为当前版本 3", legacy.SchemaVersion == 3, legacy.SchemaVersion.ToString());
+        // v1 的配置会一路迁移到当前版本（v2 自排除 + v3 平滑范围 + v4 滑行语义）
+        Check("迁移后 schemaVersion 记为当前版本 4", legacy.SchemaVersion == 4, legacy.SchemaVersion.ToString());
 
         // 已经是 v2 之后，用户自己打开就不再被覆盖
         var kept = AppConfig.Default();
@@ -588,7 +661,7 @@ internal static class SelfTest
         scope2.Normalize();
         Check("v2 老配置的平滑范围被纠正为所有滚动", scope2.Smooth.Scope == SmoothScope.Always,
             scope2.Smooth.Scope.ToString());
-        Check("迁移后 schemaVersion 记为 3", scope2.SchemaVersion == 3, scope2.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为 4", scope2.SchemaVersion == 4, scope2.SchemaVersion.ToString());
 
         // v3 之后用户自己选回「仅加速时」不再被覆盖
         var keptScope = AppConfig.Default();
@@ -596,6 +669,24 @@ internal static class SelfTest
         keptScope.Smooth.Scope = SmoothScope.BoostedOnly;
         keptScope.Normalize();
         Check("v3 之后用户选回仅加速时不再被覆盖", keptScope.Smooth.Scope == SmoothScope.BoostedOnly);
+
+        /* ── v3 → v4 的迁移：滑行从「τ + 硬上限」改成「时长」──
+         * 老值 110 是时间常数，直接当 110ms 用尾巴会短一半；
+         * 但 0 是用户明确关掉了滑行，必须保留。 */
+        var oldGlide = AppConfig.Default();
+        oldGlide.SchemaVersion = 3;
+        oldGlide.Smooth.GlideMs = 110;              // 旧配置里的 glideTauMs
+        oldGlide.Normalize();
+        Check("v3 老配置的滑行时长换算成新默认值", oldGlide.Smooth.GlideMs == 300,
+            oldGlide.Smooth.GlideMs.ToString());
+        Check("v4 迁移后 schemaVersion 记为 4", oldGlide.SchemaVersion == 4, oldGlide.SchemaVersion.ToString());
+
+        var glideOff = AppConfig.Default();
+        glideOff.SchemaVersion = 3;
+        glideOff.Smooth.GlideMs = 0;                // 用户关掉了滑行
+        glideOff.Normalize();
+        Check("关掉滑行的老配置升级后仍然是关的", glideOff.Smooth.GlideMs == 0,
+            glideOff.Smooth.GlideMs.ToString());
     }
 
     private static void TestFilter()
@@ -700,7 +791,7 @@ internal static class SelfTest
                 IsWhole(AppConfig.Default().Boost.SaturationPerSec) &&
                 IsWhole(AppConfig.Default().Boost.MaxMultiplier) &&
                 IsWhole(AppConfig.Default().Smooth.TailTauMs) &&
-                IsWhole(AppConfig.Default().Smooth.MaxLatencyMs) &&
+                IsWhole(AppConfig.Default().Smooth.GlideMs) &&
                 IsWhole(AppConfig.Default().Smooth.MaxBacklogNotches));
             Check("满速点至少比阈值高 5 格",
                 c3.Boost.SaturationPerSec >= c3.Boost.FastThresholdPerSec + 5,

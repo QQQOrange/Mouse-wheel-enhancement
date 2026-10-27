@@ -37,14 +37,18 @@ public sealed class RuntimeSettings
     public bool AutoFps { get; init; }
     public int UnitsPerFrame { get; init; }
     public double TauMs { get; init; }
-    public double MaxLatencyMs { get; init; }
     public double MaxBacklogUnits { get; init; }
 
-    /// <summary>松手后滑行的时间常数；0 = 不滑行（松手即停）。</summary>
-    public double GlideTauMs { get; init; }
-
-    /// <summary>滑行最长持续多久，超过就一次性收尾。</summary>
-    public double GlideMaxMs { get; init; }
+    /// <summary>
+    /// 松手后滑行**多久**（毫秒）；0 = 不做额外滑行，按跟手曲线自然收尾。
+    ///
+    /// <para>
+    /// 注意是"时长"不是"时间常数"：动画器会按当时的积压反解 τ，使得到这一刻
+    /// 刚好只剩最后 1 个单位。旧版本这里是 τ，还要配一个 GlideMaxMs 硬截断，
+    /// 而那个截断正是末尾顿挫的来源 —— 见 DESIGN 第 28 节。
+    /// </para>
+    /// </summary>
+    public double GlideMs { get; init; }
 
     /// <summary>停止输入多久算"松手"。</summary>
     public double GlideDelayMs { get; init; }
@@ -53,22 +57,6 @@ public sealed class RuntimeSettings
     public bool IgnoreShift { get; init; }
     public bool InvertDirection { get; init; }
     public bool EnhancePrecisionInput { get; init; }
-
-    /// <summary>
-    /// 每帧出帧量的**下限比例**：跟手期每帧至少发掉当前积压的这个比例。
-    ///
-    /// <para>
-    /// 只作用于跟手期（滑行期是纯指数衰减，见 <see cref="ScrollAnimator.ComputeFrame"/>），
-    /// 用途是兜住尾巴 —— 别让最后几个单位按 1 unit/帧 爬半天。
-    /// </para>
-    /// <para>
-    /// 必须是**比例**而不能是绝对值：曾经的下限写死 30 单位（=1/4 格），
-    /// 单格滚动（积压 120）时前三帧会被劫持成 30/30/30 的突发，
-    /// 四分之三的量在 20ms 内砸出去，剩下的再一帧帧爬 ——
-    /// 这正是"段落式的开始"的来源。改成比例后，下限永远追不上曲线本身。
-    /// </para>
-    /// </summary>
-    public const double MinFrameRatio = 0.15;
 
     public FilterMode FilterMode { get; init; }
     public IReadOnlySet<string> FilterApps { get; init; } = new HashSet<string>();
@@ -149,10 +137,8 @@ public sealed class RuntimeSettings
             AutoFps = c.Smooth.AutoFps,
             UnitsPerFrame = Math.Max(1, (int)Math.Round(Native.WHEEL_DELTA / (double)framesPerNotch)),
             TauMs = c.Smooth.TailTauMs,
-            MaxLatencyMs = c.Smooth.MaxLatencyMs,
             MaxBacklogUnits = c.Smooth.MaxBacklogNotches * Native.WHEEL_DELTA,
-            GlideTauMs = Math.Max(0, c.Smooth.GlideTauMs),
-            GlideMaxMs = Math.Max(60, c.Smooth.GlideMaxMs),
+            GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
             IgnoreCtrlAlt = c.Input.IgnoreCtrlAltWheel,
             IgnoreShift = c.Input.IgnoreShiftWheel,

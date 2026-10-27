@@ -283,8 +283,7 @@ public partial class MainWindow : Window
             Fpn6.IsChecked = c.Smooth.FramesPerNotch == 6;
             Fpn8.IsChecked = c.Smooth.FramesPerNotch == 8;
             TauSlider.Value = c.Smooth.TailTauMs;
-            GlideSlider.Value = c.Smooth.GlideTauMs;
-            LatencySlider.Value = c.Smooth.MaxLatencyMs;
+            GlideSlider.Value = c.Smooth.GlideMs;
             BacklogSlider.Value = c.Smooth.MaxBacklogNotches;
 
             ModeBlack.IsChecked = c.Filter.Mode == FilterMode.Blacklist;
@@ -311,7 +310,7 @@ public partial class MainWindow : Window
          * 这里把**本方法用到的每一个控件**都列进来了 —— 少列一个，就会在
          * "用户刚好在这一刻拖了一下滑块"时炸 NullReference。 */
         if (ThresholdValue == null || SatValue == null || MaxMultValue == null ||
-            CurveHint == null || TauValue == null || LatencyValue == null ||
+            CurveHint == null || TauValue == null ||
             BacklogValue == null || FpsValue == null || FpsManualGroup == null ||
             GlideValue == null || GlideSlider == null ||
             ThemeNow == null || ThemeSystem == null ||
@@ -325,21 +324,20 @@ public partial class MainWindow : Window
         MaxMultValue.Text = $"{c.Boost.MaxMultiplier:0}×";
         CurveHint.Text = $"拨 1 格 → 滚 {c.Boost.MaxMultiplier:0} 格";
         TauValue.Text = $"{c.Smooth.TailTauMs:0} ms";
-        GlideValue.Text = c.Smooth.GlideTauMs <= 0 ? "关闭" : $"{c.Smooth.GlideTauMs:0} ms";
+        GlideValue.Text = c.Smooth.GlideMs <= 0 ? "关闭" : $"{c.Smooth.GlideMs:0} ms";
 
         /* 这两项是有依赖的：滑行只能把"松手时还没发完的量"慢慢放出来。
          * 惯性长度太小 → 一次滚动两三帧就发完了 → 松手时手里是空的 → 滑行形同虚设。
          * 用户不会自己想到这一层，直接在界面上指出来。 */
         if (GlideHint != null)
         {
-            var clash = c.Smooth.GlideTauMs > 0 && c.Smooth.TailTauMs < 20;
+            var clash = c.Smooth.GlideMs > 0 && c.Smooth.TailTauMs < 20;
             GlideHint.Visibility = clash ? Visibility.Visible : Visibility.Collapsed;
             GlideHint.Text = clash
                 ? $"「惯性长度」只有 {c.Smooth.TailTauMs:0} ms，一次滚动在几帧内就发完了，" +
                   "松手时手里没有剩余量，这一项滑不起来 —— 把它调到 30 以上才会有尾巴。"
                 : "";
         }
-        LatencyValue.Text = $"{c.Smooth.MaxLatencyMs:0} ms";
         BacklogValue.Text = $"{c.Smooth.MaxBacklogNotches:0} 格";
 
         // 自动时显示显示器实际刷新率（刷新率一变这里会跟着变），手动时显示选定值
@@ -1091,7 +1089,7 @@ public partial class MainWindow : Window
     private void Glide_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
-        Services.Config.Smooth.GlideTauMs = (int)Math.Round(e.NewValue);
+        Services.Config.Smooth.GlideMs = (int)Math.Round(e.NewValue);
         Commit();
     }
 
@@ -1099,13 +1097,6 @@ public partial class MainWindow : Window
     {
         if (_loading) return;
         Services.Config.Smooth.TailTauMs = Math.Round(e.NewValue);
-        Commit();
-    }
-
-    private void Latency_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (_loading) return;
-        Services.Config.Smooth.MaxLatencyMs = Math.Round(e.NewValue);
         Commit();
     }
 

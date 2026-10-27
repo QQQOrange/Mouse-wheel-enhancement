@@ -249,14 +249,14 @@ public sealed class WheelEngine : IDisposable
              * 只有显式打开「在本窗口也暂停加速」时才跳过自己。 */
             if (s.ShouldSkipSelf(target.Exe))
             {
-                if (_animator.PendingUnits != 0) _animator.FlushSoon();
+                if (_animator.PendingUnits != 0) _animator.Clear();
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
             // 黑白名单
             if (!s.IsAppEnabled(target.Exe, target.Title))
             {
-                if (_animator.PendingUnits != 0) _animator.FlushSoon();
+                if (_animator.PendingUnits != 0) _animator.Clear();
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
@@ -271,8 +271,10 @@ public sealed class WheelEngine : IDisposable
             var shouldSmooth = s.SmoothEnabled && (decision.Boosted || s.SmoothAlways);
             if (!decision.Boosted && !shouldSmooth)
             {
-                // 完全原生放行；若动画器还有上一段的尾巴，催它立刻发完
-                if (_animator.PendingUnits != 0) _animator.FlushSoon();
+                /* 完全原生放行。若动画器还有上一段的尾巴，直接丢掉 ——
+                 * 这一下由系统原样处理，再补发一截旧积压只会让用户看到
+                 * "没加速却多滚了一点"。丢掉的是不到一格里的一小截，看不出来。 */
+                if (_animator.PendingUnits != 0) _animator.Clear();
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }

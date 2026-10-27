@@ -129,7 +129,30 @@ namespace MouseWheelEnhancement.Launcher
                 var quoted = QuoteArgs(args);
                 if (quoted.Length > 0) psi.Arguments = quoted;
 
-                Process.Start(psi);
+                var proc = Process.Start(psi);
+                if (proc == null) return 5;
+
+                /* 诊断开关是"跑完就退出"的，必须**等它跑完、把它的退出码带回去**。
+                 *
+                 * 以前这里一律 `Process.Start(...); return 0;` —— 于是
+                 * `MouseWheelEnhancement.exe --selftest` 永远返回 0，哪怕主程序里
+                 * 有几百条断言全挂。tools\publish.ps1 里那句"两个自检都通过"
+                 * 因此一直是在检查启动器自己的 0，等于没检查（实测过：
+                 * 把主程序自检故意跑挂，脚本照样报通过）。
+                 *
+                 * 普通启动不能等 —— 那是要常驻的图形界面。所以只认白名单。 */
+                if (IsSelfTerminating(args))
+                {
+                    if (!proc.WaitForExit(180_000))
+                    {
+                        Log("诊断模式 " + string.Join(" ", args) + " 超过 180 秒没退出，放弃等待");
+                        return 4;
+                    }
+
+                    Log("诊断模式退出码 " + proc.ExitCode);
+                    return proc.ExitCode;
+                }
+
                 return 0;
             }
             catch (Exception ex)
@@ -140,6 +163,29 @@ namespace MouseWheelEnhancement.Launcher
                     ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 5;
             }
+        }
+
+        /// <summary>
+        /// 这些参数跑完就自己退出，调用方（脚本、CI、人工）要的是它的结论。
+        ///
+        /// <para>
+        /// 只放确定会终止的几个：交互式探针（<c>--hover</c> / <c>--probe</c> /
+        /// <c>--wndprobe</c>）不在其中 —— 它们等人操作，等下去会挂住。
+        /// </para>
+        /// </summary>
+        private static readonly string[] SelfTerminatingArgs =
+        {
+            "--selftest", "--frametrace", "--smoke", "--measure",
+            "--taskcheck", "--checkupdate", "--apply-startup",
+        };
+
+        private static bool IsSelfTerminating(string[] args)
+        {
+            foreach (var a in args)
+                foreach (var w in SelfTerminatingArgs)
+                    if (string.Equals(a, w, StringComparison.OrdinalIgnoreCase))
+                        return true;
+            return false;
         }
 
         /// <summary><c>--runtimecheck</c>：只报告检测结果，不弹窗、不启动（诊断用）。</summary>

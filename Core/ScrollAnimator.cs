@@ -28,17 +28,31 @@ namespace MouseWheelEnhancement.Core;
 /// 精度约 0.5 ms，**只影响这一只定时器**，不改全局计时精度、也不额外费电。
 /// 它还顺带解决了"新输入到来要立刻出帧"：等两个句柄即可。
 ///
-/// # 摊帧算法
+/// # 摊帧算法：一条指数曲线走到底
 ///
-/// 每一帧发出去的量 = <c>max(指数曲线, 截止期限均摊)</c>：
-///   · **指数曲线** <c>pending · (1 − e^(−dt/τ))</c> 决定手感 —— τ 越小越干脆，
-///     越大越"绵"，也就是触控板那种惯性尾巴；
-///   · **截止期限均摊** <c>pending · dt / 剩余时间</c> 是保险：保证无论曲线多慢，
-///     输入后 <c>MaxLatencyMs</c> 内一定发完；
-///   · 每帧至少推进「积压 × <see cref="RuntimeSettings.MinFrameRatio"/>」与
-///     <c>UnitsPerFrame</c> 里的较小值，否则积压快见底时会退化成一点一点挪。
-///     **必须是比例**：绝对值下限（曾经的 30 单位 = 1/4 格）会在单格滚动时
-///     把前三帧劫持成突发，那正是"段落式的开始"。
+/// 每一帧发出去的量 = <c>pending · (1 − e^(−dt/τ))</c>。
+/// τ 只有一个来源、且**连续变化**：
+///   · **跟手期** τ = <see cref="RuntimeSettings.TauMs"/>（默认 45 ms）——
+///     输入还在来，τ 小一点才跟得上手；
+///   · **松手后** τ 由「滑行时长」反解：<c>τ = GlideMs / ln(积压 / 1)</c>，
+///     保证到 GlideMs 时只剩最后 1 个单位，自然停住；
+///   · 两个 τ 之间用 55 ms 的 smoothstep 过渡。**τ 不能一步跳变** ——
+///     从 45 直接换成 110 会让出帧速率瞬间掉一半，手感就是"咔"一下。
+///
+/// # 这里**没有**任何"时间到 → 把剩余量整块倒出去"的路径
+///
+/// 旧算法有两条这样的捷径：截止期（MaxLatencyMs）一到、或者滑行上限
+/// （GlideMaxMs）一到，就 <c>return 全部积压</c>。那是"末尾一下刻度感"的根源 ——
+/// 指数曲线已经把速度降到 1~2 单位/帧了，突然来一发 6~30 单位，
+/// 而且**积压越大、惯性调得越长，倒出去的越多**，所以怎么调参数都消不掉。
+/// 这一版改成：到点不再倾泻，只让 τ 平滑接管；收尾只剩最后 1 个单位时一次收掉
+/// （1 单位 = 1/120 格，亚像素）。
+///
+/// # 单帧上限
+///
+/// <c>UnitsPerFrame × 3</c>（默认 90 单位 = 3/4 格）。连续甩动导致积压很大时，
+/// 最多按这个量追赶，不会出现"一帧跨三格"的瞬移；追不上的部分在推送侧截断
+/// （见 <see cref="Push"/>），宁可少滚一点，也不要跳一下。
 ///
 /// # 无锁
 ///
@@ -48,6 +62,22 @@ namespace MouseWheelEnhancement.Core;
 internal sealed class ScrollAnimator : IDisposable
 {
     private const double Milli = 1000.0;
+
+    /// <summary>只剩这么多就一次收掉（单位）。1 单位 = 1/120 格，亚像素。</summary>
+    private const double CloseUnits = 1.0;
+
+    /// <summary>跟手 τ → 滑行 τ 的过渡时长（毫秒）。</summary>
+    private const double GlideRampMs = 55.0;
+
+    /// <summary>τ 的下限：再小就等于"一帧发完"，那不是平滑。</summary>
+    private const double MinTauMs = 6.0;
+
+    /// <summary>反解出来的滑行 τ 的上下限。</summary>
+    private const double MinGlideTauMs = 12.0;
+    private const double MaxGlideTauMs = 400.0;
+
+    /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（默认 90 单位 = 3/4 格）。</summary>
+    private const double MaxCatchUpFactor = 3.0;
 
     private readonly AutoResetEvent _wake = new(false);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -65,8 +95,11 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>本轮滑行开始的时刻；0 = 当前不在滑行。</summary>
     private long _glideStartTicks;
 
-    /// <summary>这一段积压最晚什么时候必须发完（Stopwatch ticks）。</summary>
-    private long _deadlineTicks;
+    /// <summary>
+    /// 本轮滑行的时间常数（毫秒）。松手那一刻按「滑行时长」反解一次，
+    /// 之后整轮不变 —— 中途不变才不会有速率台阶。
+    /// </summary>
+    private double _glideTauMs;
 
     private RuntimeSettings _settings = RuntimeSettings.From(AppConfig.Default());
 
@@ -90,6 +123,18 @@ internal sealed class ScrollAnimator : IDisposable
 
     /// <summary>是不是走的高精度定时器（诊断用）。</summary>
     public bool UsingHighResolutionTimer => _frameTimer != IntPtr.Zero;
+
+    /// <summary>
+    /// 诊断口：设上之后，每摊好一帧就交给它，**不再真的注入**。
+    ///
+    /// <para>
+    /// 给 <c>--frametrace</c> 用。之所以要"不注入"，是因为它要量的是
+    /// "线程从长睡里醒来之后第一帧发了多少" —— 这个量取决于主循环怎么记上一帧的
+    /// 时刻，自检里的固定 dt 模拟测不到。而量它不该需要窗口、焦点，
+    /// 更不该把测试滚动打进用户正在用的应用里。
+    /// </para>
+    /// </summary>
+    internal Action<int, double, double>? FrameSink;
 
     public void UpdateSettings(RuntimeSettings s) => Volatile.Write(ref _settings, s);
 
@@ -123,31 +168,23 @@ internal sealed class ScrollAnimator : IDisposable
          * 不丢的话，用户往回滚的那一瞬间会先继续往前冲一小段（积压还在往外发），
          * 手感就是"往回想滚却滚不动"。 */
         if (s.FlushOnReverse && sign != 0 && Math.Sign(total) != sign)
-            Interlocked.Exchange(ref _pendingMilli, (long)units * (long)Milli);
+            total = Interlocked.Exchange(ref _pendingMilli, (long)units * (long)Milli);
 
-        var now = _clock.ElapsedTicks;
-        var deadline = now + MsToTicks(s.MaxLatencyMs);
-
-        /* 积压超过上限 → 把截止时间压到下一帧，逼它一次性发完。
-         * 连续甩动时积压会越滚越大，不设这道闸的话延迟会线性增长。 */
-        if (Math.Abs(Interlocked.Read(ref _pendingMilli)) > s.MaxBacklogUnits * Milli)
-            deadline = now + MsToTicks(Math.Max(2.0, s.FrameIntervalMs * 2));
-
-        Interlocked.Exchange(ref _deadlineTicks, deadline);
+        /* 积压上限：**直接截断**，而不是记一条"到点就一次发完"的截止期。
+         *
+         * 旧写法是给积压记一个截止时间、逼动画器下一帧全倒出去 —— 那正是
+         * 快速连甩时"一顿一大格"的来源（一帧能倒出 3~5 格）。
+         * 改成截断后，动画器手里的量始终有界，单帧量自然有界；
+         * 代价是超过注入速度的极端甩动会少滚一点 —— 宁可少滚，也不要跳。 */
+        var capMilli = (long)(s.MaxBacklogUnits * Milli);
+        if (Math.Abs(total) > capMilli)
+            total = Interlocked.Exchange(ref _pendingMilli, Math.Sign(total) * capMilli);
 
         /* 记下"刚有输入"的时刻：动画线程靠它判断用户是不是已经松手。
-         * 顺便把滑行起点清零 —— 新输入意味着这一轮滑行结束了，
-         * 再滚就是"跟手"阶段，要重新按 deadline 走。 */
-        Interlocked.Exchange(ref _lastInputTicks, now);
+         * 顺便把滑行起点清零 —— 新输入意味着这一轮滑行结束了。 */
+        Interlocked.Exchange(ref _lastInputTicks, _clock.ElapsedTicks);
         Interlocked.Exchange(ref _glideStartTicks, 0);
 
-        _wake.Set();
-    }
-
-    /// <summary>把积压全部立刻发出去（用户反向滚动、切应用、暂停功能时用）。</summary>
-    public void FlushSoon()
-    {
-        Interlocked.Exchange(ref _deadlineTicks, 0);
         _wake.Set();
     }
 
@@ -159,57 +196,54 @@ internal sealed class ScrollAnimator : IDisposable
     }
 
     /// <summary>
-    /// 测试与自检用的同步调用：绕过线程，按给定参数算一帧该发多少。
+    /// 一帧该发多少（纯函数，便于自检直接断言）。
+    ///
+    /// <para>
+    /// **这里没有"到期一次发完"的捷径。** 输出永远是同一条指数曲线的一小段，
+    /// 只是被单帧上限和收尾阈值夹了一下 —— 这样末尾才不会突然跳一下。
+    /// </para>
     /// </summary>
-    /// <param name="minFrameRatio">跟手期的每帧下限比例，见 <see cref="RuntimeSettings.MinFrameRatio"/>。</param>
-    public static int ComputeFrame(double pendingUnits, double dtMs, double remainingMs,
-        double tauMs, int unitsPerFrame, bool smooth, bool glide = false,
-        double minFrameRatio = RuntimeSettings.MinFrameRatio)
+    /// <param name="pendingUnits">还没发完的量（单位，1 格 = 120）。</param>
+    /// <param name="dtMs">距上一帧的毫秒数。</param>
+    /// <param name="tauMs">本帧的时间常数：跟手期用配置值，松手后由滑行时长反解。</param>
+    /// <param name="unitsPerFrame">一个标准帧量（120 / 每格拆分），用于算追赶上限。</param>
+    /// <param name="smooth">关闭平滑时一次发完。</param>
+    public static int ComputeFrame(double pendingUnits, double dtMs, double tauMs,
+        int unitsPerFrame, bool smooth)
     {
         if (pendingUnits == 0) return 0;
         if (!smooth) return RoundUnits(pendingUnits);
 
-        /* 截止期已过（或者本来就没有截止期）→ 一次性发完。
-         * 但**滑行期必须排除在外**：松手之后 remainingMs 几乎必然已经 ≤ 0，
-         * 走这条捷径就等于把整个惯性吃掉，滑行永远不会发生。 */
-        if (!glide && remainingMs <= 0) return RoundUnits(pendingUnits);
+        /* 只剩最后 1 个单位（1/120 格，不到 1 像素）→ 直接收掉。
+         * 指数曲线永远到不了 0，没有这条就会一直按 1 单位/帧 爬个不停；
+         * 而 1 个单位本身低于任何屏幕能表现的最小位移，收掉看不出接缝。 */
+        if (Math.Abs(pendingUnits) <= CloseUnits) return RoundUnits(pendingUnits);
 
-        var f = 1.0 - Math.Exp(-dtMs / Math.Max(1.0, tauMs));
-        var byCurve = pendingUnits * f;
+        var emit = pendingUnits * (1.0 - Math.Exp(-dtMs / Math.Max(MinTauMs, tauMs)));
 
-        double emit;
-        if (glide)
-        {
-            /* 滑行期：**只用**指数衰减，不再赶截止期限。
-             *
-             * remainingMs 那套的存在意义是"保证跟手"——一次输入最多拖 MaxLatencyMs。
-             * 但松手之后已经没有"跟手"这回事了：继续按 deadline 发完，表现就是
-             * 内容流畅地滚一下、然后咔一下停死，也就是用户说的"段落式的停"。
-             * 去掉这个约束，剩下的量才会像有惯性一样慢慢滑到静止。
-             *
-             * 这里也**不设每帧下限**：尾巴本来就是该越来越慢的，
-             * 强行托一个下限会把指数衰减掰成匀速，惯性感就没了。 */
-            emit = byCurve;
-        }
-        else
-        {
-            var byDeadline = pendingUnits * Math.Min(1.0, dtMs / Math.Max(dtMs, remainingMs));
-            emit = Math.Max(byCurve, byDeadline);
-
-            /* 跟手期的每帧下限：至少推进「积压 × 比例」与「一个标准帧量」里的较小值。
-             *
-             * 这条只为兜住尾巴（积压快见底时别按 1 unit/帧 爬），
-             * 所以按比例给 —— 绝对值下限卡的是"每帧至少 30 单位"，
-             * 单格滚动（积压 120）时前三帧会被劫持成 30/30/30 的突发，
-             * 也就是段落式的开始；按比例给，下限永远追不上曲线本身。 */
-            var floor = Math.Min(unitsPerFrame,
-                Math.Abs(pendingUnits) * Math.Clamp(minFrameRatio, 0.02, 0.5));
-            if (Math.Abs(emit) < floor && Math.Abs(pendingUnits) > floor)
-                emit = Math.Sign(pendingUnits) * floor;
-        }
+        /* 单帧上限：连续甩动时按这个量追赶，不会一帧跨好几格。
+         * 追赶期的量本来就不该再大 —— 一帧发出去的位移是"看得见的一跳"，
+         * 超过 3/4 格就会和"手指滚一格"混淆。 */
+        var cap = Math.Max(1.0, unitsPerFrame * MaxCatchUpFactor);
+        if (Math.Abs(emit) > cap) emit = Math.Sign(pendingUnits) * cap;
 
         if (Math.Abs(emit) > Math.Abs(pendingUnits)) emit = pendingUnits;
         return RoundUnits(emit);
+    }
+
+    /// <summary>
+    /// 由「松手后滑行多久」反解时间常数：<c>pending · e^(−glideMs/τ) = CloseUnits</c>。
+    ///
+    /// <para>
+    /// 于是 <c>glideMs</c> 是**真的时长** —— 到那一刻只剩最后 1 个单位，
+    /// 不会被截断，也就不会在结尾倒出一坨。积压越大，τ 越小（同样的时长里
+    /// 走完更多的量），这正是"连甩之后不能飘半秒"想要的效果。
+    /// </para>
+    /// </summary>
+    public static double GlideTau(double pendingUnits, double glideMs)
+    {
+        var span = Math.Log(Math.Max(Math.Abs(pendingUnits) / CloseUnits, 1.5));
+        return Math.Clamp(glideMs / Math.Max(span, 0.2), MinGlideTauMs, MaxGlideTauMs);
     }
 
     private static int RoundUnits(double units)
@@ -262,9 +296,17 @@ internal sealed class ScrollAnimator : IDisposable
                      * 然后无限期等下一次输入 —— 一个核都不占。 */
                     ReleaseTimerPrecision();
                     Interlocked.Exchange(ref _glideStartTicks, 0);
-                    _lastFrameTicks = now;
-                    _nextFrameTicks = now;
+
+                    /* **等醒来的这一刻才算"上一帧"**。
+                     *
+                     * 旧写法是在等之前就把 _lastFrameTicks 记成当时的时间。线程可能
+                     * 睡上几分钟，醒来后 dt = 整段空闲（外面 clamp 到 50ms），
+                     * 首帧就按 50ms 的量发 —— 单格滚动开头先跳出去 0.375 格（实测 45 单位）。
+                     * 记在醒来之后，首帧 dt≈0，开头就只剩亚像素的一小步。 */
                     _wake.WaitOne(Timeout.Infinite);
+                    var wake = _clock.ElapsedTicks;
+                    _lastFrameTicks = wake;
+                    _nextFrameTicks = wake;
                     continue;
                 }
 
@@ -284,27 +326,32 @@ internal sealed class ScrollAnimator : IDisposable
                 _lastFrameTicks = now;
 
                 var pendingUnits = pendingMilli / Milli;
-                var remainingMs = TicksToMs(Interlocked.Read(ref _deadlineTicks) - now);
 
-                /* 松手判定：超过 GlideDelayMs 没有新输入，就认为手指/滚轮停了，
-                 * 从这一刻起不再受截止期约束，按 GlideTauMs 指数衰减地滑行。
-                 * GlideMaxMs 是硬上限 —— 连甩之后积压量大，不能让内容飘半秒。 */
-                var glide = false;
-                if (s.SmoothEnabled && s.GlideTauMs > 0)
+                /* 松手判定：超过 GlideDelayMs 没有新输入，就认为滚轮停了。
+                 *
+                 * 松手后不再"另换一套曲线"，只是把 τ 从跟手值平滑挪到滑行值：
+                 * 滑行 τ 由 GlideMs 反解（到点只剩 1 个单位），过渡用 55ms 的
+                 * smoothstep —— τ 一步跳变会让速率瞬间掉一半，听起来就是"咔"。 */
+                var tau = s.TauMs;
+                if (s.SmoothEnabled && s.GlideMs > 0)
                 {
                     var idleMs = TicksToMs(now - Interlocked.Read(ref _lastInputTicks));
                     if (idleMs > s.GlideDelayMs)
                     {
                         if (Interlocked.Read(ref _glideStartTicks) == 0)
+                        {
                             Interlocked.Exchange(ref _glideStartTicks, now);
+                            _glideTauMs = GlideTau(pendingUnits, s.GlideMs);
+                        }
 
-                        glide = TicksToMs(now - Interlocked.Read(ref _glideStartTicks)) < s.GlideMaxMs;
+                        var w = Math.Clamp(
+                            TicksToMs(now - Interlocked.Read(ref _glideStartTicks)) / GlideRampMs, 0, 1);
+                        w = w * w * (3 - 2 * w);
+                        tau = s.TauMs + (_glideTauMs - s.TauMs) * w;
                     }
                 }
 
-                var tau = glide ? s.GlideTauMs : s.TauMs;
-                var units = ComputeFrame(pendingUnits, dtMs, remainingMs,
-                    tau, s.UnitsPerFrame, s.SmoothEnabled, glide);
+                var units = ComputeFrame(pendingUnits, dtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
 
                 if (units != 0)
                 {
@@ -317,7 +364,14 @@ internal sealed class ScrollAnimator : IDisposable
                     if (units != 0)
                     {
                         Interlocked.Add(ref _pendingMilli, -(long)units * (long)Milli);
-                        if (!InputInjector.SendWheel(units))
+
+                        /* 诊断口：只交出帧、不注入（--frametrace）。 */
+                        var sink = FrameSink;
+                        if (sink != null)
+                        {
+                            sink(units, dtMs, tau);
+                        }
+                        else if (!InputInjector.SendWheel(units))
                         {
                             /* 注入失败（被 UIPI 拦下、桌面锁了、目标进程更高权限）。
                              * 丢掉这份积压，否则它会一直重试、越积越多。 */

@@ -115,8 +115,8 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ## 自检
 
 ```bash
-# 138 条纯逻辑断言：倍率曲线、速度判定、摊帧、帧率跟随、整格化、主题、自我增强、
-# 版本比较、令牌清洗、名单匹配、配置读写
+# 192 条纯逻辑断言：倍率曲线、速度判定、摊帧、滑行收尾、帧率跟随、整格化、主题、
+# 自我增强、版本比较、令牌清洗、名单匹配、配置读写
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全部通过
 
 # 启动器：检查运行时 / 构造「缺少运行时」窗口（不弹给用户，只验证控件与布局）
@@ -125,6 +125,10 @@ MouseWheelEnhancement.exe --dialogtest
 
 # 端到端冒烟：装钩子、建窗口（七页逐个布局）、注入滚轮跑通 钩子→判定→平滑→注入
 MouseWheelEnhancement.App.exe --smoke
+
+# 出帧追踪：真开动画线程、先闲够再推入，量"空闲后第一帧发了多少"
+# （不装钩子、不注入，已有实例在跑时也能跑）
+MouseWheelEnhancement.App.exe --frametrace
 
 # 资源占用实测：仅托盘 / 连设置窗口（并验证关掉后回落、能重新打开）
 MouseWheelEnhancement.App.exe --measure

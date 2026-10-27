@@ -64,6 +64,19 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        /* 诊断模式：把动画线程真跑起来，量"空闲后第一帧发了多少"。
+         *
+         * 放在抢单实例互斥体**之前**：它不装钩子、不建窗口、不注入，
+         * 所以即使已经有一个实例在跑（甚至那个实例正握着互斥体），也能单独跑。
+         * 这一点很重要 —— 排查"首帧突发"时，恰恰是替不掉正在运行的实例的场景。 */
+        if (e.Args.Any(a => a.Equals("--frametrace", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = FrameTrace.Run(e.Args);
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
         // 诊断模式：只查一次更新并打印结果（不装钩子、不建窗口）
         if (e.Args.Any(a => a.Equals("--checkupdate", StringComparison.OrdinalIgnoreCase)))
         {

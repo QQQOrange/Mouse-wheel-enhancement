@@ -97,54 +97,34 @@ public sealed class SmoothConfig
     /// <summary>指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。</summary>
     public double TailTauMs { get; set; } = 45.0;
 
-    /// <summary>
-    /// 一次输入最多拖多久必须发完（毫秒）。这是体感延迟的硬上限。
-    ///
-    /// <para>
-    /// 默认 100 ms 而不是 60：60 ms 在高刷新率屏幕（144/165Hz，一帧 6~7ms）上
-    /// 比指数曲线本身还短，截止期均摊会压过曲线，一次单格滚动就被摊成
-    /// "前几帧猛发、后面赶工"的两段式。100 ms 给了 τ=45ms 的曲线两个多
-    /// 时间常数，让摊帧真正按曲线走，截止期只当兜底。
-    /// </para>
-    /// </summary>
-    public double MaxLatencyMs { get; set; } = 100.0;
-
     /// <summary>允许积压多少格。防止连续甩动时积雪越滚越远。</summary>
     public double MaxBacklogNotches { get; set; } = 5.0;
 
     /// <summary>
-    /// 松手后继续滑行的时间常数（毫秒）。**0 = 关闭惯性，松手即停。**
-
+    /// 松手后继续滑行**多久**（毫秒）。**0 = 不做额外滑行。**
+    ///
     /// <para>
-    /// 前面那几个参数只解决"滚动**过程中**平滑"：一次输入被摊成若干帧，
-    /// 但仍在 <see cref="MaxLatencyMs"/> 内发完，发完就静止 —— 手感是
-    /// "流畅地滚一下，然后咔一下停住"，也就是段落式。
+    /// 前面那几个参数只解决"滚动**过程中**平滑"：一次输入被摊成若干帧。
+    /// 这一项管的是**结尾** —— 滚轮停下之后，剩下的量还会顺着原方向滑这么久。
     /// </para>
     /// <para>
-    /// 这一项管的是**结尾**：滚轮停止输入超过 <see cref="GlideDelayMs"/> 之后，
-    /// 剩下的量不再受截止期约束，改为按这个时间常数指数衰减地继续发。
-    /// 110ms 大约是"松手后还滑小半格"，200ms 以上会明显发飘。
-    /// </para>
-    /// </summary>
-    public int GlideTauMs { get; set; } = 110;
-
-    /// <summary>
-    /// 滑行最多持续多少毫秒，超过就一次性收尾。
-    /// <para>
-    /// 不加这个上限的话，快速连甩后积压量大（最多 <see cref="MaxBacklogNotches"/> 格），
-    /// 按指数衰减能拖到半秒以上 —— 用户手早就停了，内容还在往下飘，很怪。
+    /// 注意语义是**时长**，不是时间常数：动画器按当时的积压反解 τ，
+    /// 使得到这一刻刚好只剩最后 1 个单位（亚像素），于是"停住"是滑进去的，
+    /// 不是被截断的。旧版本这里是 τ（110），还要配一个 GlideMaxMs 硬上限，
+    /// 到点把剩下的量一次倒出去 —— 那就是末尾那一下顿挫，见 DESIGN 第 28 节。
     /// </para>
     /// </summary>
-    public int GlideMaxMs { get; set; } = 280;
+    [JsonPropertyName("glideTauMs")]
+    public int GlideMs { get; set; } = 300;
 
     /// <summary>
     /// 停止输入多少毫秒算"松手"、可以开始滑行。
     /// <para>
     /// 太小（比如 10ms）会把同一次滚动的两格之间也判成松手，尾巴一顿一顿；
-    /// 太大则松手后要愣一下才开始滑，像卡了一下。26ms 大约是两帧。
+    /// 太大则松手后要愣一下才开始滑，像卡了一下。30ms 大约是两帧。
     /// </para>
     /// </summary>
-    public int GlideDelayMs { get; set; } = 26;
+    public int GlideDelayMs { get; set; } = 30;
 }
 
 public sealed class FilterConfig
@@ -275,7 +255,7 @@ public sealed class AppBehaviorConfig
 public sealed class AppConfig
 {
     /// <summary>配置结构版本，用于将来的迁移。</summary>
-    public int SchemaVersion { get; set; } = 3;
+    public int SchemaVersion { get; set; } = 4;
 
     /// <summary>功能总开关（托盘和界面都能切）。</summary>
     public bool Enabled { get; set; } = true;
@@ -337,7 +317,24 @@ public sealed class AppConfig
             SchemaVersion = 3;
         }
 
-        SchemaVersion = Math.Max(3, SchemaVersion);
+        /* ── v4 迁移：滑行参数从「τ + 硬上限」改成「时长」──
+         *
+         * 旧版的 glideTauMs=110 是时间常数，配 glideMaxMs=280 的硬上限；
+         * 新版同一个键存的是"总共滑多久"，260 才相当于旧版的观感。
+         * 直接把 110 当 110ms 用会让尾巴短掉一半，所以这里换算成新默认值。
+         * **0 保留** —— 那是用户明确关掉了滑行，不能替他打开。
+         *
+         * 键名沿用 glideTauMs（见 SmoothConfig.GlideMs 上的 JsonPropertyName），
+         * 老配置文件不用改也能读进来。顺手把停手判定统一到 30ms。
+         */
+        if (SchemaVersion < 4)
+        {
+            if (Smooth.GlideMs > 0) Smooth.GlideMs = 300;
+            Smooth.GlideDelayMs = 30;
+            SchemaVersion = 4;
+        }
+
+        SchemaVersion = Math.Max(4, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* 所有"格"相关与时间相关的数值一律取整。
@@ -357,10 +354,8 @@ public sealed class AppConfig
         // 老式按 zDelta/120 取整的程序也不会把小数部分吃掉。
         Smooth.FramesPerNotch = NearestDivisorOf120(Smooth.FramesPerNotch);
         Smooth.TailTauMs = Whole(Clamp(Smooth.TailTauMs, 5, 200));
-        Smooth.MaxLatencyMs = Whole(Clamp(Smooth.MaxLatencyMs, 10, 240));
         Smooth.MaxBacklogNotches = Whole(Clamp(Smooth.MaxBacklogNotches, 1, 20));
-        Smooth.GlideTauMs = Whole(Clamp(Smooth.GlideTauMs, 0, 400));
-        Smooth.GlideMaxMs = Whole(Clamp(Smooth.GlideMaxMs, 60, 800));
+        Smooth.GlideMs = Whole(Clamp(Smooth.GlideMs, 0, 400));
         Smooth.GlideDelayMs = Whole(Clamp(Smooth.GlideDelayMs, 10, 150));
 
         if (Filter.Apps == null) Filter.Apps = new();
