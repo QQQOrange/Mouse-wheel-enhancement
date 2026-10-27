@@ -111,20 +111,29 @@ public sealed class RuntimeSettings
     private static long _revision;
 
     /// <summary>
-    /// 一帧发多少单位。**必须跟着补偿倍数放大**，否则同样的位移要发 3 倍的帧数，
-    /// 摊帧被拖成三倍长，手感变黏。
+    /// 一帧发多少单位（一格 = 120 单位）。4 帧/格 → 每帧 30 单位。
+    ///
+    /// <para>
+    /// 曾经它叫 <c>ScaledUnitsPerFrame</c> 并且要乘"系统行数补偿倍数"（接管方案）。
+    /// 补偿撤掉之后那个参数恒为 1，留着只是噪音，于是直接去掉 ——
+    /// 现在每帧的量就是 <c>120 ÷ 每格帧数</c>，一眼能核对。
+    /// </para>
     /// </summary>
-    public static int ScaledUnitsPerFrame(int framesPerNotch, int compensation) =>
-        Math.Max(1, (int)Math.Round(
-            Native.WHEEL_DELTA * Math.Max(1, compensation) / (double)Math.Max(1, framesPerNotch)));
+    public static int UnitsPerFrameFor(int framesPerNotch) =>
+        Math.Max(1, (int)Math.Round(Native.WHEEL_DELTA / (double)Math.Max(1, framesPerNotch)));
 
     /// <summary>
-    /// 积压上限（单位）。**必须跟着补偿倍数放大**，否则加速会被它截断 ——
-    /// 5 格 × 5 倍 = 3000 单位，上限还是 600 的话只能发出五分之一，
-    /// 现象就是"加速失效"（v1.6.0 的真实 bug）。
+    /// 积压上限（单位）。防止连续甩动时越滚越远。
+    ///
+    /// <para>
+    /// 同样曾按补偿倍数放大（叫 <c>ScaledBacklog</c>）：不放大时 5× 加速的 1800 单位
+    /// 会被 600 的上限截回 1/3，表现成"加速失效"（v1.6.0 的真实 bug）。
+    /// 补偿撤掉后这个放大倍数恒为 1，公式回到最朴素的一行。
+    /// 整格模式另有自己的上限，见 <c>ScrollAnimator.PushWholeNotches</c>。
+    /// </para>
     /// </summary>
-    public static double ScaledBacklog(double maxBacklogNotches, int compensation) =>
-        Math.Max(1.0, maxBacklogNotches) * Native.WHEEL_DELTA * Math.Max(1, compensation);
+    public static double BacklogUnitsFor(double maxBacklogNotches) =>
+        Math.Max(1.0, maxBacklogNotches) * Native.WHEEL_DELTA;
 
     public static RuntimeSettings From(AppConfig c)
     {
@@ -154,10 +163,13 @@ public sealed class RuntimeSettings
             }
         }
 
-        /* 「系统滚动行数」的补偿倍数。接管之后注入侧要发 comp 倍的量才能维持同样的位移，
-         * 所以下面所有"以单位计的边界"都必须跟着放大（见下面两处的注释）。 */
-        var comp = Math.Max(1, SystemWheelLines.Compensation);
-
+        /* 这里**没有**任何"补偿倍数"。
+         *
+         * v1.6.x 时代注入侧要乘一个 comp（系统行数从 N 降到 1 之后的补量），
+         * 于是"以单位计的边界"必须跟着放大，否则加速会被积压上限截断。
+         * 接管方案撤掉之后 comp 恒为 1，把这些乘法留在代码里只会让下一个人
+         * 以为"还有一层缩放要考虑"，所以整段删除 —— 现在：
+         *   单帧量 = 120 ÷ 每格帧数，积压上限 = 格数 × 120，就这两条。 */
         return new RuntimeSettings
         {
             Revision = Interlocked.Increment(ref _revision),
@@ -172,18 +184,9 @@ public sealed class RuntimeSettings
             SmoothAlways = c.Smooth.Scope == SmoothScope.Always,
             FrameIntervalMs = frameMs,
             AutoFps = c.Smooth.AutoFps,
-            /* ⚠ 下面两个量都必须乘上"系统滚动行数"的补偿倍数。
-             *
-             * 接管系统行数之后，注入侧要发 comp 倍的量才能维持同样的位移
-             * （见 SystemWheelLines）。如果这两个边界不跟着放大，后果是：
-             *   · 积压上限还是 5 格（600）→ 5× 加速本来要发 1800，
-             *     被**截断回 600**，加速等于失效（实测就是这么坏的）；
-             *   · 单帧量还是 15 → 每帧只发 15，同样的位移要发 3 倍的帧数，
-             *     摊帧被拖成三倍长，手感变得又慢又黏。
-             * 乘上之后，帧数、时长、平滑度全部和接管前一致，只有每帧的"单位数"变大。 */
-            UnitsPerFrame = ScaledUnitsPerFrame(framesPerNotch, comp),
+            UnitsPerFrame = UnitsPerFrameFor(framesPerNotch),
             TauMs = c.Smooth.TailTauMs,
-            MaxBacklogUnits = ScaledBacklog(c.Smooth.MaxBacklogNotches, comp),
+            MaxBacklogUnits = BacklogUnitsFor(c.Smooth.MaxBacklogNotches),
             GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
             IgnoreCtrlAlt = c.Input.IgnoreCtrlAltWheel,

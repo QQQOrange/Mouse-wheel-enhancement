@@ -16,7 +16,7 @@ public partial class App : System.Windows.Application
 
     /// <summary>
     /// 一行折合多少 DIP。WPF 自己按"行"滚时大约是 16~20 DIP 一行，
-    /// 取 20 让"一格"的位移和接管前基本一致，用户不会觉得滚得突然变远或变近。
+    /// 取 20 让"一格"的位移和系统原生滚动基本一致。
     /// </summary>
     private const double PixelsPerLine = 20.0;
 
@@ -35,9 +35,10 @@ public partial class App : System.Windows.Application
     /// 八帧推完一格，肉眼看到的是连续推进而不是跳。
     /// </para>
     /// <para>
-    /// 注意乘的是**当前**的 <c>WheelScrollLines</c>：接管系统行数后它是 1、摊帧会发 3 倍量，
-    /// 两者相乘仍然是"一格 = 3 行"的位移；没接管时它是 3、摊帧发原量，乘积一样。
-    /// 所以开不开接管，这里都不用改。
+    /// 这里乘的"行数"**不是**什么补偿倍数，就是用户设的「每格滚动格数」本身：
+    /// 一格 = N 行 = N × 20 DIP，和系统原生语义对齐（所以调 10 行时这一页也滚得远，
+    /// 与其它程序一致）。值直接从注册表读，不用 <see cref="SystemParameters"/> ——
+    /// 那是 WPF 自己缓存的一份副本，我们能少一份就少一份。
     /// </para>
     /// </summary>
     private void OnPreviewMouseWheelScroll(object sender, MouseWheelEventArgs e)
@@ -60,8 +61,8 @@ public partial class App : System.Windows.Application
          * Preview 是隧道、外层先收到，不判断就会把内层的滚动抢过来。 */
         if (HasInnerScrollable(e.OriginalSource as DependencyObject, sv)) return;
 
-        var lines = SystemParameters.WheelScrollLines;
-        if (lines <= 0) return;   // -1 = "一次滚一页"，不归我们换算
+        var lines = SystemWheelLines.Current();
+        if (lines <= 0) return;   // -1 = "一次滚一页"，0 = 读不到；都不归我们换算
 
         var px = e.Delta * PixelsPerLine * lines / (double)Native.WHEEL_DELTA;
         var target = Math.Clamp(sv.VerticalOffset - px, 0, sv.ScrollableHeight);
@@ -111,14 +112,9 @@ public partial class App : System.Windows.Application
     private bool _showingWindow;
 
     /// <summary>
-    /// 兜底还原：不管是正常退出、点关闭、还是未经 ExitApp 的路径，
-    /// 这里以前负责把「每次滚动几行」还原，现在那个值就是用户自己设的、不该被改回去。
+    /// 启动。没有 <c>OnExit</c> 覆写 —— 曾经那里负责把「每次滚动几行」还原，
+    /// 那件事随接管方案一起撤掉了（现在软件启动、退出都不碰这个系统设置）。
     /// </summary>
-    protected override void OnExit(ExitEventArgs e)
-    {
-        base.OnExit(e);
-    }
-
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -169,6 +165,21 @@ public partial class App : System.Windows.Application
         if (e.Args.Any(a => a.Equals("--checkupdate", StringComparison.OrdinalIgnoreCase)))
         {
             var code = CheckUpdateCli(e.Args);
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* 诊断模式：系统「每次滚动几行」的现状。
+         *
+         * 存在的理由：这一项是**全局设置**，一旦被某个旧版本/别的软件写成 1 行，
+         * 表现就是"整个系统都滚得特别慢"，而用户完全看不出是谁干的。
+         * 加 --fix 会按 v1.6.x 留下的 wheellines.backup 还原一次。
+         *
+         * 放在抢单实例互斥体**之前**：这一项恰恰最需要在"另一个实例正跑着"时能查。 */
+        if (e.Args.Any(a => a.Equals("--wheellines", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = WheelLinesCli(e.Args);
             Shutdown(code);
             Environment.Exit(code);
             return;
@@ -340,10 +351,16 @@ public partial class App : System.Windows.Application
          * 万一失败也不能让进程半死不活地留在后台。 */
         try
         {
-            /* 滚动行数只做"同步"，不做"接管"：
-             * 先把 v1.6.x 可能留下的 1 行还原回去，再把用户配的值写进系统。 */
+            /* ⚠ 启动时**不写**系统滚动行数。
+             *
+             * v1.7.0 还会在这里把配置里的值写进系统（"同步"的一半），
+             * 但那等于"软件一启动就把系统设置改成自己记的那个数"——
+             * 用户在系统面板里改过、软件没开着的那段时间，改动会被悄悄覆盖掉。
+             * 现在系统是唯一真相：这里只做两件事 ——
+             *   ① 迁移：把 v1.6.x「接管」可能留下的 1 行按备份还原；
+             *   ② 什么都不干，等用户拖滑块时再写（SystemWheelLines.Set）。
+             * 界面上的数字靠 MainWindow.SyncWheelLinesFromSystem() 读回。 */
             SystemWheelLines.CleanupLegacy();
-            SystemWheelLines.Set(Services.Config.Smooth.WheelLines);
 
             Services.InitRuntime();
         }
@@ -793,6 +810,9 @@ public partial class App : System.Windows.Application
             var themeCode = CheckTheme(w);
             if (themeCode != 0) code = themeCode;
 
+            var wlCode = CheckWheelLinesUi(w);
+            if (wlCode != 0) code = wlCode;
+
             var uiCode = CheckUpdatePageUi(w);
             if (uiCode != 0) code = uiCode;
 
@@ -1069,6 +1089,65 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>
+    /// `--wheellines`：报告系统「每次滚动几行」的现状；带 `--fix` 时按旧版备份还原。
+    ///
+    /// <para>
+    /// 这一项是 HKCU 里的**全局设置**，被写成 1 行之后所有程序都会变慢，
+    /// 而界面只显示一个数字，看不出"是谁改的、原来是多少"。
+    /// 这个入口把三样东西摆在一起：现在的值、旧版留下的备份、谁在维护它。
+    /// </para>
+    /// <para>
+    /// 只读运行（不加 --fix）不会写任何东西 —— 和程序正常启动的行为一致。
+    /// </para>
+    /// </summary>
+    private static int WheelLinesCli(string[] args)
+    {
+        static string Describe(int v) =>
+            v == Native.WHEELSCROLLLINES_PAGE ? "-1（一次滚一页）"
+            : v == 0 ? "0（读取失败）"
+            : v + " 行";
+
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            var cur = Core.SystemWheelLines.Current();
+            var backup = Core.SystemWheelLines.BackupValue();
+
+            sb.AppendLine($"软件版本：v{Log.Version}");
+            sb.AppendLine($"数据目录：{AppPaths.DataDir}");
+            sb.AppendLine(new string('-', 56));
+            sb.AppendLine($"系统「每次滚动几行」：{Describe(cur)}");
+            sb.AppendLine($"旧版接管备份：{(backup > 0 ? Describe(backup) : "（没有）")}");
+            sb.AppendLine();
+            sb.AppendLine("说明：这个值是系统的全局设置，软件启动、退出都不会改它；");
+            sb.AppendLine("      只有你在设置页拖「每格滚动格数」时才会写。");
+
+            if (args.Any(a => a.Equals("--fix", StringComparison.OrdinalIgnoreCase)))
+            {
+                sb.AppendLine();
+                if (backup <= 0)
+                {
+                    sb.AppendLine("--fix：没有备份文件，无法自动还原。");
+                    sb.AppendLine("      请手动到 设置 → 蓝牙和其他设备 → 鼠标 → 「每次滚动以下行数」改回来。");
+                    return WriteCliResult("wheellines.txt", sb.ToString(), 0);
+                }
+
+                var wrote = Core.SystemWheelLines.RestoreFromBackup(force: true);
+                sb.AppendLine(wrote
+                    ? $"--fix：已按备份写回 {Describe(Core.SystemWheelLines.Current())}"
+                    : $"--fix：当前已经等于备份值（{Describe(Core.SystemWheelLines.Current())}），没有改动");
+            }
+
+            return WriteCliResult("wheellines.txt", sb.ToString(), 0);
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine("失败：" + ex);
+            return WriteCliResult("wheellines.txt", sb.ToString(), 2);
+        }
+    }
+
+    /// <summary>
     /// `--checkupdate`：只走一次「检查更新」并把结论写出来。
     /// 用于排查"为什么点检查更新没反应"—— 界面只给一句人话，这里给完整判据
     /// （仓库、用没用令牌、有没有新版、包多大、有没有校验值）。
@@ -1168,6 +1247,66 @@ public partial class App : System.Windows.Application
         }
         catch { }
         return code;
+    }
+
+    /// <summary>
+    /// 「每格滚动格数」的界面必须和系统里的值**完全一致**。
+    ///
+    /// <para>
+    /// 这一项最容易出的错不是"读错值"，而是"两处各说一套"：
+    /// 标签写着 3 行、滑块停在 1、系统里其实是 5 —— 用户看到的就是"这软件在瞎报"。
+    /// 根源往往是两个入口（载入配置 / 窗口激活）各写一套同步逻辑。
+    /// 现在只有 <c>MainWindow.SyncWheelLinesFromSystem()</c> 一个入口，
+    /// 这条断言就是钉住它的：标签、滑块、可用状态三者都得跟着系统走。
+    /// </para>
+    /// <para>
+    /// 只读，不改任何设置 —— 冒烟不该顺手改用户的系统行数。
+    /// </para>
+    /// </summary>
+    private static int CheckWheelLinesUi(MainWindow w)
+    {
+        try
+        {
+            var sys = Core.SystemWheelLines.Current();
+            var usable = Core.SystemWheelLines.IsUsable(sys);
+
+            var label = w.WheelLinesValue.Text;
+            var sliderValue = w.WheelLinesSlider.Value;
+            var sliderEnabled = w.WheelLinesSlider.IsEnabled;
+
+            var expectLabel =
+                sys == Core.SystemWheelLines.PageMode ? "一次一页"
+                : usable ? sys + " 行"
+                : "读取不到";
+
+            Log.Info($"smoke: 每格滚动格数 → 系统 {sys} 行，标签「{label}」，" +
+                     $"滑块 {sliderValue:0}（可用={sliderEnabled}）");
+
+            if (label != expectLabel)
+            {
+                Log.Error($"smoke: 标签和系统不一致（期望「{expectLabel}」，实际「{label}」）");
+                return 27;
+            }
+
+            if (usable && Math.Abs(sliderValue - sys) > 0.01)
+            {
+                Log.Error($"smoke: 滑块位置和系统不一致（系统 {sys}，滑块 {sliderValue:0}）");
+                return 28;
+            }
+
+            if (sliderEnabled != usable)
+            {
+                Log.Error($"smoke: 滑块可用状态不对（系统值 {(usable ? "可调" : "不可调")}，滑块 {(sliderEnabled ? "可调" : "不可调")}）");
+                return 29;
+            }
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("smoke: 每格滚动格数 UI 检查抛异常", ex);
+            return 30;
+        }
     }
 
     /// <summary>

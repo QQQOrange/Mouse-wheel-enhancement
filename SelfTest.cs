@@ -365,49 +365,49 @@ internal static class SelfTest
         Check("整格模式：5 格分 5 帧发完，总量不差", sent == 600 && frames == 5,
             $"发出 {sent} / {frames} 帧");
 
-        /* ── 接管系统滚动行数之后的补偿 ──
-         * 系统 3 行 → 1 行，所以原来"一档"要发 3 档才凑回同样的位移；
-         * 这 3 档就是 3 步平滑。 */
-        Section("接管系统滚动行数（粒度变细）");
+        /* ── 补偿层已彻底删除（v1.7.1）──
+         *
+         * v1.6.x 的"接管系统行数"要成立，注入量就得乘一个补偿倍数，
+         * 于是这两个"以单位计的边界"必须跟着放大 —— 也就有了一整套缩放公式。
+         * 补偿撤掉之后这些公式的参数恒为 1，索性整套删掉：
+         * 现在单帧量和积压上限都只有一条最朴素的算式，能一眼核对。
+         *
+         * 这里断言的是"删除之后仍然成立的不变式"：
+         * ① 帧数 × 单帧量 ≈ 一格（摊帧不丢量）；
+         * ② 加速量能整块进积压（不会被上限截断，那正是 v1.6.0 的"加速失效"）；
+         * ③ 整格模式的单次投递上限容得下满倍率（否则 8× 会悄悄变成 5 格）。 */
+        Section("注入边界（补偿删除后只剩朴素算式）");
 
-        /* v1.7.0 撤掉了"接管成 1 行再补偿"的方案：它让浏览器里的 delta
-         * 从 15 涨到 45（帧数不变、步长变粗），整体反而更顿。现在只做同步，不再补偿。 */
-        Check("不再接管系统行数（补偿恒 1×）", SystemWheelLines.Compensation == 1);
-        Check("任何行数下都不再补偿", SystemWheelLines.CompensationFor(3) == 1
-            && SystemWheelLines.CompensationFor(5) == 1
-            && SystemWheelLines.CompensationFor(20) == 1);
-        Check("1 行 / 0 / 一次一页 也都不补偿",
-            SystemWheelLines.CompensationFor(1) == 1
-            && SystemWheelLines.CompensationFor(0) == 1
-            && SystemWheelLines.CompensationFor(-1) == 1);
+        Check("单帧量 = 120 ÷ 每格帧数（4 帧 → 30）", RuntimeSettings.UnitsPerFrameFor(4) == 30);
+        Check("8 帧/格 → 每帧 15", RuntimeSettings.UnitsPerFrameFor(8) == 15);
+        Check("1 帧/格 → 一整格", RuntimeSettings.UnitsPerFrameFor(1) == 120);
+        Check("帧数荒谬时也至少 1 单位（不会发出 0）", RuntimeSettings.UnitsPerFrameFor(400) >= 1);
 
-        Check("一格 + 补偿 3 → 3 档（函数仍支持，当前恒 1）",
-            SystemWheelLines.WholeEventsFor(1, 3) == 3);
-        Check("5 格 + 补偿 3 → 15 档", SystemWheelLines.WholeEventsFor(5, 3) == 15);
-        Check("没接管时档数不变（1 格还是 1 档）",
-            SystemWheelLines.WholeEventsFor(1, 1) == 1);
-        Check("档数有上限，不会一次怼出几十个事件",
-            SystemWheelLines.WholeEventsFor(8, 8) == 24);
+        Check("积压上限 = 格数 × 120（5 格 → 600）", RuntimeSettings.BacklogUnitsFor(5.0) == 600);
+        Check("1 格 → 120", RuntimeSettings.BacklogUnitsFor(1.0) == 120);
 
-        /* ⚠ 回归：v1.6.0 的加速就是死在这两条上 ——
-         * 补偿把输出乘了 3，但积压上限和单帧量没跟着放大，
-         * 5× 加速（3000 单位）被截回 600，只发出五分之一，表现成"加速失效"。 */
-        Section("补偿之后边界也要放大");
+        /* ② 3× 加速 = 360 单位，默认 5 格的积压上限必须整块装得下。
+         *    装不下就是 v1.6.0 那个"加速失效"（被截回一部分）。 */
+        Check("3× 加速（360 单位）不会被积压上限截断",
+            360 <= RuntimeSettings.BacklogUnitsFor(5.0),
+            $"上限 {RuntimeSettings.BacklogUnitsFor(5.0)}");
 
-        Check("单帧量按补偿放大（8 帧/格、3× → 每帧 45）",
-            RuntimeSettings.ScaledUnitsPerFrame(8, 3) == 45);
-        Check("没接管时单帧量不变（8 帧/格 → 15）",
-            RuntimeSettings.ScaledUnitsPerFrame(8, 1) == 15);
-        Check("积压上限按补偿放大（5 格、3× → 1800）",
-            RuntimeSettings.ScaledBacklog(5.0, 3) == 1800);
-        Check("没接管时积压上限不变（5 格 → 600）",
-            RuntimeSettings.ScaledBacklog(5.0, 1) == 600);
+        /* ③ 整格模式：一次投满 16 档（1920 单位）也不能被普通上限吃掉。 */
+        Check("整格模式单次投递上限容得下满倍率（16 档 > 5 格上限）",
+            ScrollAnimator.MaxWholeNotches * (double)Native.WHEEL_DELTA
+                > RuntimeSettings.BacklogUnitsFor(5.0),
+            $"{ScrollAnimator.MaxWholeNotches} 档 = {ScrollAnimator.MaxWholeNotches * Native.WHEEL_DELTA} 单位");
 
-        /* 关键不变式：5 倍加速在补偿之后**不能被积压上限截断**。 */
-        const double fiveTimesOut = Native.WHEEL_DELTA * 5;
-        Check("5× 加速（3× 补偿下 1800 单位）不会被积压上限截断",
-            fiveTimesOut * 3 <= RuntimeSettings.ScaledBacklog(5.0, 3),
-            $"需要 {fiveTimesOut * 3} / 上限 {RuntimeSettings.ScaledBacklog(5.0, 3)}");
+        /* 系统行数现在只被"读"和"用户主动写"，不再参与任何注入量的计算。
+         * 这里把它的取值范围钉死：非法值一律不写进系统（-1 / 0 / 99 都是坑）。 */
+        Section("系统行数（只读 + 用户主动写）");
+
+        Check("1~10 都可用", SystemWheelLines.IsUsable(1) && SystemWheelLines.IsUsable(10));
+        Check("「一次滚一页」不可用", !SystemWheelLines.IsUsable(SystemWheelLines.PageMode));
+        Check("0（读取失败）不可用", !SystemWheelLines.IsUsable(0));
+        Check("超出范围不可用", !SystemWheelLines.IsUsable(11) && !SystemWheelLines.IsUsable(-5));
+        Check("非法值一律拒绝写入（绝不把系统写成 -1/0/99）",
+            !SystemWheelLines.Set(0) && !SystemWheelLines.Set(-1) && !SystemWheelLines.Set(99));
 
         /* 本程序自己的窗口要能认出来：它的页面按像素滚（PreviewMouseWheel），
          * 所以不能走"整格语义"，否则滚过头、也丢掉摊帧的平滑。 */

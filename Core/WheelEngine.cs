@@ -276,12 +276,13 @@ public sealed class WheelEngine : IDisposable
              * 都无关：问题出在摊帧，不在加速。
              *
              * 所以这里换成整格语义：
-             *   · 没加速 → 原样放行（一个事件，正好一档）；
-             *   · 加速了 → 拆成 N 个整格逐个发（N = 倍率）。
-             * 代价是这类应用里没有平滑（框架的最小粒度就是一格，做不到更细）。 */
-            /* 系统滚动行数被我们降到 1 之后，每次注入都要按这个倍数补回来，
-             * 否则全系统都会慢成 1/comp。没接管时它是 1，下面所有逻辑原样。 */
-            var comp = SystemWheelLines.Compensation;
+             *   · 没加速（或这一下不到一格）→ 原样放行（一个事件，正好一档）；
+             *   · 加速了 → 拆成 N 个整格、按帧逐个发（N = 倍率）。
+             * 代价是这类应用里没有平滑（框架的最小粒度就是一格，做不到更细）。
+             *
+             * ⚠ 这里**不看**系统滚动行数。v1.6.x 曾经为了把这一档拆细，先把系统行数
+             * 降到 1、再乘回 N 倍；那个补偿已经在 v1.7.0 撤销，v1.7.1 把残留的乘法
+             * 全部删掉了 —— 现在"一档"就是系统语义下的一档，注入量等于原生量。 */
 
             /* 本程序自己的窗口不走整格语义 —— 它的页面已经在 PreviewMouseWheel 里
              * 按 delta 换算像素滚动（App.OnPreviewMouseWheelScroll），
@@ -290,8 +291,10 @@ public sealed class WheelEngine : IDisposable
              * "是不是自己"是进程维度的事，和框架无关。 */
             if (target.ScrollsOncePerEvent && !s.IsOwnExe(target.Exe))
             {
-                /* 没接管系统行数、也没加速：让系统自己处理，零干预。 */
-                if (comp <= 1 && !decision.Boosted)
+                /* ① 没加速 → 让系统自己处理，零干预。
+                 * ② 这一下本来就不到一格（触控板 / 自由滚轮的 15、40）→ 也放行：
+                 *    在这类框架里它本来就是一档，放大成 120 只会滚得更远。 */
+                if (!decision.Boosted || Math.Abs(delta) < Native.WHEEL_DELTA)
                 {
                     if (_animator.WholeNotch) _animator.WholeNotch = false;
                     else if (_animator.PendingUnits != 0) _animator.Clear();
@@ -301,29 +304,17 @@ public sealed class WheelEngine : IDisposable
 
                 Volatile.Write(ref _lastMultiplier, decision.Multiplier);
 
-                /* 这一下要发几**档**：
-                 *   · 没加速 → 就是这一格本身；
-                 *   · 加速了 → 倍率兑现成格数；
-                 * 再乘补偿：系统行数从 N 降到 1 之后，原来"一档 = N 行"要发 N 档才凑得回来。
-                 * **这 N 档就是那 N 步平滑** —— 一格不再是一次跳完，而是分成 N 步推进。 */
-                var baseNotches = decision.Boosted
-                    ? ScrollSemantics.WholeNotchesFor(decision.OutputUnits)
-                    : 1;
-
-                /* 亚格输入（触控板）：在这类框架里本来就是一档，按补偿走即可，
-                 * 不补偿的话它会比接管前慢 comp 倍。 */
-                var notches = SystemWheelLines.WholeEventsFor(baseNotches, comp);
-
+                /* 倍率兑现成**事件个数**：3× → 3 个整格。
+                 * 交给动画器按帧逐个发（见 ScrollAnimator.PushWholeNotches），
+                 * 让快滚有推进的节奏，而不是"啪"一下跳过 5 档。 */
+                var notches = ScrollSemantics.WholeNotchesFor(decision.OutputUnits);
                 var sign = Math.Sign(decision.OutputUnits);
                 if (sign == 0) sign = Math.Sign(delta);
 
-                /* 交给动画器**按帧逐档发**：帧间隔就是刷新周期，
-                 * 所以 N 档会在 N 帧里推开，而不是一次性怼出去。 */
                 _animator.WholeNotch = true;
-                _animator.Push(sign * notches * Native.WHEEL_DELTA);
+                _animator.PushWholeNotches(sign * notches);
 
-                if (decision.Boosted) Interlocked.Increment(ref _boosted);
-                else Interlocked.Increment(ref _passed);
+                Interlocked.Increment(ref _boosted);
                 return (IntPtr)1;
             }
 
@@ -338,23 +329,15 @@ public sealed class WheelEngine : IDisposable
                  * "没加速却多滚了一点"。丢掉的是不到一格里的一小截，看不出来。 */
                 if (_animator.PendingUnits != 0) _animator.Clear();
 
-                /* 接管了系统行数就不能真放行：目标现在按 1 行滚，放行等于只滚 1/comp。 */
-                if (comp > 1)
-                {
-                    InputInjector.SendWheel(decision.OutputUnits * comp);
-                    Interlocked.Increment(ref _passed);
-                    return (IntPtr)1;
-                }
-
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
             Volatile.Write(ref _lastMultiplier, decision.Multiplier);
 
-            /* 按比例滚动的框架：delta 乘回补偿倍数，位移就和接管前一致，
-             * 摊帧（8 帧）带来的平滑也一点没少。 */
-            _animator.Push(decision.OutputUnits * comp);
+            /* 按比例滚动的框架：算出来多少就发多少，一格 = 120 单位。
+             * 摊帧（每格 4~8 帧）带来的平滑全在这一步。 */
+            _animator.Push(decision.OutputUnits);
             Interlocked.Increment(ref _boosted);
 
             // 吞掉原事件：这一下由我们自己按计算好的量发出去

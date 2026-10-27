@@ -95,18 +95,8 @@ public sealed class SmoothConfig
     public int FramesPerNotch { get; set; } = 4;
 
     /// <summary>
-    /// 每个滚轮刻度对应滚几行（1~10）。这个值会**直接写入系统设置**
-    /// （<c>HKCU\Control Panel\Desktop\WheelScrollLines</c>），与系统面板双向同步。
-    ///
-    /// <para>
-    /// 为什么不再"接管成 1 行再补偿"：那套做法为了让 WPF 一类框架把一格拆成三步，
-    /// 把浏览器里的 delta 也一起放大了 3 倍 —— 帧数不变、每帧步长变粗，
-    /// 整体手感反而变顿。现在只做"同步"，注入侧补偿恒为 1，所有程序都按原生节奏走。
-    /// </para>
+    /// 指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。
     /// </summary>
-    public int WheelLines { get; set; } = 3;
-
-    /// <summary>指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。</summary>
     public double TailTauMs { get; set; } = 45.0;
 
     /// <summary>允许积压多少格。防止连续甩动时积雪越滚越远。</summary>
@@ -348,6 +338,14 @@ public sealed class AppConfig
 
         SchemaVersion = Math.Max(4, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
+
+        /* ── 删掉 `smooth.wheelLines` 这个键 ──
+         *
+         * 它曾经是"软件接管系统行数"的产物：软件记一份自己要写的值，再去改系统。
+         * 现在系统就是唯一真相（见 SystemWheelLines），留着这一份只会在两个地方
+         * 各存一个数、迟早对不上。反序列化时它会落进 Extra（未知字段），
+         * 不主动删的话会一直跟着配置文件写下去 —— 所以在这里清掉。 */
+        Extra?.Remove("wheelLines");
 
         /* 所有"格"相关与时间相关的数值一律取整。
          *

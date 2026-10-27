@@ -547,7 +547,7 @@
                                     <StackPanel>
                                         <TextBlock Text="每格滚动格数" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
-                                                   Text="一个滚轮刻度滚几行。这一项直接写进系统设置，和系统面板是同一个值：这里调多少，系统鼠标设置里就变成多少；在系统里改，这里也会跟着变。" />
+                                                   Text="一个滚轮刻度滚几行。这一项直接写进系统设置，和系统面板是同一个值：这里调多少，系统鼠标设置里就变成多少；在系统里改，这里也会跟着变。软件启动、退出时都不会去动它。" />
                                     </StackPanel>
                                     <TextBlock x:Name="WheelLinesValue" Grid.Column="1" Style="{StaticResource Value}"
                                                Text="3 行" />
@@ -556,6 +556,8 @@
                                         Minimum="1" Maximum="10" SmallChange="1" LargeChange="1"
                                         TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="WheelLines_Changed" />
+                                <TextBlock x:Name="WheelLinesHint" Style="{StaticResource Caption}"
+                                           Margin="0,8,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
 
                                 <Grid Margin="0,16,0,0">
                                     <Grid.ColumnDefinitions>

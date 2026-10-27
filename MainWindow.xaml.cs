@@ -271,9 +271,7 @@ public partial class MainWindow : Window
             PrecisionSwitch.IsChecked = c.Input.EnhancePrecisionInput;
 
             SmoothSwitch.IsChecked = c.Smooth.Enabled;
-            WheelLinesSlider.Value = Math.Clamp(Core.SystemWheelLines.Current(),
-                Core.SystemWheelLines.Min, Core.SystemWheelLines.Max);
-            RefreshWheelLinesLabel();
+            SyncWheelLinesFromSystem();
             ScopeBoosted.IsChecked = c.Smooth.Scope == SmoothScope.BoostedOnly;
             ScopeAlways.IsChecked = c.Smooth.Scope == SmoothScope.Always;
             Fps60.IsChecked = c.Smooth.TargetFps == 60;
@@ -1008,8 +1006,8 @@ public partial class MainWindow : Window
     ///
     /// <para>
     /// 这个值和系统面板里的「每次要滚动的行数」是同一个东西，所以不能只改配置 ——
-    /// 用户在系统里看到没变，就会以为开关坏了。双向同步靠
-    /// <see cref="OnActivated"/>：从系统面板回来时重新读一次。
+    /// 用户在系统里看到没变，就会以为开关坏了。软件**不另存一份**：
+    /// 配置里已经没有 <c>wheelLines</c> 这个字段，系统就是唯一真相。
     /// </para>
     /// </summary>
     private void WheelLines_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -1017,28 +1015,79 @@ public partial class MainWindow : Window
         if (_loading) return;
 
         var lines = (int)Math.Round(e.NewValue);
-        Services.Config.Smooth.WheelLines = lines;
 
         if (!Core.SystemWheelLines.Set(lines))
         {
-            // 写不进去（被策略拦、或者当前是"一次滚一页"）→ 把界面拨回系统真实值
-            _loading = true;
-            try
-            {
-                WheelLinesSlider.Value = Math.Clamp(Core.SystemWheelLines.Current(),
-                    Core.SystemWheelLines.Min, Core.SystemWheelLines.Max);
-            }
-            finally { _loading = false; }
+            /* 写不进去（组策略拦、或者系统已被设成"一次滚一页"）→ 界面拨回系统真实值，
+             * 而不是把滑块留在一个"看起来生效了、其实没生效"的位置。 */
+            SyncWheelLinesFromSystem();
+            return;
         }
 
+        /* 不调 Commit()：这一项**不在配置里**（系统就是真相），
+         * 没有需要保存的东西，也不该因为拖滑块去重烘一遍运行时快照 ——
+         * 引擎的任何一个参数都不看这个值。 */
         RefreshWheelLinesLabel();
-        Commit();
     }
 
+    /// <summary>
+    /// 把「每格滚动格数」从系统读回来 —— 读取、回填滑块、更新标签、决定能不能调，
+    /// **只有这一个入口**。
+    ///
+    /// <para>
+    /// 载入界面和"从系统设置面板回来"（<see cref="OnActivated"/>）都走它。
+    /// 分开写的话，两边只要有一处漏判（比如"一次一页"只在其中一处处理），
+    /// 界面就会出现"滑块停在 1、标签却写着一次一页"这种自相矛盾的状态 ——
+    /// 这种不一致比数字错了更让人不敢相信软件。
+    /// </para>
+    /// </summary>
+    private void SyncWheelLinesFromSystem()
+    {
+        var lines = Core.SystemWheelLines.Current();
+        var usable = Core.SystemWheelLines.IsUsable(lines);
+
+        /* 保存并恢复外层状态：LoadFromConfig 里本来就把 _loading 置成 true，
+         * 这里若无条件在 finally 里写 false，会把外层的保护提前拆掉 ——
+         * 后面几十行赋值就会真的触发 Commit（把半载入状态写进配置）。 */
+        var prev = _loading;
+        _loading = true;
+        try
+        {
+            if (WheelLinesSlider != null)
+            {
+                // "一次一页"和"读不到"都不该让滑块假装能调：禁用 + 说明原因
+                WheelLinesSlider.IsEnabled = usable;
+                WheelLinesSlider.Opacity = usable ? 1.0 : 0.45;
+                if (usable) WheelLinesSlider.Value = lines;
+            }
+        }
+        finally { _loading = prev; }
+
+        RefreshWheelLinesLabel();
+    }
+
+    /// <summary>标签 + 说明文字。值一律现读系统，不读任何缓存。</summary>
     private void RefreshWheelLinesLabel()
     {
         var lines = Core.SystemWheelLines.Current();
-        WheelLinesValue.Text = lines == -1 ? "一次一页" : lines + " 行";
+        var usable = Core.SystemWheelLines.IsUsable(lines);
+
+        if (WheelLinesValue != null)
+        {
+            WheelLinesValue.Text =
+                lines == Core.SystemWheelLines.PageMode ? "一次一页"
+                : usable ? lines + " 行"
+                : "读取不到";
+        }
+
+        if (WheelLinesHint == null) return;
+
+        WheelLinesHint.Text =
+            lines == Core.SystemWheelLines.PageMode
+                ? "系统当前设成「一次滚一页」，没有「行」可调。先在系统鼠标设置里选回「每次滚动以下行数」，回来就能调这里。"
+                : usable ? ""
+                : "读不到系统当前的滚动行数（可能被组策略锁定），这一项暂时不可用。";
+        WheelLinesHint.Visibility = usable ? Visibility.Collapsed : Visibility.Visible;
     }
 
     /// <summary>
@@ -1046,29 +1095,14 @@ public partial class MainWindow : Window
     ///
     /// <para>
     /// 用户在系统设置里改了行数，本程序并不知道 —— 只能在自己重新获得焦点时读一次。
-    /// 这就是"双向同步"的另一半。
+    /// 这就是"双向同步"的另一半：软件 → 系统靠写，系统 → 软件靠这里。
     /// </para>
     /// </summary>
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
-
-        var lines = Core.SystemWheelLines.Current();
-        if (lines == -1) { RefreshWheelLinesLabel(); return; }
-
-        lines = Math.Clamp(lines, Core.SystemWheelLines.Min, Core.SystemWheelLines.Max);
-        if (Math.Abs(WheelLinesSlider.Value - lines) < 0.5)
-        {
-            RefreshWheelLinesLabel();
-            return;
-        }
-
-        _loading = true;
-        try { WheelLinesSlider.Value = lines; }
-        finally { _loading = false; }
-
-        Services.Config.Smooth.WheelLines = lines;
-        RefreshWheelLinesLabel();
+        // 窗口还没建好时（构造期间）不要碰控件
+        if (WheelLinesSlider != null) SyncWheelLinesFromSystem();
     }
 
     /// <summary>跳到系统「鼠标」设置页。Win10/11 通用的 ms-settings 协议。</summary>

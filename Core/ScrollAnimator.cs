@@ -157,11 +157,17 @@ internal sealed class ScrollAnimator : IDisposable
     private long _lastWholeMs;
 
     /// <summary>
+    /// 一次投递最多几档。和 <see cref="ScrollSemantics.WholeNotchesFor"/> 的上限一致：
+    /// 倍率上限 8×，留一倍余量防止异常值把注入撑爆。
+    /// </summary>
+    public const int MaxWholeNotches = 16;
+
+    /// <summary>
     /// 整格模式：每帧只发**一个整格**（120 单位的整数倍），不做亚格摊薄。
     ///
     /// <para>
     /// 给 WPF / WinForms 那类"一个滚轮事件滚固定一档"的框架用的。
-    /// 它们只看向号、不看 delta 大小，所以发小 delta 就是多发几次
+    /// 它们只看向号、不看 delta 大小，所以"滚远一点"只能是"多发几次"
     /// （见 DESIGN 第 30 节）。这里退而求其次：
     /// </para>
     /// <list type="bullet">
@@ -173,6 +179,10 @@ internal sealed class ScrollAnimator : IDisposable
     /// <para>
     /// 单格（1 档）无论如何都无法平滑：那类框架的最小粒度就是一格，
     /// 实测 <c>delta=15 / 40 / 120</c> 滚的距离完全一样。
+    /// </para>
+    /// <para>
+    /// ⚠ 曾经这里还有一层"补偿出来的 N 档"（把系统行数降到 1 之后一格要发 3 档），
+    /// 那套已经撤掉。现在档数只有一个来源：加速倍率。
     /// </para>
     /// </summary>
     public bool WholeNotch
@@ -210,19 +220,53 @@ internal sealed class ScrollAnimator : IDisposable
         }
     }
 
-    /// <summary>钩子线程调用：把这一下的滚动量交进来。**必须极快返回。**</summary>
+    /// <summary>
+    /// 钩子线程调用：把这一下的滚动量交进来。**必须极快返回。**
+    ///
+    /// <para>给"按比例滚动"的目标用（浏览器、Qt、Office、本程序自己的页面）。</para>
+    /// </summary>
     public void Push(int units)
     {
         if (units == 0) return;
         var s = Volatile.Read(ref _settings);
+        PushCore(units, s.MaxBacklogUnits, s.FlushOnReverse);
+    }
 
+    /// <summary>
+    /// 整格模式专用投递：参数是**档数**，不是单位。
+    ///
+    /// <para>
+    /// 单独开一个入口，是因为整格模式的一次投递是"不可切分的一坨"：
+    /// 8× 加速就是 8 档（960 单位）。用普通积压上限（默认 5 格 = 600）去截它，
+    /// 结果是"8× 加速只滚了 5 格"—— 悄悄少滚，用户只会觉得倍率没生效。
+    /// 这个坑 v1.5.x 就踩过一次（那时是靠补偿把上限放大绕过去的，补偿撤掉后
+    /// 必须在这里正面解决）。
+    /// </para>
+    /// <para>
+    /// 档数本身有上限（<see cref="MaxWholeNotches"/>），所以这里给出的上限是安全的：
+    /// 最坏也只是积压 16 档，而动画器每秒能发 80 多档，实际根本追不满。
+    /// </para>
+    /// </summary>
+    public void PushWholeNotches(int notches)
+    {
+        if (notches == 0) return;
+
+        var n = Math.Clamp(Math.Abs(notches), 1, MaxWholeNotches);
+        var s = Volatile.Read(ref _settings);
+        PushCore(Math.Sign(notches) * n * Native.WHEEL_DELTA,
+            Math.Max(s.MaxBacklogUnits, MaxWholeNotches * (double)Native.WHEEL_DELTA), s.FlushOnReverse);
+    }
+
+    /// <param name="capUnits">积压上限（单位，不是格）。</param>
+    private void PushCore(int units, double capUnits, bool flushOnReverse)
+    {
         var sign = Math.Sign(units);
         var total = Interlocked.Add(ref _pendingMilli, (long)units * (long)Milli);
 
         /* 反向输入：把还没发完的旧方向积压直接丢掉。
          * 不丢的话，用户往回滚的那一瞬间会先继续往前冲一小段（积压还在往外发），
          * 手感就是"往回想滚却滚不动"。 */
-        if (s.FlushOnReverse && sign != 0 && Math.Sign(total) != sign)
+        if (flushOnReverse && sign != 0 && Math.Sign(total) != sign)
             total = Interlocked.Exchange(ref _pendingMilli, (long)units * (long)Milli);
 
         /* 积压上限：**直接截断**，而不是记一条"到点就一次发完"的截止期。
@@ -231,7 +275,7 @@ internal sealed class ScrollAnimator : IDisposable
          * 快速连甩时"一顿一大格"的来源（一帧能倒出 3~5 格）。
          * 改成截断后，动画器手里的量始终有界，单帧量自然有界；
          * 代价是超过注入速度的极端甩动会少滚一点 —— 宁可少滚，也不要跳。 */
-        var capMilli = (long)(s.MaxBacklogUnits * Milli);
+        var capMilli = (long)(capUnits * Milli);
         if (Math.Abs(total) > capMilli)
             total = Interlocked.Exchange(ref _pendingMilli, Math.Sign(total) * capMilli);
 

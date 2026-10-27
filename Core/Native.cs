@@ -21,8 +21,12 @@ internal static class Native
 
     public const int GA_ROOT = 2;
 
-    /* 系统「每次滚动几行」。这是 WPF / WinForms 那类框架**唯一的粒度来源**：
-     * 它们一个滚轮事件就滚这么多行，改小它等于把最小步长变细。 */
+    /* 系统「每次滚动几行」（HKCU\Control Panel\Desktop\WheelScrollLines）。
+     *
+     * 本程序**只把它当作用户的一项系统设置**来读写：界面里那一项滑块直接写它，
+     * 反过来窗口获得焦点时读它。曾经为了让 WPF/WinForms 的"一格"变细，
+     * 这里被拿去把系统值降到 1 再在注入侧补偿 —— 那套已经撤掉（见 DESIGN 第 33 节）。
+     * 现在读取只用于"显示 + 本程序自己页面的像素换算"。 */
     public const uint SPI_GETWHEELSCROLLLINES = 0x0068;
     public const uint SPI_SETWHEELSCROLLLINES = 0x0069;
     public const uint SPIF_UPDATEINIFILE = 0x01;
