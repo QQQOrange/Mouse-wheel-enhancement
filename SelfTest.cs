@@ -370,15 +370,18 @@ internal static class SelfTest
          * 这 3 档就是 3 步平滑。 */
         Section("接管系统滚动行数（粒度变细）");
 
-        Check("系统 3 行 → 补偿 3×", SystemWheelLines.CompensationFor(3) == 3);
-        Check("系统 5 行 → 补偿 5×", SystemWheelLines.CompensationFor(5) == 5);
-        Check("已经是 1 行 → 不接管（补偿 1×）", SystemWheelLines.CompensationFor(1) == 1);
-        Check("禁用滚轮（0）→ 不接管", SystemWheelLines.CompensationFor(0) == 1);
-        Check("「一次滚一页」（-1）→ 不接管（按行补不了）",
-            SystemWheelLines.CompensationFor(-1) == 1);
-        Check("行数过大时补偿夹到 8×", SystemWheelLines.CompensationFor(20) == 8);
+        /* v1.7.0 撤掉了"接管成 1 行再补偿"的方案：它让浏览器里的 delta
+         * 从 15 涨到 45（帧数不变、步长变粗），整体反而更顿。现在只做同步，不再补偿。 */
+        Check("不再接管系统行数（补偿恒 1×）", SystemWheelLines.Compensation == 1);
+        Check("任何行数下都不再补偿", SystemWheelLines.CompensationFor(3) == 1
+            && SystemWheelLines.CompensationFor(5) == 1
+            && SystemWheelLines.CompensationFor(20) == 1);
+        Check("1 行 / 0 / 一次一页 也都不补偿",
+            SystemWheelLines.CompensationFor(1) == 1
+            && SystemWheelLines.CompensationFor(0) == 1
+            && SystemWheelLines.CompensationFor(-1) == 1);
 
-        Check("一格 + 补偿 3 → 3 档（3 步平滑）",
+        Check("一格 + 补偿 3 → 3 档（函数仍支持，当前恒 1）",
             SystemWheelLines.WholeEventsFor(1, 3) == 3);
         Check("5 格 + 补偿 3 → 15 档", SystemWheelLines.WholeEventsFor(5, 3) == 15);
         Check("没接管时档数不变（1 格还是 1 档）",

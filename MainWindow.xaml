@@ -545,15 +545,30 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
-                                        <TextBlock Text="接管系统滚动粒度" FontWeight="SemiBold" />
+                                        <TextBlock Text="每格滚动格数" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
-                                                   Text="把系统的「每次滚动几行」降到 1 行，再由本软件把位移补回来。WPF / WinForms 写的程序（很多国产工具、自研软件）只有这样才会有平滑过程——它们的最小步进就是系统的行数，改不小就只能一步跳完。" />
-                                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                                   Text="这是全局设置：关掉本软件时会自动还原；万一异常退出，下次启动会先把系统改回去。如果你手动改过「鼠标设置 → 每次要滚动的行数」，以那次为准，本项会被跳过。" />
+                                                   Text="一个滚轮刻度滚几行。这一项直接写进系统设置，和系统面板是同一个值：这里调多少，系统鼠标设置里就变成多少；在系统里改，这里也会跟着变。" />
                                     </StackPanel>
-                                    <ToggleButton x:Name="NormalizeSwitch" Grid.Column="1" Style="{StaticResource Switch}"
-                                                  VerticalAlignment="Center" Checked="Normalize_Changed"
-                                                  Unchecked="Normalize_Changed" />
+                                    <TextBlock x:Name="WheelLinesValue" Grid.Column="1" Style="{StaticResource Value}"
+                                               Text="3 行" />
+                                </Grid>
+                                <Slider x:Name="WheelLinesSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
+                                        Minimum="1" Maximum="10" SmallChange="1" LargeChange="1"
+                                        TickFrequency="1" IsSnapToTickEnabled="True"
+                                        ValueChanged="WheelLines_Changed" />
+
+                                <Grid Margin="0,16,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Style="{StaticResource Caption}"
+                                                   Text="指针速度、左右键这些在系统面板里，这里只做跳转。" />
+                                    </StackPanel>
+                                    <Button x:Name="OpenMouseSettingsBtn" Grid.Column="1"
+                                            Style="{StaticResource GhostButton}" Content="打开系统鼠标设置"
+                                            Click="OpenMouseSettings_Click" />
                                 </Grid>
 
                                 <Grid Margin="0,18,0,0">

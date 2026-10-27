@@ -271,7 +271,9 @@ public partial class MainWindow : Window
             PrecisionSwitch.IsChecked = c.Input.EnhancePrecisionInput;
 
             SmoothSwitch.IsChecked = c.Smooth.Enabled;
-            NormalizeSwitch.IsChecked = c.Smooth.NormalizeWheelLines;
+            WheelLinesSlider.Value = Math.Clamp(Core.SystemWheelLines.Current(),
+                Core.SystemWheelLines.Min, Core.SystemWheelLines.Max);
+            RefreshWheelLinesLabel();
             ScopeBoosted.IsChecked = c.Smooth.Scope == SmoothScope.BoostedOnly;
             ScopeAlways.IsChecked = c.Smooth.Scope == SmoothScope.Always;
             Fps60.IsChecked = c.Smooth.TargetFps == 60;
@@ -1002,26 +1004,89 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 「接管系统滚动粒度」开关：立刻作用到系统设置上，不等保存。
+    /// 「每格滚动格数」：滑块一动就**立刻写进系统设置**，不等保存。
     ///
     /// <para>
-    /// 关掉时必须**马上**把行数改回去 —— 用户点这个开关的动机通常就是
-    /// "别的程序滚起来变慢了"，晚一拍都算失职。
+    /// 这个值和系统面板里的「每次要滚动的行数」是同一个东西，所以不能只改配置 ——
+    /// 用户在系统里看到没变，就会以为开关坏了。双向同步靠
+    /// <see cref="OnActivated"/>：从系统面板回来时重新读一次。
     /// </para>
     /// </summary>
-    private void Normalize_Changed(object sender, RoutedEventArgs e)
+    private void WheelLines_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_loading) return;
 
-        var want = NormalizeSwitch.IsChecked == true;
-        if (Services.Config.Smooth.NormalizeWheelLines == want) return;
+        var lines = (int)Math.Round(e.NewValue);
+        Services.Config.Smooth.WheelLines = lines;
 
-        Services.Config.Smooth.NormalizeWheelLines = want;
+        if (!Core.SystemWheelLines.Set(lines))
+        {
+            // 写不进去（被策略拦、或者当前是"一次滚一页"）→ 把界面拨回系统真实值
+            _loading = true;
+            try
+            {
+                WheelLinesSlider.Value = Math.Clamp(Core.SystemWheelLines.Current(),
+                    Core.SystemWheelLines.Min, Core.SystemWheelLines.Max);
+            }
+            finally { _loading = false; }
+        }
 
-        if (want) Core.SystemWheelLines.Apply();
-        else Core.SystemWheelLines.Restore();
-
+        RefreshWheelLinesLabel();
         Commit();
+    }
+
+    private void RefreshWheelLinesLabel()
+    {
+        var lines = Core.SystemWheelLines.Current();
+        WheelLinesValue.Text = lines == -1 ? "一次一页" : lines + " 行";
+    }
+
+    /// <summary>
+    /// 从系统面板回来时把滑块同步过来。
+    ///
+    /// <para>
+    /// 用户在系统设置里改了行数，本程序并不知道 —— 只能在自己重新获得焦点时读一次。
+    /// 这就是"双向同步"的另一半。
+    /// </para>
+    /// </summary>
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+
+        var lines = Core.SystemWheelLines.Current();
+        if (lines == -1) { RefreshWheelLinesLabel(); return; }
+
+        lines = Math.Clamp(lines, Core.SystemWheelLines.Min, Core.SystemWheelLines.Max);
+        if (Math.Abs(WheelLinesSlider.Value - lines) < 0.5)
+        {
+            RefreshWheelLinesLabel();
+            return;
+        }
+
+        _loading = true;
+        try { WheelLinesSlider.Value = lines; }
+        finally { _loading = false; }
+
+        Services.Config.Smooth.WheelLines = lines;
+        RefreshWheelLinesLabel();
+    }
+
+    /// <summary>跳到系统「鼠标」设置页。Win10/11 通用的 ms-settings 协议。</summary>
+    private void OpenMouseSettings_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "ms-settings:mousetouchpad",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("打不开系统设置：" + ex.Message + "\n\n可以手动打开：设置 → 蓝牙和其他设备 → 鼠标",
+                Services.AppTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+        }
     }
 
     private void Scope_Changed(object sender, RoutedEventArgs e)

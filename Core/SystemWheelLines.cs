@@ -4,180 +4,115 @@ using System.Text;
 namespace MouseWheelEnhancement.Core;
 
 /// <summary>
-/// 把系统的「每次滚动几行」降到 1 行，并在软件层把它补回来。
+/// 系统「每次滚动几行」（<c>WheelScrollLines</c>）的读写。
 ///
 /// <para>
-/// 为什么需要这一层：WPF / WinForms 那种框架的滚动粒度**只有一个来源** ——
-/// <c>SystemParameters.WheelScrollLines</c>（默认 3 行）。它们收一个滚轮事件就滚这么多行，
-/// 而且**无视 delta 大小**（见 DESIGN 第 30 节）。所以只要系统是 3 行，
-/// 它们的最小步长就是 3 行，任何注入技巧都没法让一步走得更细。
+/// # 这里曾经做过什么，以及为什么撤掉
 /// </para>
-///
 /// <para>
-/// 反过来，把系统改成 1 行之后，最小步长就细了 3 倍。我们再在注入侧
-/// 把位移乘回 3 倍：一格 = 3 个事件 = 3 步，位移和原来完全一样，但过程分成了 3 步 ——
-/// 这就是那类框架里唯一能拿到的平滑。
+/// v1.6.x 的做法是"接管"：把行数强行降到 1，再在注入侧乘 3 倍补回来，
+/// 目的是让 WPF 那种"一个事件滚固定档"的框架也能一格拆成三步。
+/// 代价后来暴露得很清楚 —— 补偿让浏览器里的 delta 从 15 涨到 45，
+/// **帧数没变、每帧步长变粗 3 倍**，整体手感反而变"顿"；而 WPF 那边
+/// 也只是从"一步"变成"三步"，离真正平滑还差得远。收益抵不上代价，撤掉。
 /// </para>
-///
 /// <para>
-/// **代价必须说清楚**：这是全局设置（HKCU，所有程序共享）。
-/// 软件没在跑的时候，全系统滚动会只剩 1/3 的速度。
-/// 所以这里做了三道保险：① 退出时还原；② 崩溃后的下次启动自愈；
-/// ③ 原值落在磁盘上，任何一次启动都能把系统改回去。
+/// # 现在只做一件事
+/// </para>
+/// <para>
+/// 当"系统滚动行数"的**编辑入口**：用户在软件里改成几行，就真的写进系统设置；
+/// 用户在系统设置里改，软件读回来显示。两边同一个值，没有"接管"这层概念，
+/// 于是 <see cref="Compensation"/> 恒为 1，所有注入路径回到最朴素的状态。
 /// </para>
 /// </summary>
 public static class SystemWheelLines
 {
-    /// <summary>补偿倍数：1 = 没有接管（系统行数没被改）。</summary>
-    public static int Compensation { get; private set; } = 1;
+    /// <summary>
+    /// 注入补偿倍数。**恒为 1** —— 不再接管系统行数，所以不需要补偿。
+    /// 保留这个属性是因为摊帧/积压/档数那几处都按它缩放，恒 1 就是"原样"。
+    /// </summary>
+    public static int Compensation => 1;
 
-    /// <summary>这次进程有没有改过系统设置（决定退出时要不要还原）。</summary>
-    public static bool Active { get; private set; }
+    /// <summary>可设置的范围。10 行已经是很夸张的手感了。</summary>
+    public const int Min = 1;
+    public const int Max = 10;
 
-    /// <summary>补偿倍数的上限。行数 10 的话一格就变 10 个事件，太多了。</summary>
-    private const int MaxCompensation = 8;
+    /// <summary>读系统当前值。-1 表示"一次滚一页"。</summary>
+    public static int Current() => Native.GetWheelScrollLines();
+
+    /// <summary>系统值是不是"一次滚一页"（-1）。这时没法用行数表达，界面上要禁用。</summary>
+    public static bool IsPageMode => Current() == Native.WHEELSCROLLLINES_PAGE;
 
     /// <summary>
-    /// 给定系统原来的行数，算出该补偿几倍。纯函数，便于自检。
-    ///
-    /// <para>
-    /// "一次滚一页"（-1）和 0/1 行都没法按行补偿，返回 1 表示不动系统。
-    /// </para>
+    /// 把系统「每次滚动几行」设成 <paramref name="lines"/>。
+    /// 会广播 <c>WM_SETTINGCHANGE</c>，正在运行的程序立刻按新值算滚动量。
     /// </summary>
-    public static int CompensationFor(int originalLines)
+    /// <returns>是否成功（已经等于目标值时也算成功）。</returns>
+    public static bool Set(int lines)
     {
-        if (originalLines == Native.WHEELSCROLLLINES_PAGE || originalLines <= 1) return 1;
-        return Math.Clamp(originalLines, 1, MaxCompensation);
-    }
+        if (lines == Native.WHEELSCROLLLINES_PAGE) return false;
+        lines = Math.Clamp(lines, Min, Max);
 
-    /// <summary>
-    /// 这一下要发几个滚轮事件（每档一个）。
-    ///
-    /// <para>
-    /// <paramref name="baseNotches"/> 是"按倍率算出来的格数"，乘上补偿就是
-    /// "系统行数降到 1 之后要发几档才凑回同样的位移" —— 这 N 档就是 N 步平滑。
-    /// </para>
-    /// </summary>
-    public static int WholeEventsFor(int baseNotches, int compensation) =>
-        Math.Clamp(Math.Max(1, baseNotches) * Math.Max(1, compensation), 1, 24);
-
-    private static string BackupPath => Path.Combine(AppPaths.DataDir, "wheellines.backup");
-
-    /// <summary>
-    /// 启动时调用：先把上次可能残留的改动还原（崩溃自愈），再按需接管。
-    /// </summary>
-    /// <param name="normalize">配置里是否开启"接管系统滚动粒度"。</param>
-    public static void Start(bool normalize)
-    {
-        SelfHeal();
-        if (normalize) Apply();
-    }
-
-    /// <summary>
-    /// 接管：把系统改成 1 行，并把原值记到磁盘。
-    /// 失败或条件不满足时什么都不做，<see cref="Compensation"/> 保持 1。
-    /// </summary>
-    public static bool Apply()
-    {
         try
         {
-            var original = Native.GetWheelScrollLines();
-
-            /* -1 = "一次滚一页"，没有"行"的概念，补不了，干脆别动。
-             * 0 = 禁用滚轮，也不归我们管。
-             * 1 = 已经是最细，接管没有意义。 */
-            if (original == Native.WHEELSCROLLLINES_PAGE || original <= 1)
-            {
-                Log.Info($"系统滚动行数是 {original}，不需要接管（补偿保持 1×）");
-                Compensation = 1;
-                return false;
-            }
-
-            /* 先落盘再改设置：万一改完就崩，下次启动还能靠这个文件还原。 */
-            File.WriteAllText(BackupPath, original.ToString(), new UTF8Encoding(false));
-
-            if (!Native.SetWheelScrollLines(1))
-            {
-                Log.Warn("改写系统滚动行数失败（错误码 " + Marshal.GetLastWin32Error() + "），放弃接管");
-                TryDeleteBackup();
-                Compensation = 1;
-                return false;
-            }
-
-            Compensation = CompensationFor(original);
-            Active = true;
-            Log.Info($"已接管系统滚动粒度：{original} 行 → 1 行，注入侧补偿 {Compensation}×");
-            return true;
+            if (Native.GetWheelScrollLines() == lines) return true;
+            var ok = Native.SetWheelScrollLines(lines);
+            if (ok) Log.Info($"系统滚动行数已设为 {lines} 行");
+            else Log.Warn("改写系统滚动行数失败（错误码 " + Marshal.GetLastWin32Error() + "）");
+            return ok;
         }
         catch (Exception ex)
         {
-            Log.Warn("接管系统滚动粒度异常：" + ex.Message);
-            TryDeleteBackup();
-            Compensation = 1;
+            Log.Warn("改写系统滚动行数异常：" + ex.Message);
             return false;
         }
     }
 
-    /// <summary>还原成接管前的行数，并删掉磁盘上的记录。可以重复调用。</summary>
-    public static void Restore()
+    /// <summary>
+    /// 清理 v1.6.x 遗留下来的"接管"痕迹。
+    ///
+    /// <para>
+    /// 那一版会先写一个 <c>wheellines.backup</c>（接管前的行数），再把系统改成 1 行。
+    /// 如果用户升级时系统还停在 1 行（上次崩溃没来得及还原），
+    /// 表现就是"整个系统滚得特别慢"。这里按备份把原值写回去。
+    /// </para>
+    /// </summary>
+    public static void CleanupLegacy()
     {
-        if (!File.Exists(BackupPath)) return;
+        var path = Path.Combine(AppPaths.DataDir, "wheellines.backup");
+        if (!File.Exists(path)) return;
 
         try
         {
-            var text = File.ReadAllText(BackupPath, Encoding.UTF8).Trim();
+            var text = File.ReadAllText(path, Encoding.UTF8).Trim();
             if (int.TryParse(text, out var original) &&
-                original != Native.WHEELSCROLLLINES_PAGE && original > 1)
+                original != Native.WHEELSCROLLLINES_PAGE && original >= Min)
             {
-                Native.SetWheelScrollLines(original);
-                Log.Info($"已还原系统滚动行数：1 → {original}");
+                var now = Native.GetWheelScrollLines();
+                if (now == 1 && original != 1)
+                {
+                    Native.SetWheelScrollLines(original);
+                    Log.Warn($"发现旧版「接管」留下的 1 行设置，已还原为 {original} 行");
+                }
             }
 
-            TryDeleteBackup();
+            File.Delete(path);
         }
         catch (Exception ex)
         {
-            Log.Warn("还原系统滚动行数异常：" + ex.Message);
-        }
-        finally
-        {
-            Compensation = 1;
-            Active = false;
+            Log.Warn("清理旧版滚动行数残留失败：" + ex.Message);
         }
     }
 
     /// <summary>
-    /// 崩溃自愈：上次没来得及还原时（进程被强杀、系统重启），
-    /// 这次启动第一时间按磁盘上的原值改回去。
+    /// 给定"接管前的行数"算出该补偿几倍。**现在恒为 1**，
+    /// 保留它只是为了让注入侧那几处缩放公式保持同一个形状（乘 1 即原样）。
     /// </summary>
-    public static void SelfHeal()
-    {
-        if (!File.Exists(BackupPath)) return;
+    public static int CompensationFor(int originalLines) => 1;
 
-        try
-        {
-            var text = File.ReadAllText(BackupPath, Encoding.UTF8).Trim();
-            if (int.TryParse(text, out var original) &&
-                original != Native.WHEELSCROLLLINES_PAGE && original > 1)
-            {
-                var now = Native.GetWheelScrollLines();
-                if (now <= 1)
-                {
-                    Native.SetWheelScrollLines(original);
-                    Log.Warn($"发现上次异常退出留下的滚动行数（当前 {now} 行），已还原为 {original} 行");
-                }
-            }
-
-            TryDeleteBackup();
-        }
-        catch (Exception ex)
-        {
-            Log.Warn("自愈滚动行数失败：" + ex.Message);
-        }
-    }
-
-    private static void TryDeleteBackup()
-    {
-        try { if (File.Exists(BackupPath)) File.Delete(BackupPath); } catch { /* 删不掉就留着，下次启动还会再试 */ }
-    }
+    /// <summary>
+    /// 整格模式下一个物理格要发几个事件。补偿恒 1 时就是倍率算出来的格数本身。
+    /// </summary>
+    public static int WholeEventsFor(int baseNotches, int compensation) =>
+        Math.Clamp(Math.Max(1, baseNotches) * Math.Max(1, compensation), 1, 24);
 }

@@ -95,19 +95,16 @@ public sealed class SmoothConfig
     public int FramesPerNotch { get; set; } = 4;
 
     /// <summary>
-    /// 接管系统的「每次滚动几行」：先降到 1 行，再由注入侧按倍数补回来。
+    /// 每个滚轮刻度对应滚几行（1~10）。这个值会**直接写入系统设置**
+    /// （<c>HKCU\Control Panel\Desktop\WheelScrollLines</c>），与系统面板双向同步。
     ///
     /// <para>
-    /// WPF / WinForms 的滚动粒度**只有一个来源**就是这个设置，所以这是让那类程序
-    /// 也能有平滑过程的唯一办法 —— 系统 3 行时，它们的最小步进就是 3 行，
-    /// 任何注入技巧都没法让一步走得更细；改成 1 行之后，一格可以拆成 3 步。
-    /// </para>
-    /// <para>
-    /// 代价是这是**全局设置**（HKCU，所有程序共享）：软件没运行时全系统滚动会变慢，
-    /// 所以退出、崩溃自愈、以及设置页里的开关都是必要的配套。
+    /// 为什么不再"接管成 1 行再补偿"：那套做法为了让 WPF 一类框架把一格拆成三步，
+    /// 把浏览器里的 delta 也一起放大了 3 倍 —— 帧数不变、每帧步长变粗，
+    /// 整体手感反而变顿。现在只做"同步"，注入侧补偿恒为 1，所有程序都按原生节奏走。
     /// </para>
     /// </summary>
-    public bool NormalizeWheelLines { get; set; } = true;
+    public int WheelLines { get; set; } = 3;
 
     /// <summary>指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。</summary>
     public double TailTauMs { get; set; } = 45.0;
