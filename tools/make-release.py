@@ -66,52 +66,77 @@ def upload(name, path):
 
 
 # ── 发布说明 ──
-BODY = """## 修四处实测问题
+BODY = """## 修掉「VisualTarget 的根 Visual 不能具有父级」崩溃
 
-v1.5.0 之后实测发现的问题，全部在这一版修完。
+v1.5.1 之后用户报：点一下托盘图标，弹出"应用程序的组件中发生了未经处理的异常。
+如果单击\"继续\"……"，异常文本是 **VisualTarget 的根 Visual 不能具有父级**。
+点「继续」程序还能继续跑，但**日志里一条记录都没有**，事后完全无从查起。
 
-### ① 禁用态按钮「蓝底黑字」看不清（浅色主题）
+### ① 根因：异常从原生 WndProc 逃出去了，三条通道全接不住
 
-「检查更新」「保存令牌」在禁用时是**整块 Opacity 0.45** —— 蓝底和白字一起冲淡，
-浅色主题下对比度塌到有时看不清。现在禁用态改用**专用配色**（只换色、不褪色）：
+托盘图标用的是 WinForms 的 `NotifyIcon`，它的鼠标消息走**原生 Win32 窗口过程**。
+异常从那里抛出来时：
 
-| 主题 | 禁用底色 | 禁用字色 | 对比度 |
-|------|----------|----------|--------|
-| 浅色 | `#D9E1F0` | `#5A6478` | 4.52:1 |
-| 深色 | `#2A3444` | `#9AA6BC` | 5.11:1 |
+| 通道 | 接得住吗 | 原因 |
+|------|----------|------|
+| WPF `DispatcherUnhandledException` | ❌ | 那条通道只处理 `DispatcherOperation` 异常 |
+| `AppDomain.UnhandledException` | ❌ | 被 WinForms 的 `Application.ThreadException` 先一步拦下 |
+| WinForms `Application.ThreadException` | ✅ | 但**我们从没订阅它** |
 
-两种主题各有一套，跟随白/夜模式切换。
+没订阅 → 走 WinForms 的**默认**处理：弹框架自带的那句弹窗。
+这与用户日志逐字吻合（崩溃窗口 3.3 秒内零 ERROR 记录）。
 
-### ② 个人访问令牌是明文
+写了对照探针坐实：抛在 WinForms `Control` 的 WndProc 里能命中 `ThreadException`；
+抛在裸 `NativeWindow` 的 WndProc 里三条通道全不接、直接崩。
 
-令牌输入框从 TextBox 换成 **PasswordBox**，粘贴后显示的是一串圆点。
-已保存状态下输入框锁定，同样显示圆点，要更换点「更换」即可。
+**现在**：`SetUnhandledExceptionMode(CatchException)` + 订阅 `ThreadException`，
+处理方式与 Dispatcher 一致（记日志 → 落盘取证 → 弹我们自己的框）。
+**用户永远不会再看到框架默认弹窗**，且每次崩溃必有 ERROR 日志 + `crash-*.txt` 完整堆栈。
 
-### ③ 一格一格拨滚轮，还是段落式起停
+### ② 消除 Popup 风险面
 
-两个原因叠加：
+`ToolTip` / `ContextMenu` 底层都是 `Popup`，各自自建一个 `HwndSource`，
+并把该窗口的根 Visual 设成弹层内容。而 `SetRootVisual` 在
+"这个 Visual 已有父级、或已是某个 CompositionTarget 的根"时就会抛
+`VisualTarget 的根 Visual 不能具有父级`。
 
-- **平滑范围默认是「仅加速时」** —— 慢慢拨一格根本不属于"加速"，平滑滚动
-  完全不接管，看到的还是系统原生滚动。默认改为「**所有滚动**」，
-  老配置会自动迁移（v3），升级后即生效；之后自己想改回「仅加速时」也随意
-- **每帧下限是绝对值 0.30 格** —— 单格滚动总共 1 格，第一帧就被下限劫持成
-  突发，剩下两帧枯竭，听感上还是"一顿"。下限改为按积压量的**比例**
-  （15%），且只作用于跟手期；松手后的滑行期保持纯指数衰减，不会被下限续住
-- 另外把最大延迟默认从 60ms 调到 100ms —— 高刷屏（160Hz）上 60ms 比指数
-  曲线还短，平滑"还看不出来"就截止了
+规矩：**要动宿主窗口之前，先把弹层都关掉。** 新增 `PopupCleanup`：
 
-### ④ 全局圆角
+- 递归扫**视觉树**、**逻辑树**以及根元素 `Resources` 里声明的 `ContextMenu`，
+  把所有开着的 `Popup` 统统关掉
+- 关闭当前提示气泡：反射拿 `ToolTipService` 内部静态字段（依次试三个候选名），
+  拿不到就退回扫全部窗口的树
 
-- 窗口外框：Win11 显式开启 DWM 圆角（自绘标题栏之后系统默认圆角会失效）；
-  Win10 自动跳过，保持与系统一致
-- 侧栏左上/左下 8px 圆角，与窗口外框联动
-- 右键菜单（ContextMenu / MenuItem）此前是直角的，补圆角
+接入三个点：窗口关闭前、切换主题按钮重新赋值 `ToolTip` 前、
+刷新令牌状态重新赋值 `ToolTip` 前（最后两处的场景正是
+"用户悬停在按钮上点了它、气泡正开着"）。
+
+### ③ `ShowMainWindow` 加固
+
+- 重入标记 + `PresentationSource` 存活检查
+- 异常后销毁重建窗口，不留半死状态
+- `Closed` 事件**身份校验** —— 修掉"旧窗口的 Closed 把新窗口引用清空"的隐患
+- `Topmost` 翻转独立包 try/catch，不再连累主流程
+- 托盘单击/双击合并为单次触发（400ms 延迟窗口），杜绝 `ShowWindow()` 三连发
+
+### ④ 排查过程中实证排除的路径
+
+- 滚轮钩子回调（独立线程 + 完整 try/catch + 异常节流记日志）—— 若在此抛出必留 ERROR 记录
+- 刷新率变化回调（try/catch 包裹）
+- 主题监听用的 `HwndSource`（未设 `RootVisual`）
+- 纯 WPF 上下文中的 Topmost 翻转 / Popup+Topmost / Hide→Show / 切主题 / 切页面 / 重入 Show
+- 真实 `NotifyIcon` 消息投递的 5 个场景
+
+### ⑤ 探针保留为长期回归手段
+
+`--probe` / `--wndprobe` / `--hover` / `--trayprobe` 四个取证探针保留在仓库里，
+各有独立 CLI 开关，不参与正常启动路径。
 
 ## 下载
 
 | 文件 | 用途 |
 |------|------|
-| `MouseWheelEnhancement.exe` | **下载这个**。单文件，0.50 MB，双击即用 |
+| `MouseWheelEnhancement.exe` | **下载这个**。单文件，0.52 MB，双击即用 |
 | `MouseWheelEnhancement-win-x64.zip` | 整包（内容同上，压缩后更小） |
 | `MouseWheelEnhancement.App.exe` | 主程序本体，供软件内自动更新用 |
 
@@ -121,17 +146,16 @@ Windows 11 x64 实测；Windows 10 上圆角自动降级为直角，其余功能
 ## 校验
 
 ```
-SHA256 3E5E00193683B8BB23ED247DC8DA852E5A4C4F224618C47572F47AFA8A423C7F
+SHA256 94A7AEAB0E80E8FF36A66456E6E7063D85EAAE73A9F3E5973C00D87213DA61B9
 ```
 
-自检 147 项全部通过；冒烟测试在白/夜双主题下实测通过
-（含像素级截图复核：22 个暗文圆点、禁用态专用配色、圆角形状）。
+构建 0 警告 0 错误；`--selftest` / `--smoke` / `--probe` / `--wndprobe` / `--trayprobe` 全部通过。
 """
 
 REL = api("POST", "/repos/%s/releases" % REPO, {
     "tag_name": TAG,
     "target_commitish": "main",
-    "name": "%s — 禁用态配色 / 令牌暗文 / 单格滚动平滑 / 全局圆角" % TAG,
+    "name": "%s — 崩溃归因修复：接管 WinForms 异常通道 / 消除 Popup 风险面" % TAG,
     "body": BODY,
     "draft": False,
     "prerelease": False,
