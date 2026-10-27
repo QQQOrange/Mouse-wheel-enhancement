@@ -1411,6 +1411,84 @@ CompositionTarget 的根"时会抛 `ArgumentException: VisualTarget 的根 Visua
 不参与正常启动路径，体积影响可忽略。
 
 
+## 25. 开机自启指向了被删掉的文件（v1.5.3）
+
+用户报：「我设置了以管理员方式启动，结果启动的时候好像并没有以管理员方式启动。」
+
+### 25.1 现场
+
+```
+Get-ScheduledTask -TaskName "鼠标滚轮增强（管理员）"
+  RunLevel=Highest  LogonType=Interactive  UserId=64381   State=Ready
+  Actions: C://Users//64381//AppData//Local//MouseWheelEnhancement//app//1.4.0//MouseWheelEnhancement.App.exe --minimized
+Get-ScheduledTaskInfo
+  LastRunTime    = 11/30/1999 00:00:00     ← 从未运行过
+  LastTaskResult = 0x41303                 ← SCHED_S_TASK_HAS_NOT_RUN
+```
+
+配置全对（最高权限、交互式登录、登录触发），**唯独目标文件不存在**：
+`app\1.4.0\` 那个目录早被启动器清掉了，现在只剩 `app\1.5.2\`。
+
+所以真相不是"没以管理员启动"，而是**开机根本没启动**：
+任务被系统拉起时找不到 exe，直接失败，而且**不弹任何窗、不写任何日志**，
+设置页的开关还照样显示"开"。
+
+### 25.2 为什么会指向版本目录
+
+主程序本体并不住在用户放软件的那个文件夹里 —— 启动器把它作为嵌入资源释放到
+`%LOCALAPPDATA%\MouseWheelEnhancement\app\<版本>\` 再启动（见第 17 节）。
+而启动器在释放新版本后会 `CleanOldVersions` 把旧版本目录**删掉**。
+
+第 16 节写计划任务时，Action 用的是 `UpdateService.ExePath`，
+也就是**当前这个主程序本体的路径**。于是：
+
+```
+升级 → 旧版本目录被删 → 任务指向的文件消失 → 开机静默失败
+```
+
+同一只 bug 有两个入口：计划任务（`AdminStart`）和注册表 Run 项（`AutoStart`），
+两个都指向版本目录，两个都会在下次升级后失效。
+
+### 25.3 修法：任务指向「稳定入口」
+
+真正稳定的位置是**启动器 exe**（`D://software//myself//MouseWheelEnhancement.exe`）——
+它一直在用户放软件的那个文件夹里，升级不换位置；而且由它来启动，
+开机那次也能走"释放最新版本"的流程。
+
+新增概念 **稳定入口（`AdminStart.StableEntryPath`）**，解析顺序：
+
+1. 环境变量 `MWE_LAUNCHER_PATH` —— 启动器拉起主程序时用 `Environment.SetEnvironmentVariable`
+   传过来（与既有的 `MWE_DATA_DIR` 同一套做法，**不能**用
+   `psi.EnvironmentVariables[...]`，那个字典区分大小写，代理软件同时留下
+   `HTTPS_PROXY` 和 `https_proxy` 时会抛"已添加项"，主程序根本起不来）；
+2. 配置里记的 `Behavior.LauncherPath` —— 启动时落盘，好让"提权重启自己"之后
+   （新进程没有那个环境变量）仍然找得到同一个入口；
+3. 都没有 → 当前 exe 本身（用户直接跑主程序本体的情形）。
+
+两个自启入口都改成用它：`AdminStart.Set` 的 Action、`AutoStart.CommandLine` 的注册表值。
+
+### 25.4 失效要看得见
+
+光改对路径不够 —— 已经指向坏路径的旧任务还在用户机器上。
+所以补了三件事：
+
+- `AdminStart.IsStale()`：任务存在，但目标文件不存在 / 指向的不是稳定入口 → 已失效；
+- 启动自愈：已是管理员时自动重建（`RepairStartupIfNeeded`）；不是管理员时**不写**，
+  改为在设置页显示提示条；
+- 设置页「立即修复」按钮：管理员直接重建；普通权限走既有的提权重启流程。
+
+`--taskcheck` 也升级成真正的诊断：打印任务指向、目标是否存在、是否指向稳定入口、
+是否已失效；`--create` / `--delete` 在非管理员下会**自动提权重启自己**再执行
+（`Verb=runas` 拉起的进程不继承父进程环境变量，所以提权目标必须是启动器 ——
+由它把 `MWE_LAUNCHER_PATH` 重新传一遍）。
+
+### 25.5 一个必须记住的坑
+
+提权（`runas`）启动的进程**不继承父进程的环境变量**，也不继承父进程的工作目录。
+所以"把启动器路径放在环境变量里"这个方案，只有在**经由启动器**的那条链路上才成立。
+任何"提权重启自己"的实现都必须以**启动器**为目标，不能以主程序本体为目标 ——
+主程序本体住在版本目录里，换个版本就丢了"启动器在哪"这个信息。
+
 ---
 
 MIT License · © 2026 QQQOrange

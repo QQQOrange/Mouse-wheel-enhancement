@@ -189,6 +189,15 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        /* 把"稳定入口"（启动器 exe 的路径）落实下来。
+         *
+         * 开机自启任务必须指向它，不能指向 %LOCALAPPDATA%\...\app\<版本>\ 里的主程序本体 ——
+         * 那个目录每次升级都会被删掉，任务会当场静默失效。
+         *
+         * 启动器启动主程序时用环境变量把路径传过来；这里再落到配置里，
+         * 这样"提权重启自己"之后（新进程没有那个环境变量）仍然找得到同一个入口。 */
+        ResolveStableEntry();
+
         /* 提权重启后回来：把设置里的「开机自启 / 以管理员身份启动」真正落到系统里。
          * 放在 Services.Init 之后（配置要等它加载），ShowMainWindow 之前
          * （用户点完开关重启回来，第一眼就该看到开关已经是"开"的状态）。 */
@@ -222,8 +231,10 @@ public partial class App : System.Windows.Application
         var doCreate = args.Any(a => a.Equals("--create", StringComparison.OrdinalIgnoreCase));
         var doDelete = args.Any(a => a.Equals("--delete", StringComparison.OrdinalIgnoreCase));
 
-        sb.AppendLine($"程序：{UpdateService.ExePath}");
-        sb.AppendLine($"当前权限：{(Core.Native.IsElevated() ? "管理员" : "普通用户（创建/删除会失败）")}");
+        var elevated = Core.Native.IsElevated();
+        sb.AppendLine($"主程序：{UpdateService.ExePath}");
+        sb.AppendLine($"稳定入口：{Core.AdminStart.StableEntryPath}");
+        sb.AppendLine($"当前权限：{(elevated ? "管理员" : "普通用户（创建/删除会失败）")}");
         sb.AppendLine($"任务名：{Core.AdminStart.TaskName}");
         sb.AppendLine(new string('-', 56));
 
@@ -234,16 +245,41 @@ public partial class App : System.Windows.Application
 
             if (exists)
             {
-                sb.AppendLine($"指向当前程序：{(Core.AdminStart.PointsToCurrentExe() ? "是" : "否 —— 开机不会启动，需要重建")}");
+                var target = Core.AdminStart.TaskTargetPath();
+                sb.AppendLine($"任务指向：{(target ?? "（取不到）")}");
+                if (!string.IsNullOrWhiteSpace(target))
+                    sb.AppendLine($"目标文件存在：{(File.Exists(target) ? "是" : "否 —— 目标已被删除，开机必然起不来")}");
+                sb.AppendLine($"指向稳定入口：{(Core.AdminStart.PointsToCurrentExe() ? "是" : "否 —— 需要重建")}");
+                sb.AppendLine($"是否已失效：{(Core.AdminStart.IsStale() ? "是" : "否")}");
             }
 
             if (doCreate || doDelete)
             {
+                // 写计划任务必须管理员权限。当前不是的话，自己提权重来一次。
+                if (!elevated)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("当前不是管理员权限，正在提权重启后继续…");
+                    WriteCliResult("taskcheck.txt", sb.ToString(), 0);
+
+                    if (RelaunchElevated(args))
+                    {
+                        Application.Current.Shutdown(0);
+                        Environment.Exit(0);
+                    }
+                    sb.AppendLine("提权失败：请手动以管理员身份运行本程序。");
+                    return WriteCliResult("taskcheck.txt", sb.ToString(), 2);
+                }
+
                 sb.AppendLine();
                 sb.AppendLine(doCreate ? "正在创建任务…" : "正在删除任务…");
                 var ok = Core.AdminStart.Set(doCreate, out var err);
                 sb.AppendLine(ok ? "结果：成功" : "结果：失败 —— " + err);
-                if (doCreate) sb.AppendLine($"现在是否存在：{(Core.AdminStart.IsEnabled() ? "是" : "否")}");
+                if (doCreate)
+                {
+                    sb.AppendLine($"现在是否存在：{(Core.AdminStart.IsEnabled() ? "是" : "否")}");
+                    sb.AppendLine($"现在指向：{Core.AdminStart.TaskTargetPath() ?? "（取不到）"}");
+                }
                 return WriteCliResult("taskcheck.txt", sb.ToString(), ok ? 0 : 2);
             }
 
@@ -260,7 +296,51 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>
-    /// 提权重启之后的落地动作：按配置把两种开机自启方式同步到系统。
+    /// 解析"稳定入口"（开机自启任务该指向的那个 exe），并把它记进配置。
+    ///
+    /// <para>
+    /// 顺序：环境变量（启动器这次拉起我们时给的）→ 配置里上次记的 → 都没有就用当前 exe。
+    /// 走启动器来的话，环境变量和配置是一致的，第二次以后靠配置就够了。
+    /// </para>
+    /// </summary>
+    private static void ResolveStableEntry()
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(Core.AdminStart.LauncherPathEnv);
+            var envPath = string.IsNullOrWhiteSpace(env) ? null : env.Trim();
+
+            var cfgPath = Services.Config.Behavior.LauncherPath;
+            if (string.IsNullOrWhiteSpace(cfgPath)) cfgPath = null;
+
+            // 环境变量里的路径优先（它是启动器刚给的，最准）
+            var chosen = envPath ?? cfgPath;
+            if (chosen != null && File.Exists(chosen))
+            {
+                Core.AdminStart.LauncherPath = chosen;
+
+                // 配置里没有、或指向的文件已经没了 → 更新它
+                if (!string.Equals(cfgPath, chosen, StringComparison.OrdinalIgnoreCase))
+                {
+                    Services.Config.Behavior.LauncherPath = chosen;
+                    Services.Store.SaveNow();
+                    Log.Info($"已记住启动器路径：{chosen}");
+                }
+            }
+            else if (cfgPath != null)
+            {
+                // 配置里的启动器已经不在了（用户挪了或删了）→ 忘掉，让它退回当前 exe
+                Core.AdminStart.LauncherPath = null;
+                Services.Config.Behavior.LauncherPath = "";
+                Services.Store.SaveNow();
+                Log.Warn($"配置里记的启动器已不存在：{cfgPath}");
+            }
+        }
+        catch (Exception ex) { Log.Warn("解析稳定入口失败：" + ex.Message); }
+    }
+
+    /// <summary>
+    /// 提权重启后回来：按配置把两种开机自启方式同步到系统。
     ///
     /// <para>
     /// 之所以要「重启自己再回来做」而不是当场做：写计划任务必须管理员权限，
@@ -270,6 +350,19 @@ public partial class App : System.Windows.Application
     private static void ApplyStartupFromConfig()
     {
         var b = Services.Config.Behavior;
+
+        // 直接命令行跑 --apply-startup 而当前不是管理员：自己提权重来
+        if (b.RunAtLoginAsAdmin && !Core.Native.IsElevated())
+        {
+            if (RelaunchElevated(new[] { "--apply-startup" }))
+            {
+                Log.Info("需要管理员权限，已发起提权重启");
+                Application.Current.Shutdown(0);
+                Environment.Exit(0);
+                return;
+            }
+        }
+
         if (AutoStart.Apply(b.RunAtLogin, b.RunAtLoginAsAdmin, out var error))
         {
             Log.Info($"已按设置应用开机自启：开机启动={b.RunAtLogin}，管理员={b.RunAtLoginAsAdmin}");
@@ -283,33 +376,85 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>
+    /// 以管理员权限重新拉起自己（带同样的参数）。
+    ///
+    /// <para>
+    /// 拉起的目标是**稳定入口**（启动器）而不是主程序本体：主程序本体住在版本目录里，
+    /// 换个版本就找不到"启动器在哪"这个信息了；而走启动器还能顺带把
+    /// <c>MWE_LAUNCHER_PATH</c> 重新传一遍。
+    /// </para>
+    /// </summary>
+    private static bool RelaunchElevated(string[] args)
+    {
+        try
+        {
+            var exe = Core.AdminStart.StableEntryPath;
+            if (!File.Exists(exe)) exe = UpdateService.ExePath;
+            if (!File.Exists(exe)) return false;
+
+            var psi = new ProcessStartInfo(exe)
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+                // 只转发开关类参数：args[0] 是 exe 自己的路径，传过去只会变成噪音
+                Arguments = string.Join(" ", args
+                    .Where(a => a.StartsWith("--", StringComparison.Ordinal))
+                    .Select(a => "\"" + a.Replace("\"", "\\\"") + "\"")),
+            };
+            Process.Start(psi);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("提权重启失败：" + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 启动自愈。两件事：
     /// <list type="number">
     ///   <item>配置说要以管理员身份自启，但计划任务不见了（用户手动删过），
-    ///         或者任务还在却指向旧路径（程序被挪了目录）→ 重建。</item>
+    ///         或者任务还在却指向了失效路径（版本目录被清理 / 程序被挪了目录）→ 重建。</item>
     ///   <item>配置说不用管理员自启，任务却还留着（上次删除失败）→ 清掉。</item>
     /// </list>
-    /// 只在**已经是管理员**时动作 —— 普通权限下这一步注定失败，白刷日志。
+    /// 只在**已经是管理员**时动作 —— 普通权限下重建计划任务注定失败（E_ACCESSDENIED）。
+    /// 普通权限下发现任务失效时不做任何写操作，改为在设置页显示红色提示 + 一键修复。
     /// </summary>
     private static void RepairStartupIfNeeded()
     {
         try
         {
             var b = Services.Config.Behavior;
-            if (!b.RunAtLogin || !Services.IsElevated) return;
+            if (!b.RunAtLogin) return;
 
-            if (b.RunAtLoginAsAdmin)
+            if (!b.RunAtLoginAsAdmin)
             {
-                if (!AdminStart.IsEnabled() || !AdminStart.PointsToCurrentExe())
+                // 配置说不用管理员自启，任务却还留着（上次删除失败）→ 清掉
+                if (Services.IsElevated && AdminStart.IsEnabled())
                 {
-                    if (AdminStart.Set(true, out var err)) Log.Info("已同步管理员自启任务（存在性或路径修复）");
-                    else Log.Warn("同步管理员自启任务失败：" + err);
+                    AdminStart.Set(false, out _);
+                    Log.Info("已清理残留的管理员自启任务");
                 }
+                return;
             }
-            else if (AdminStart.IsEnabled())
+
+            if (!Services.IsElevated)
             {
-                AdminStart.Set(false, out _);
-                Log.Info("已清理残留的管理员自启任务");
+                // 非管理员：只能看，不能改。把"需要修复"这件事记下来，设置页会显示。
+                if (AdminStart.IsStale())
+                    Log.Warn("管理员自启任务已失效（目标文件不存在或指向旧版本），" +
+                             "当前不是管理员权限，无法自动重建 —— 请在设置页点「立即修复」。");
+                return;
+            }
+
+            if (!AdminStart.IsEnabled() || AdminStart.IsStale())
+            {
+                var why = AdminStart.TaskTargetPath();
+                if (AdminStart.Set(true, out var err))
+                    Log.Info($"已重建管理员自启任务（原先指向：{why ?? "（无）"}）");
+                else
+                    Log.Warn("重建管理员自启任务失败：" + err);
             }
         }
         catch (Exception ex) { Log.Warn("开机自启自愈失败：" + ex.Message); }

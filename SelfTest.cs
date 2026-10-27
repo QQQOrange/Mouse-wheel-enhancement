@@ -43,6 +43,7 @@ internal static class SelfTest
             TestFilter();
             TestRepoNormalize();
             TestConfigRoundTrip();
+            TestStableEntry();
             TestTheme();
             TestSelfBoost();
         }
@@ -765,5 +766,64 @@ internal static class SelfTest
         {
             try { Directory.Delete(tmp, true); } catch { }
         }
+    }
+
+    /// <summary>
+    /// 「稳定入口」的解析优先级。
+    ///
+    /// <para>
+    /// 这条逻辑直接决定开机自启会不会失效：计划任务必须指向启动器（稳定位置），
+    /// 而不是 %LOCALAPPDATA%\...\app\&lt;版本&gt;\ 里的主程序本体。
+    /// 优先级错了，用户看到的现象就是"开关显示着开，开机却什么都没起来"。
+    /// </para>
+    /// </summary>
+    private static void TestStableEntry()
+    {
+        Section("开机自启：稳定入口");
+
+        var envName = Core.AdminStart.LauncherPathEnv;
+        var saved = Environment.GetEnvironmentVariable(envName);
+        var savedProp = Core.AdminStart.LauncherPath;
+
+        try
+        {
+            // 1) 环境变量优先（启动器这次拉起我们时给的）
+            var fake = Path.Combine(Path.GetTempPath(), "mwe-fake-launcher-" + Guid.NewGuid().ToString("N") + ".exe");
+            File.WriteAllText(fake, "x");
+            try
+            {
+                Environment.SetEnvironmentVariable(envName, fake);
+                Check("环境变量优先于其他来源",
+                    Core.AdminStart.StableEntryPath == fake,
+                    Core.AdminStart.StableEntryPath);
+
+                // 2) 环境变量指向的文件不存在 → 不能用它，退回下一个来源
+                var ghost = Path.Combine(Path.GetTempPath(), "mwe-not-exist-" + Guid.NewGuid().ToString("N") + ".exe");
+                Environment.SetEnvironmentVariable(envName, ghost);
+                var fallback = Core.AdminStart.StableEntryPath;
+                Check("环境变量指向不存在的文件时不采用",
+                    !string.Equals(fallback, ghost, StringComparison.OrdinalIgnoreCase) && File.Exists(fallback),
+                    fallback);
+            }
+            finally { File.Delete(fake); }
+
+            // 3) 都没有时退回当前 exe，绝不能是空
+            Environment.SetEnvironmentVariable(envName, null);
+            Core.AdminStart.LauncherPath = null;
+            var self = Core.AdminStart.StableEntryPath;
+            Check("没有启动器信息时退回当前程序本体", !string.IsNullOrWhiteSpace(self), self);
+            Check("退回的目标必须真实存在", File.Exists(self), self);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(envName, saved);
+            Core.AdminStart.LauncherPath = savedProp;
+        }
+
+        // 4) 开机自启命令行必须指向稳定入口，而不是当前这个版本目录里的本体
+        var cmd = Core.AutoStart.CommandLine;
+        Check("注册表自启命令行指向稳定入口",
+            cmd.Contains(Core.AdminStart.StableEntryPath, StringComparison.OrdinalIgnoreCase), cmd);
+        Check("注册表自启命令行带 --minimized", cmd.Contains("--minimized"), cmd);
     }
 }

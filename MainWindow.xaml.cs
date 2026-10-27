@@ -714,6 +714,70 @@ public partial class MainWindow : Window
         finally { _loading = prev; }
 
         UpdateAdminStartRowEnabled();
+        UpdateAdminStartBrokenBar(adminTask);
+    }
+
+    /// <summary>
+    /// 「开机自启任务已失效」的提示条。
+    ///
+    /// <para>
+    /// 只有在**任务确实存在、但已经起不来**的时候才亮。任务不存在（用户没开这个功能）
+    /// 不算失效 —— 那就是没开，不是坏了。
+    /// </para>
+    /// </summary>
+    private void UpdateAdminStartBrokenBar(bool adminTask)
+    {
+        if (AdminStartBrokenBar == null) return;
+
+        bool stale = false;
+        if (adminTask)
+        {
+            try { stale = AdminStart.IsStale(); }
+            catch { /* COM 查询失败就当没坏，别给用户假警报 */ }
+        }
+
+        AdminStartBrokenBar.Visibility = stale ? Visibility.Visible : Visibility.Collapsed;
+
+        if (stale)
+        {
+            var target = AdminStart.TaskTargetPath();
+            AdminStartBrokenText.Text =
+                "开机自启任务已失效：它指向的程序文件已经不存在" +
+                (string.IsNullOrWhiteSpace(target) ? "" : $"（{target}）") +
+                "，多半是升级后旧版本目录被清理了。下次开机不会自动启动 —— 点「立即修复」重建它。";
+        }
+    }
+
+    /// <summary>
+    /// 「立即修复」：重建那个失效的计划任务。
+    ///
+    /// <para>
+    /// 写计划任务必须管理员权限。已经 administrator 就直接重建；
+    /// 否则走既有的提权重启流程（重启后带 --apply-startup 回来重建）。
+    /// </para>
+    /// </summary>
+    private void AdminStartFix_Click(object sender, RoutedEventArgs e)
+    {
+        if (Services.IsElevated)
+        {
+            if (AdminStart.Set(true, out var err))
+            {
+                Log.Info("已按用户要求重建管理员自启任务");
+                MessageBox.Show(this, "已重建开机自启任务，下次登录会以管理员身份启动。",
+                    Services.AppTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                Log.Warn("重建管理员自启任务失败：" + err);
+                MessageBox.Show(this, err ?? "重建失败。", Services.AppTitle,
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            RefreshStartupSwitches();
+            return;
+        }
+
+        // 普通权限：提权重启自己，回来后由 --apply-startup 落地
+        ElevateToApplyStartup();
     }
 
     /// <summary>「以管理员身份启动」从属于「开机自启」，父开关关着就整行变灰。</summary>
@@ -785,7 +849,14 @@ public partial class MainWindow : Window
         {
             // 带 --apply-startup 但不带 --minimized：重启后把设置窗口打开，
             // 让用户看见开关真的变成"开"，而不是"点完之后一片安静"。
-            var psi = new ProcessStartInfo(UpdateService.ExePath, "--apply-startup")
+            //
+            // 拉起的是**稳定入口**（启动器）而不是主程序本体：主程序本体住在
+            // %LOCALAPPDATA%\...\app\<版本>\ 里，重启它就等于"新建了一个版本目录"，
+            // 而新进程里"启动器在哪"这个信息会丢 —— 开机自启任务又会指回版本目录。
+            var target = AdminStart.StableEntryPath;
+            if (!File.Exists(target)) target = UpdateService.ExePath;
+
+            var psi = new ProcessStartInfo(target, "--apply-startup")
             {
                 UseShellExecute = true,
                 Verb = "runas",

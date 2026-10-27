@@ -104,7 +104,7 @@
                 <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="24,0,0,0" VerticalAlignment="Center">
                     <TextBlock x:Name="PageTitle" Text="概览" Style="{StaticResource PageTitle}" />
                     <Border Style="{StaticResource Badge}" Margin="10,0,0,0">
-                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="v1.5.2" />
+                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="v1.5.3" />
                     </Border>
                 </StackPanel>
 
@@ -231,6 +231,34 @@
                                                   VerticalAlignment="Center"
                                                   Checked="AdminStart_Changed" Unchecked="AdminStart_Changed" />
                                 </Grid>
+
+                                <!--
+                                    任务失效提示。
+
+                                    平时这一整块是 Collapsed —— 它只在"开关显示着开、开机却起不来"
+                                    的时候才出现。之所以要有它：计划任务指向的文件被删掉时，
+                                    系统不会报任何错，开关也照样是"开"的，用户根本无从察觉
+                                    （实测：任务指向 app\1.4.0\，那个目录早被升级清理了，
+                                     任务结果码 0x41303 = 从未运行）。
+                                -->
+                                <Border x:Name="AdminStartBrokenBar" Visibility="Collapsed" Margin="0,12,0,0"
+                                        CornerRadius="10" Padding="12,9"
+                                        Background="{DynamicResource AccentFaint}"
+                                        BorderBrush="{DynamicResource WarnBrush}" BorderThickness="1">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="AdminStartBrokenText" Style="{StaticResource Caption}"
+                                                   TextWrapping="Wrap" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextPrimary}"
+                                                   Text="开机自启任务已失效：它指向的程序文件已经不存在（多半是升级后旧版本目录被清理了），下次开机不会自动启动。点「立即修复」重建它。" />
+                                        <Button x:Name="AdminStartFixBtn" Grid.Column="1" Margin="14,0,0,0"
+                                                VerticalAlignment="Center" Style="{StaticResource PrimaryButton}"
+                                                Content="立即修复" Click="AdminStartFix_Click" />
+                                    </Grid>
+                                </Border>
 
                                 <Grid Margin="0,16,0,0">
                                     <Grid.ColumnDefinitions>

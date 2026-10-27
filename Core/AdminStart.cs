@@ -31,6 +31,12 @@ public static class AdminStart
     /// <summary>计划任务名（在「任务计划程序」里显示为这个，用户能自己找到并删掉）。</summary>
     public const string TaskName = "鼠标滚轮增强（管理员）";
 
+    /// <summary>
+    /// 启动器把自己的路径通过这个环境变量传给主程序。
+    /// <para>见 <see cref="StableEntryPath"/>。</para>
+    /// </summary>
+    public const string LauncherPathEnv = "MWE_LAUNCHER_PATH";
+
     /* COM 常量（taskschd.h） */
     private const int TaskCreateOrUpdate = 6;
     private const int LogonInteractiveToken = 3;
@@ -61,32 +67,104 @@ public static class AdminStart
     }
 
     /// <summary>
-    /// 任务里的启动路径是否就是**当前这个 exe**。
-    /// 程序被挪了目录之后任务还在、但指向旧路径 —— 那是"看起来开着、其实开机不启动"，
-    /// 比彻底关掉更难发现，所以要能查出来并覆盖重写。
+    /// 启动器 exe 的路径。由 <see cref="App"/> 在启动时从环境变量和配置里解析后赋值。
+    /// <para>放在 Core 里是为了让 <see cref="StableEntryPath"/> 不必反向依赖 <c>Services</c>。</para>
     /// </summary>
-    public static bool PointsToCurrentExe()
+    public static string? LauncherPath { get; set; }
+
+    /// <summary>
+    /// 开机自启任务应该指向的那个 exe —— **稳定入口**。
+    ///
+    /// <para>
+    /// 这里踩过一个很隐蔽的坑：主程序本体并不住在用户放软件的那个文件夹里，
+    /// 它是启动器释放到 <c>%LOCALAPPDATA%\MouseWheelEnhancement\app\&lt;版本&gt;\</c>
+    /// 的。版本一升级，启动器就会把旧版本目录**删掉**。
+    /// </para>
+    /// <para>
+    /// 如果计划任务指向的是那个版本目录里的主程序，那么：
+    /// 任务还在（开关显示"开"）、配置也没错，但目标文件已经没了 →
+    /// 登录时任务启动失败（0x80070002），用户只会看到"开机没起来"。
+    /// 实测就是这样：任务指向 <c>app\1.4.0\...</c>，而那个目录早被清理了。
+    /// </para>
+    /// <para>
+    /// 正确的目标是**启动器 exe**：它永远待在用户放软件的那个文件夹里，升级不换位置；
+    /// 而且由它来启动，开机那次也能走"释放最新版本"的流程。
+    /// </para>
+    /// </summary>
+    public static string StableEntryPath
+    {
+        get
+        {
+            try
+            {
+                var env = Environment.GetEnvironmentVariable(LauncherPathEnv);
+                if (!string.IsNullOrWhiteSpace(env))
+                {
+                    var p = env.Trim();
+                    if (File.Exists(p)) return p;
+                }
+            }
+            catch { /* 环境变量读不到就往下走 */ }
+
+            try
+            {
+                var known = LauncherPath;
+                if (!string.IsNullOrWhiteSpace(known) && File.Exists(known)) return known;
+            }
+            catch { }
+
+            return Update.UpdateService.ExePath;
+        }
+    }
+
+    /// <summary>任务当前实际指向的路径（诊断用；取不到返回 null）。</summary>
+    public static string? TaskTargetPath()
     {
         try
         {
             dynamic folder = RootFolder();
             dynamic task = folder.GetTask(TaskName);
             dynamic actions = task.Definition.Actions;
-            var exe = Update.UpdateService.ExePath;
-
-            // COM 集合是 1-based
             for (var i = 1; i <= actions.Count; i++)
             {
                 try
                 {
                     dynamic a = actions[i];
-                    if (string.Equals((string)a.Path, exe, StringComparison.OrdinalIgnoreCase)) return true;
+                    var p = a.Path as string;
+                    if (!string.IsNullOrWhiteSpace(p)) return p;
                 }
-                catch { /* 非 Exec 动作没有 Path，跳过 */ }
+                catch { /* 非 Exec 动作没有 Path */ }
             }
-            return false;
         }
-        catch { return false; }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// 任务是不是**已经失效**了 —— 开关显示"开"，但开机其实起不来。
+    ///
+    /// <para>两种失效：① 指向的文件已经不存在（版本目录被清理）；② 指向的不是稳定入口。</para>
+    /// </summary>
+    public static bool IsStale()
+    {
+        if (!IsEnabled()) return false;
+
+        var target = TaskTargetPath();
+        if (string.IsNullOrWhiteSpace(target)) return true;      // 任务没有可执行动作
+        if (!File.Exists(target)) return true;                    // 目标文件没了
+        return !string.Equals(target, StableEntryPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 任务里的启动路径是否就是**稳定入口**（也就是当前这个程序该被启动的样子）。
+    /// 程序被挪了目录、或者升级换了版本目录之后任务还在、但指向旧路径 ——
+    /// 那是"看起来开着、其实开机不启动"，比彻底关掉更难发现，所以要能查出来并覆盖重写。
+    /// </summary>
+    public static bool PointsToCurrentExe()
+    {
+        var target = TaskTargetPath();
+        if (string.IsNullOrWhiteSpace(target)) return false;
+        return string.Equals(target, StableEntryPath, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -146,7 +224,7 @@ public static class AdminStart
 
             def.Actions.Clear();
             dynamic action = def.Actions.Create(ActionExec);
-            action.Path = Update.UpdateService.ExePath;
+            action.Path = StableEntryPath;   // ← 稳定入口，不是版本目录里的主程序
             action.Arguments = "--minimized";
 
             folder.RegisterTaskDefinition(TaskName, def, TaskCreateOrUpdate,

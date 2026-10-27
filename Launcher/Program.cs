@@ -113,6 +113,19 @@ namespace MouseWheelEnhancement.Launcher
                  * —— 于是抛"已添加项。字典中的关键字…"，主程序根本起不来（实测踩到）。
                  * 设到当前进程上让子进程继承，就没有这个问题。 */
                 Environment.SetEnvironmentVariable("MWE_DATA_DIR", Path.Combine(dir, DataFolderName));
+
+                /* 把**启动器自己的路径**也传给主程序。
+                 *
+                 * 「以管理员身份开机启动」靠计划任务实现，而计划任务里的启动路径
+                 * 必须是**稳定的** —— 主程序本体住在 %LOCALAPPDATA%\...\app\<版本>\，
+                 * 版本一升级旧目录就被删了，指向它的任务会当场失效（而且是静默失效：
+                 * 开关显示"开"，开机却什么都没起来）。
+                 * 启动器 exe 才是那个稳定入口：它永远在用户放软件的那个文件夹里，
+                 * 而且由它来启动才能走"释放最新版本"的流程。 */
+                var self = SelfExePath();
+                if (!string.IsNullOrEmpty(self))
+                    Environment.SetEnvironmentVariable("MWE_LAUNCHER_PATH", self);
+
                 var quoted = QuoteArgs(args);
                 if (quoted.Length > 0) psi.Arguments = quoted;
 
@@ -341,6 +354,24 @@ namespace MouseWheelEnhancement.Launcher
             }
             catch { }
             return AppDomain.CurrentDomain.BaseDirectory;
+        }
+
+        /// <summary>启动器 exe 自身的完整路径（主程序用它来找"稳定的开机启动入口"）。</summary>
+        private static string SelfExePath()
+        {
+            try
+            {
+                var loc = typeof(Program).Assembly.Location;
+                if (!string.IsNullOrEmpty(loc) && File.Exists(loc)) return loc;
+            }
+            catch { }
+            try
+            {
+                var p = Application.ExecutablePath;
+                if (!string.IsNullOrEmpty(p) && File.Exists(p)) return p;
+            }
+            catch { }
+            return "";
         }
 
         private static string QuoteArgs(string[] args)

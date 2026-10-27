@@ -18,7 +18,17 @@ public static class AutoStart
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "Mouse wheel enhancement";
 
-    public static string CommandLine => $"\"{UpdateService.ExePath}\" --minimized";
+    /// <summary>
+    /// 开机自启命令行。
+    ///
+    /// <para>
+    /// 指向的是**稳定入口**（启动器），不是当前这个主程序本体。
+    /// 主程序本体住在 <c>%LOCALAPPDATA%\...\app\&lt;版本&gt;\</c>，升级时那个目录会被删 ——
+    /// 启动项指着它的话，升级之后就静默失效了（注册表里那行还在，开关也显示"开"，
+    /// 但下次开机什么都不发生）。
+    /// </para>
+    /// </summary>
+    public static string CommandLine => $"\"{AdminStart.StableEntryPath}\" --minimized";
 
     /// <summary>注册表自启项是否存在（只看这一种，不包含计划任务）。</summary>
     public static bool IsRunKeyEnabled()

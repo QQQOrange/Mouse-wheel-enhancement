@@ -235,6 +235,21 @@ public sealed class AppBehaviorConfig
 
     /// <summary>面板打开时暂停增强（防止自己被自己加速）。</summary>
     public bool PauseWhileSettingsOpen { get; set; } = false;
+
+    /// <summary>
+    /// 启动器 exe 的路径（持久化下来，供提权重启和开机自启任务使用）。
+    ///
+    /// <para>
+    /// 为什么必须存：主程序本体住在 <c>%LOCALAPPDATA%\...\app\&lt;版本&gt;\</c>，
+    /// 版本一升级那个目录就被启动器删掉。开机自启任务要是指向它，升级后就静默失效。
+    /// 而启动器 exe 才是稳定入口 —— 它一直在用户放软件的那个文件夹里。
+    /// </para>
+    /// <para>
+    /// 启动器启动主程序时通过环境变量 <c>MWE_LAUNCHER_PATH</c> 把路径传过来，
+    /// 这里把它落盘，好让"提权重启自己"之后仍然找得到同一个稳定入口。
+    /// </para>
+    /// </summary>
+    public string LauncherPath { get; set; } = "";
 }
 
 /// <summary>
