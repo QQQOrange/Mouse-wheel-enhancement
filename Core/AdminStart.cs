@@ -141,9 +141,42 @@ public static class AdminStart
     }
 
     /// <summary>
+    /// 我们**是否真的知道**稳定入口是谁。
+    ///
+    /// <para>
+    /// 从启动器启动时有 <c>MWE_LAUNCHER_PATH</c>；以后有配置里记下的路径。
+    /// 两者都没有（用户直接双击版本目录里的主程序、或者从编译输出目录跑诊断）时，
+    /// <see cref="StableEntryPath"/> 只能退化成"当前 exe" —— 那是个**猜测**，
+    /// 拿它去判"任务指错了没有"会误报（明明任务指着正确的启动器）。
+    /// </para>
+    /// </summary>
+    public static bool HasKnownEntry
+    {
+        get
+        {
+            try
+            {
+                var env = Environment.GetEnvironmentVariable(LauncherPathEnv);
+                if (!string.IsNullOrWhiteSpace(env) && File.Exists(env.Trim())) return true;
+            }
+            catch { }
+
+            var known = LauncherPath;
+            return !string.IsNullOrWhiteSpace(known) && File.Exists(known);
+        }
+    }
+
+    /// <summary>
     /// 任务是不是**已经失效**了 —— 开关显示"开"，但开机其实起不来。
     ///
-    /// <para>两种失效：① 指向的文件已经不存在（版本目录被清理）；② 指向的不是稳定入口。</para>
+    /// <para>
+    /// 两种失效：① 指向的文件已经不存在（版本目录被清理）；
+    /// ② 指向的不是稳定入口（升级后会被清理的位置）。
+    /// </para>
+    /// <para>
+    /// 第 ② 条只在**我们知道稳定入口是谁**时才判 —— 否则
+    /// <see cref="StableEntryPath"/> 只是"当前 exe"这个猜测，会误报。
+    /// </para>
     /// </summary>
     public static bool IsStale()
     {
@@ -151,20 +184,53 @@ public static class AdminStart
 
         var target = TaskTargetPath();
         if (string.IsNullOrWhiteSpace(target)) return true;      // 任务没有可执行动作
-        if (!File.Exists(target)) return true;                    // 目标文件没了
+        if (!File.Exists(target)) return true;                    // 目标文件没了（铁证）
+
+        if (!HasKnownEntry) return false;                         // 不知道正确目标，不下判定
         return !string.Equals(target, StableEntryPath, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
-    /// 任务里的启动路径是否就是**稳定入口**（也就是当前这个程序该被启动的样子）。
+    /// 任务里的启动路径是否就是**稳定入口**。
     /// 程序被挪了目录、或者升级换了版本目录之后任务还在、但指向旧路径 ——
     /// 那是"看起来开着、其实开机不启动"，比彻底关掉更难发现，所以要能查出来并覆盖重写。
+    /// <para>
+    /// 名字特意从 <c>PointsToCurrentExe</c> 改过来：本轮那个 bug 的根源就是
+    /// "任务指向当前 exe"这个错误概念 —— 当前 exe 住在版本目录里，升级即失效。
+    /// </para>
     /// </summary>
-    public static bool PointsToCurrentExe()
+    public static bool PointsToStableEntry()
     {
         var target = TaskTargetPath();
         if (string.IsNullOrWhiteSpace(target)) return false;
         return string.Equals(target, StableEntryPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 这个路径是不是"版本目录里的主程序本体" —— 也就是
+    /// <c>%LOCALAPPDATA%\MouseWheelEnhancement\app\&lt;版本&gt;\MouseWheelEnhancement.App.exe</c>。
+    ///
+    /// <para>
+    /// 这类路径**绝对不能**写进开机自启：启动器升级时会
+    /// <c>CleanOldVersions</c> 把整个版本目录删掉，任务当场静默失效
+    /// （实测就是这样丢掉过一次用户的自启）。
+    /// </para>
+    /// </summary>
+    public static bool IsVersionedBody(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        try
+        {
+            var verDir = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(verDir)) return false;
+            var appDir = Path.GetDirectoryName(verDir);
+            if (string.IsNullOrEmpty(appDir)) return false;
+
+            // …\app\<版本号>\xxx.exe —— 两个条件都要满足，避免误伤 D:\app\1.0\ 这种命名
+            return string.Equals(Path.GetFileName(appDir), "app", StringComparison.OrdinalIgnoreCase)
+                   && Version.TryParse(Path.GetFileName(verDir), out _);
+        }
+        catch { return false; }
     }
 
     /// <summary>
@@ -177,6 +243,22 @@ public static class AdminStart
         error = null;
         try
         {
+            /* 写任务之前先自检目标路径。
+             *
+             * 这个判断是为了堵一条**反向**破坏路径：万一稳定入口解析不到
+             * （启动器被挪走、环境变量和配置都失效），StableEntryPath 会退化成
+             * 版本目录里的主程序本体 —— 那正是"升级即失效"的那个路径。
+             * 与其把任务写坏、让用户下次开机又静默失败，不如当场拒绝并说清楚。 */
+            var target = StableEntryPath;
+            if (on && IsVersionedBody(target))
+            {
+                error = "找不到启动器（MouseWheelEnhancement.exe）—— 现在只能定位到版本目录里的主程序，" +
+                        "把它设成开机自启的话，下次升级就会失效。请从安装目录的 " +
+                        "MouseWheelEnhancement.exe 启动一次再设置。";
+                Log.Warn($"拒绝把开机自启指向版本目录：{target}");
+                return false;
+            }
+
             dynamic svc = Service();
             dynamic folder = svc.GetFolder("\\");
 
@@ -224,7 +306,7 @@ public static class AdminStart
 
             def.Actions.Clear();
             dynamic action = def.Actions.Create(ActionExec);
-            action.Path = StableEntryPath;   // ← 稳定入口，不是版本目录里的主程序
+            action.Path = target;            // ← 稳定入口，不是版本目录里的主程序
             action.Arguments = "--minimized";
 
             folder.RegisterTaskDefinition(TaskName, def, TaskCreateOrUpdate,

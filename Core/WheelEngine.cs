@@ -82,6 +82,16 @@ public sealed class WheelEngine : IDisposable
     {
         if (_running) return IsRunning;
 
+        /* 上一个钩子线程还没退出时**绝不**再装一个。
+         * 两个 SetWindowsHookEx 都挂着的话，每个滚轮事件会被两套钩子各接管一次，
+         * 用户看到的是"滚动速度突然翻倍"，而且旧的 _hook 句柄永远泄漏。
+         * 这种情况只会出现在 Stop() 的 Join 超时之后（见 Stop）。 */
+        if (_thread is { IsAlive: true })
+        {
+            Log.Error("上一个滚轮钩子线程仍在运行，已拒绝重复安装钩子（请重启程序）");
+            return false;
+        }
+
         _animator.Start();
         _running = true;
         _hookReady.Reset();
@@ -116,9 +126,27 @@ public sealed class WheelEngine : IDisposable
         try { if (_threadId != 0) Native.PostThreadMessage(_threadId, Native.WM_QUIT, IntPtr.Zero, IntPtr.Zero); }
         catch { /* 线程已经退出 */ }
 
-        try { _thread?.Join(600); } catch { }
-        _thread = null;
-        _threadId = 0;
+        /* 等线程自己退出。
+         * PostThreadMessage 有个前提：目标线程必须已经建立了消息队列，
+         * 而队列往往要等它调用 GetMessage 才创建 —— 早一毫秒投递会被丢掉，
+         * 返回值也可能告诉我们没投进去。所以这里不能只看 Join 结果就当没事。 */
+        var exited = true;
+        try { exited = _thread?.Join(2000) ?? true; } catch { }
+
+        if (exited)
+        {
+            _thread = null;
+            _threadId = 0;
+        }
+        else
+        {
+            /* 线程没退出。别把 _thread 置空 —— 那样下一次 Start 会再装一个钩子，
+             * 每个滚轮事件被两套钩子各接管一次，输出量直接翻倍。
+             * HookProc 里已经有 `!_running` 的闸，所以即使线程活着也不会再处理事件，
+             * 只是句柄和线程要等进程退出才回收。 */
+            Log.Warn("滚轮钩子线程未在 2 秒内退出（钩子已停用，但线程仍在）");
+        }
+
         _tracker.Reset();
         Log.Info("滚轮钩子已停止");
     }
@@ -174,6 +202,15 @@ public sealed class WheelEngine : IDisposable
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+        /* 已经停止（Stop 后线程还没退出、或者钩子正在被换掉）时一律放行。
+         *
+         * 这一行是"关闭增强之后滚轮还在被加速"的唯一防线：
+         * Stop() 只是把 _running 置 false 再给线程发 WM_QUIT，
+         * 而回调是系统在钩子线程的消息泵里投递的 —— 只要线程还活着，
+         * 回调就会继续进来。以前这里只看配置里的 Enabled，
+         * 于是"停用"之后钩子照旧工作，用户看到的是"关了还是加速"。 */
+        if (!_running) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
         try
         {

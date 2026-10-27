@@ -128,6 +128,19 @@ internal sealed class TrayController : IDisposable
     {
         try
         {
+            /* StateChanged 至少有两条来自后台线程：
+             *   · RefreshRateMonitor.Changed（定时器线程）
+             *   · WheelEngine.Faulted（钩子线程）
+             * 而 NotifyIcon 是 WinForms 组件 —— 从别的线程改它的 Icon/Text
+             * 会偶发"图标变空白、提示文字错乱"，而且不抛异常，事后完全查不到。
+             * 统一封送回 UI 线程再做。 */
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher != null && !dispatcher.CheckAccess())
+            {
+                dispatcher.BeginInvoke(new Action(RefreshVisual));
+                return;
+            }
+
             _icon.Icon = Services.Config.Enabled ? _iconOn : _iconOff;
             _icon.Text = Tooltip();
         }

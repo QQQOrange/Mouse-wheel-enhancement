@@ -44,6 +44,7 @@ internal static class SelfTest
             TestRepoNormalize();
             TestConfigRoundTrip();
             TestStableEntry();
+            TestLayoutJudgement();
             TestTheme();
             TestSelfBoost();
         }
@@ -825,5 +826,44 @@ internal static class SelfTest
         Check("注册表自启命令行指向稳定入口",
             cmd.Contains(Core.AdminStart.StableEntryPath, StringComparison.OrdinalIgnoreCase), cmd);
         Check("注册表自启命令行带 --minimized", cmd.Contains("--minimized"), cmd);
+    }
+
+    /// <summary>
+    /// 两条"路径判据"的回归断言。
+    ///
+    /// <para>
+    /// 它们各自对应一次真实故障：
+    /// · <c>InstallRootOf</c> 错位 → 数据落进版本目录，升级时被连带删除（设置"凭空消失"）；
+    /// · <c>IsVersionedBody</c> 缺失 → 自愈把开机自启写进版本目录，下次升级静默失效。
+    /// </para>
+    /// </summary>
+    private static void TestLayoutJudgement()
+    {
+        Section("布局判据：版本目录");
+
+        // ── 数据目录：<安装目录>/app/<版本>/ 要能认到安装目录 ──
+        var root = Path.Combine(Path.GetTempPath(), "mwe-layout-probe");
+        var verDir = Path.Combine(root, "app", "1.5.3");
+        Check("版本目录 → 认得上一级安装目录",
+            string.Equals(Core.AppPaths.InstallRootOf(verDir), root, StringComparison.OrdinalIgnoreCase),
+            Core.AppPaths.InstallRootOf(verDir) ?? "(null)");
+        Check("尾随分隔符不影响判断",
+            string.Equals(Core.AppPaths.InstallRootOf(verDir + Path.DirectorySeparatorChar), root,
+                StringComparison.OrdinalIgnoreCase),
+            Core.AppPaths.InstallRootOf(verDir + Path.DirectorySeparatorChar) ?? "(null)");
+        Check("普通目录不算版本布局",
+            Core.AppPaths.InstallRootOf(root) == null,
+            Core.AppPaths.InstallRootOf(root) ?? "(null)");
+        Check("app 下的非版本号子目录不算",
+            Core.AppPaths.InstallRootOf(Path.Combine(root, "app", "bin")) == null,
+            Core.AppPaths.InstallRootOf(Path.Combine(root, "app", "bin")) ?? "(null)");
+
+        // ── 开机自启：绝不能指向版本目录里的主程序本体 ──
+        var bodyExe = Path.Combine(verDir, "MouseWheelEnhancement.App.exe");
+        Check("版本目录里的主程序被识别出来", Core.AdminStart.IsVersionedBody(bodyExe), bodyExe);
+        Check("启动器本身不算（它在安装目录）",
+            !Core.AdminStart.IsVersionedBody(Path.Combine(root, "MouseWheelEnhancement.exe")),
+            Path.Combine(root, "MouseWheelEnhancement.exe"));
+        Check("空路径不算", !Core.AdminStart.IsVersionedBody(null));
     }
 }

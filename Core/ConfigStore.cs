@@ -131,20 +131,25 @@ public sealed class ConfigStore
             Config.Update.GitHubToken = "";
             return;
         }
-        if (string.IsNullOrEmpty(Config.Update.GitHubTokenProtected))
+
+        /* 只要有明文，就**以明文为准**加密一次并清掉它。
+         *
+         * 这里以前是先判 `GitHubTokenProtected` 是否为空，非空就直接跳到"DPAPI 不可用"
+         * 那条分支 —— 于是"用户手改 config 往 gitHubToken 里贴了新令牌、旧的加密字段还在"
+         * 这种情况：明文既不加密也不清空，会被 SaveNow 原样写回文件（凭据明文落盘），
+         * 日志还把原因错报成 DPAPI 不可用。 */
+        var prot = Dpapi.Protect(plain);
+        if (prot != null)
         {
-            var prot = Dpapi.Protect(plain);
-            if (prot != null)
-            {
-                Config.Update.GitHubTokenProtected = prot;
-                Config.Update.GitHubToken = "";
-                _cachedToken = plain;
-                _tokenLoaded = true;
-                Log.Info("已把明文 GitHub 令牌迁移为 DPAPI 加密存储");
-                SaveNow();
-                return;
-            }
+            Config.Update.GitHubTokenProtected = prot;
+            Config.Update.GitHubToken = "";
+            _cachedToken = plain;
+            _tokenLoaded = true;
+            Log.Info("已把明文 GitHub 令牌迁移为 DPAPI 加密存储");
+            SaveNow();
+            return;
         }
+
         // 加密不可用（极少数受限环境）：保持明文，但至少写进日志提醒
         Log.Warn("DPAPI 不可用，GitHub 令牌只能以明文保存在本机配置里");
         _cachedToken = plain;

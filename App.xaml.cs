@@ -249,7 +249,12 @@ public partial class App : System.Windows.Application
                 sb.AppendLine($"任务指向：{(target ?? "（取不到）")}");
                 if (!string.IsNullOrWhiteSpace(target))
                     sb.AppendLine($"目标文件存在：{(File.Exists(target) ? "是" : "否 —— 目标已被删除，开机必然起不来")}");
-                sb.AppendLine($"指向稳定入口：{(Core.AdminStart.PointsToCurrentExe() ? "是" : "否 —— 需要重建")}");
+
+                if (Core.AdminStart.HasKnownEntry)
+                    sb.AppendLine($"指向稳定入口：{(Core.AdminStart.PointsToStableEntry() ? "是" : "否 —— 需要重建")}");
+                else
+                    sb.AppendLine("指向稳定入口：（当前不是从启动器启动，无法判断稳定入口是谁）");
+
                 sb.AppendLine($"是否已失效：{(Core.AdminStart.IsStale() ? "是" : "否")}");
             }
 
@@ -313,13 +318,25 @@ public partial class App : System.Windows.Application
             var cfgPath = Services.Config.Behavior.LauncherPath;
             if (string.IsNullOrWhiteSpace(cfgPath)) cfgPath = null;
 
-            // 环境变量里的路径优先（它是启动器刚给的，最准）
-            var chosen = envPath ?? cfgPath;
-            if (chosen != null && File.Exists(chosen))
+            /* 按优先级挑第一个**真实存在**的。
+             *
+             * 这里不能写成 `envPath ?? cfgPath` 再判 Exists：环境变量指向的文件
+             * 万一没了（启动器被删/改名），就会连带把配置里那个仍然有效的路径也清掉，
+             * 于是 StableEntryPath 退化成版本目录，自愈反而把任务写坏。 */
+            string? chosen = null;
+            foreach (var candidate in new[] { envPath, cfgPath })
+            {
+                if (string.IsNullOrWhiteSpace(candidate)) continue;
+                if (!File.Exists(candidate)) continue;
+                chosen = candidate;
+                break;
+            }
+
+            if (chosen != null)
             {
                 Core.AdminStart.LauncherPath = chosen;
 
-                // 配置里没有、或指向的文件已经没了 → 更新它
+                // 配置里没有、或和实际用的不一致 → 更新它
                 if (!string.Equals(cfgPath, chosen, StringComparison.OrdinalIgnoreCase))
                 {
                     Services.Config.Behavior.LauncherPath = chosen;
@@ -426,11 +443,15 @@ public partial class App : System.Windows.Application
         try
         {
             var b = Services.Config.Behavior;
-            if (!b.RunAtLogin) return;
 
-            if (!b.RunAtLoginAsAdmin)
+            /* 配置说"不要管理员自启"（包括整个开机自启都关了）时，
+             * 计划任务必须清掉 —— 否则开关显示着关，开机却还是弹一次提权启动。
+             *
+             * 这里曾经写成 `if (!b.RunAtLogin) return;` 之后再判断，
+             * 结果"自启整体关闭 + 任务没删成功"这条最需要清理的路径被第一行挡住了：
+             * 之后每次以管理员启动都不会再自愈，残留任务永远留着。 */
+            if (!b.RunAtLogin || !b.RunAtLoginAsAdmin)
             {
-                // 配置说不用管理员自启，任务却还留着（上次删除失败）→ 清掉
                 if (Services.IsElevated && AdminStart.IsEnabled())
                 {
                     AdminStart.Set(false, out _);
@@ -534,6 +555,11 @@ public partial class App : System.Windows.Application
             if (uiCode != 0) code = uiCode;
 
             ShotUpdatePage(w);
+
+            /* 最后再验一次托盘那条链路（会换掉当前窗口，所以放在所有取窗口的检查之后） */
+            var trayCode = CheckTrayShowPath();
+            if (trayCode != 0) code = trayCode;
+
             Log.Info($"smoke: 注入 {sent}/16 次，钩子接管 {boosted} 次、放行 {passed} 次，" +
                      $"倍率 {Services.Engine.LastMultiplier:0.00}×");
 
@@ -586,6 +612,54 @@ public partial class App : System.Windows.Application
     /// 判定方式：读控件**模板里那个 Border 的真实 Background**，再和调色板里的值对。
     /// 这样换主题也成立 —— 两份调色板各有一份禁用色，谁生效就和谁比。
     /// </summary>
+    /// <summary>
+    /// 验证「托盘单击能打开窗口」这条链路。
+    ///
+    /// <para>
+    /// 托盘单击不是从 UI 线程过来的：<see cref="TrayController"/> 里用的是
+    /// <c>Task.Delay(...).ContinueWith(..., TaskScheduler.Default)</c> —— 线程池、MTA。
+    /// 而 WPF 窗口只能在 UI 线程创建。以前 <c>ShowWindow</c> 直接
+    /// <c>new MainWindow()</c>，在 MTA 上必抛"调用线程必须为 STA"，
+    /// 异常被 <c>ShowMainWindow</c> 的 catch 吞成一条 WARN ——
+    /// **用户看到的是"点托盘没反应"，日志里也只有一行 WARN**。
+    /// </para>
+    /// <para>
+    /// 原有的 `--trayprobe` 只统计三条异常通道，这条被吞掉的路径它抓不到，
+    /// 所以必须在冒烟里用**同一套线程环境**真的喊一次，再看窗口有没有出来。
+    /// </para>
+    /// </summary>
+    private static int CheckTrayShowPath()
+    {
+        try
+        {
+            // 丢掉当前窗口引用，强制让 ShowWindow 走"新建窗口"那条（原来会崩的就是它）
+            var old = Services.Window;
+            Services.Window = null;
+            try { old?.Hide(); } catch { }
+
+            // 与托盘单击完全一样的调用环境：线程池 → Services.ShowWindow()
+            Task.Run(() => Services.ShowWindow()).GetAwaiter().GetResult();
+
+            // BeginInvoke 排的活要泵一次消息队列才会执行
+            Current.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+
+            var w = Services.Window;
+            if (w != null && w.IsVisible)
+            {
+                Log.Info("smoke: 托盘（线程池）路径能正常打开窗口");
+                return 0;
+            }
+
+            Log.Error($"smoke: 托盘路径没能打开窗口（Window={(w == null ? "null" : "有但不可见")}）");
+            return 6;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("smoke: 托盘路径抛异常", ex);
+            return 6;
+        }
+    }
+
     private static int CheckUpdatePageUi(MainWindow w)
     {
         var code = 0;
@@ -1225,7 +1299,11 @@ public partial class App : System.Windows.Application
                 Services.Window = null;
                 if (broken != null)
                 {
-                    broken.Closed -= (_, _) => { };
+                    /* 这里只需要把它关掉：它的 Closed 处理器带身份校验
+                     * （ReferenceEquals(Services.Window, window)），此时 Window 已经是 null，
+                     * 不会再误清别人的引用。
+                     * 以前这里写的是 `broken.Closed -= (_, _) => { }` —— 退订一个刚创建的
+                     * lambda，什么也退不掉，纯属噪音。 */
                     try { broken.Close(); } catch { }
                 }
             }

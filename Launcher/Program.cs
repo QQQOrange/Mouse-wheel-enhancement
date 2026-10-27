@@ -149,8 +149,34 @@ namespace MouseWheelEnhancement.Launcher
             var sb = new StringBuilder();
             sb.AppendLine("启动器运行时检测");
             sb.AppendLine("产品：" + ProductName);
-            sb.AppendLine("主程序：" + Path.Combine(BaseDir(), AppExeName) +
-                          (File.Exists(Path.Combine(BaseDir(), AppExeName)) ? "（存在）" : "（缺失）"));
+
+            /* 主程序是**内嵌资源**，从不与启动器并排落地 ——
+             * 以前这里用 File.Exists(启动器目录\App.exe) 判断，永远打印"（缺失）"，
+             * 排查"启动器提示安装不完整"时会把人带偏。真正的判据是内嵌资源在不在。 */
+            var asm = Assembly.GetExecutingAssembly();
+            var myVer = asm.GetName().Version;
+            // 注意：启动器是 C# 7.3（.NET Framework 4.8），不能用可空引用类型注解
+            Stream payload = null;
+            try { payload = asm.GetManifestResourceStream(AppExeName); }
+            catch { /* 读不到就当没有 */ }
+            try
+            {
+                sb.AppendLine("启动器版本：" + myVer.ToString(3));
+                sb.AppendLine("内嵌主程序：" + (payload != null
+                    ? $"有（{payload.Length:N0} B）"
+                    : "**缺失** —— 这个 exe 打包不完整，请重新下载"));
+
+                var cached = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MouseWheelEnhancement", "app", myVer.ToString(3), AppExeName);
+                var cachedVer = File.Exists(cached) ? ReadFileVersion(cached) : null;
+                sb.AppendLine("缓存主程序：" + cached);
+                sb.AppendLine("            " + (cachedVer != null
+                    ? $"已释放，版本 {cachedVer}"
+                    : "尚未释放（首次启动时写在这里）"));
+            }
+            finally { payload?.Dispose(); }
+
             sb.AppendLine("需要：.NET " + RuntimeProbe.RequiredMajor + ".0 桌面运行时（Microsoft.WindowsDesktop.App）");
             sb.AppendLine(new string('-', 56));
             sb.AppendLine("结论：" + probe.State + " —— " + probe.Summary);
@@ -284,7 +310,15 @@ namespace MouseWheelEnhancement.Launcher
             if (File.Exists(exe))
             {
                 var cached = ReadFileVersion(exe);
-                if (cached != null && cached >= myVer) return exe;
+                if (cached != null && cached >= myVer)
+                {
+                    /* 命中缓存就直接用 —— 但顺手把更老的版本目录清掉。
+                     * 这里以前直接 return，于是早年的 app\1.4.0\ 之类会一直留着：
+                     * 用户看不见，却会占着几十 MB，而且"计划任务还指着它"这种
+                     * 排查场景里多一层干扰。删不掉就算了（可能正被运行）。 */
+                    CleanOldVersions(Path.GetDirectoryName(root), myVer.ToString(3));
+                    return exe;
+                }
             }
 
             Directory.CreateDirectory(root);

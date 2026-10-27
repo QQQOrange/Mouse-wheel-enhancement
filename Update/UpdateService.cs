@@ -625,7 +625,26 @@ public sealed class UpdateService
                 retry.Headers.Authorization = new AuthenticationHeaderValue("Token", tok);
                 if (isApi) retry.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
                 if (have > 0) retry.Headers.Range = new RangeHeaderValue(have, null);
-                resp = await _download.SendAsync(retry, HttpCompletionOption.ResponseHeadersRead, ct);
+
+                /* 这次重试也必须自己收口。
+                 *
+                 * 以前是直接 `resp = await SendAsync(...)` —— 重试再失败时
+                 * HttpRequestException 会**越过**外层的 3 轮重试和换源逻辑直接冒泡，
+                 * 界面显示原始英文异常。而"匿名被拒 + 令牌也不行"恰好是
+                 * 下载失败里最常见的一幕。 */
+                try
+                {
+                    resp = await _download.SendAsync(retry, HttpCompletionOption.ResponseHeadersRead, ct);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    throw new DlFailure($"带令牌重试仍超时（{new Uri(url).Host}）—— " +
+                                        "网络或代理不允许访问这个域名", keepPartial: have > 0);
+                }
+                catch (HttpRequestException e2)
+                {
+                    throw new DlFailure(Explain(e2), keepPartial: true);
+                }
             }
             else throw new DlFailure(Explain(e), keepPartial: true);
         }

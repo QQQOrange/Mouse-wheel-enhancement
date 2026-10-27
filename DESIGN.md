@@ -1489,6 +1489,136 @@ Get-ScheduledTaskInfo
 任何"提权重启自己"的实现都必须以**启动器**为目标，不能以主程序本体为目标 ——
 主程序本体住在版本目录里，换个版本就丢了"启动器在哪"这个信息。
 
+## 26. 全局审查：一个一直存在的"点托盘没反应"（v1.5.4）
+
+v1.5.3 修完开机自启之后做了一次全项目审查：逐项核对已规划功能的实现情况、
+确认已知 bug 的修复状态、并排查改动是否引入衍生问题。查出 9 处实质缺陷，
+其中一处是**从 v1.5.2 起就一直存在、但所有测试都没抓到**的。
+
+### 26.1 托盘单击根本没把窗口打开（严重）
+
+`TrayController.ScheduleShow` 是这么写的：
+
+```csharp
+_ = Task.Delay(400, cts.Token).ContinueWith(t =>
+{
+    if (t.IsCanceled) return;
+    try { Services.ShowWindow(); }
+    catch (Exception ex) { Log.Warn("托盘打开窗口失败：" + ex.Message); }
+}, TaskScheduler.Default);      // ← 线程池
+```
+
+而 `Services.ShowWindow` 直接 `new MainWindow(); w.Show();`。
+**WPF 窗口只能在创建它的 UI 线程上建** —— 线程池是 MTA，
+`new Window()` 会抛"调用线程必须为 STA"。异常被这一层的 `catch` 吞成一条 WARN，
+于是用户看到的现象是：
+
+> 点托盘图标没有任何反应，日志里只有一行 WARN。
+
+更糟的是 `ShowMainWindow` 的 catch 分支会把 `Services.Window` 置空、
+并 `Close()` 掉原来那个**开着的**窗口 —— 所以如果窗口本来开着，
+点一下托盘反而把它关掉，然后再也打不开。
+
+**为什么之前的测试全都漏了**：`--trayprobe` 只统计三条异常通道
+（Dispatcher / WinForms ThreadException / AppDomain），这条异常在
+`ContinueWith` 里就被 catch 掉了，探针看不到；`--smoke` 只建窗口，不走托盘。
+
+修法：把封送放在**唯一的入口** `Services.ShowWindow` 里 ——
+所有调用方（托盘单击/双击、托盘菜单、单实例唤起）都从这里进，
+不该要求每个调用方自己记得。同时给 `ShowMainWindow` 的 catch 去掉那句
+`broken.Closed -= (_, _) => { };`（退订一个刚创建的 lambda，什么也退不掉）。
+
+**回归断言**（`--smoke` 新增，`App.CheckTrayShowPath`）：
+
+1. 丢掉窗口引用，强制走"新建窗口"那条；
+2. 用 `Task.Run(...)` 从**线程池**调 `Services.ShowWindow()`（和托盘一模一样的环境）；
+3. 泵一次 `DispatcherPriority.ContextIdle`，断言 `Services.Window != null && IsVisible`。
+
+反向验证过这条断言是有效的：把封送短路掉再跑，`--smoke` 退出码 6、
+日志写 `smoke: 托盘路径没能打开窗口（Window=null）`。
+
+### 26.2 数据目录判据错了一级（中等）
+
+`AppPaths.Resolve` 里判断"主程序在版本目录里"的写法是：
+
+```csharp
+var parent = Directory.GetParent(ExeDir)?.FullName;   // …\app
+File.Exists(Path.Combine(parent, "MouseWheelEnhancement.exe"))   // 启动器根本不在 app\ 里
+```
+
+启动器在**安装目录**，不在 `…\app\`，所以这个条件永远不成立 ——
+注释里承诺的"用户直接双击 app\ 里的 exe，也不能让设置凭空消失"其实没实现：
+设置会落到 `…\app\<版本>\`，下次升级被 `CleanOldVersions` 连目录删掉。
+
+修法：抽成纯函数 `AppPaths.InstallRootOf(exeDir)`，按
+`<安装目录>\app\<版本>` 认到**上两级**；同时保留原来"往上找一级"的兜底。
+抽成纯函数是为了能在自检里断言（见 26.6）。
+
+### 26.3 自愈的清理分支被自己的 return 挡住（中等）
+
+`RepairStartupIfNeeded` 第一行是 `if (!b.RunAtLogin) return;`，
+而方法注释承诺的第二件事是"配置说不用管理员自启、任务却还留着 → 清掉"。
+"开机自启整体被关掉 + 任务没删成功"恰好被第一行挡住 ——
+之后每次以管理员启动都不会再自愈，开关显示关、开机照样弹一次提权。
+
+修法：把两个"不该有任务"的条件合并成一个分支（`!RunAtLogin || !RunAtLoginAsAdmin`）。
+
+### 26.4 令牌明文落盘（中等，安全）
+
+`ConfigStore.MigrateTokenIfNeeded` 原来的判断是"先看
+`GitHubTokenProtected` 空不空"，非空就直接跳到"DPAPI 不可用"那条分支。
+于是"用户手改 config 往 `gitHubToken` 里贴了新令牌、旧的加密字段还在"这种情况：
+明文既不加密也不清空，会被 `SaveNow` 原样写回文件，日志还把原因错报成 DPAPI 不可用。
+
+修法：只要有明文就加密一次并清空它（覆盖旧密文）；只有 `Dpapi.Protect`
+真的返回 null 时才退回明文。
+
+### 26.5 其余四处
+
+| 位置 | 问题 | 修法 |
+|------|------|------|
+| `Update/UpdateService.cs` | 带令牌重试那一次没有再包 try/catch，重试再失败时 `HttpRequestException` 会越过 3 轮重试和换源逻辑直接冒泡，界面显示原始英文 | 重试也翻成 `DlFailure` |
+| `Core/WheelEngine.cs` | `HookProc` 只看配置里的 `Enabled`，不看 `_running` —— `Stop()` 后线程没退出时钩子仍在工作（"关了还在加速"） | 回调开头加 `if (!_running) return CallNextHookEx(...)`；`Start()` 拒绝在旧线程仍活着时装第二个钩子 |
+| `TrayController.RefreshVisual` | `StateChanged` 有两条来自后台线程（刷新率监听、引擎异常），直接改 WinForms `NotifyIcon` 的属性 → 偶发图标空白/文字错乱且不抛异常 | 封送回 UI 线程 |
+| `Launcher` | `--runtimecheck` 用 `File.Exists(启动器目录\App.exe)` 判断主程序，而主程序是内嵌资源、从不并排落地 → 永远打印"（缺失）"，排查时误导 | 改判内嵌资源 + 缓存路径；顺带在缓存命中时也清理旧版本目录 |
+
+### 26.6 v1.5.3 自己引入的两处风险
+
+审查的重点之一就是"改动有没有带出新的坏路径"，确实找到两处：
+
+1. **稳定入口解析可能把有效配置清掉**。`ResolveStableEntry` 原来写的是
+   `var chosen = envPath ?? cfgPath;` 再判 `File.Exists` ——
+   环境变量指向的文件万一没了，会连带把配置里仍有效的路径一起清空，
+   于是 `StableEntryPath` 退化成版本目录。
+   修法：按优先级挑第一个**真实存在**的，只有全都无效时才清配置。
+
+2. **自愈可能把任务写回版本目录**。`StableEntryPath` 退化时，
+   `AdminStart.Set(true)` 会老老实实把那个"升级即失效"的路径写进任务。
+   修法：新增 `AdminStart.IsVersionedBody(path)`，命中
+   `…\app\<版本>\xxx.exe` 时**拒绝创建**并给出明确原因；
+   同时把 `PointsToCurrentExe` 改名 `PointsToStableEntry` —— 本轮 bug 的根源
+   就是"任务指向当前 exe"这个错误概念。
+
+自检新增 7 条断言（`SelfTest.TestLayoutJudgement`），覆盖这两条判据。
+
+### 26.7 明确不修的
+
+- **COM 对象的 RCW 不手动释放**：`Schedule.Service` 每次调用都新建（刻意不缓存，
+  避免 `RPC_E_WRONG_THREAD`），一次界面刷新会留下 5~7 个 RCW。
+  它们在 .NET Core 上由 GC 回收，长驻进程里属于"可观测但不增长"的量级；
+  手动 `ReleaseComObject` 与 `dynamic` 的临时 RCW 语义容易互相踩，风险大于收益。
+- **`Launcher.QuoteArgs` 的引号转义不符合 CreateProcess 规则**：实际只转发
+  `--taskcheck` 这类开关型参数，不含引号，暂时无害。
+
+### 26.8 审查里确认"没问题"的部分
+
+- 45 个配置项**全部**有实际读取点，没有"界面上有开关、程序里没人用"的死配置；
+- 两份调色板 35 个 Key 一一对应；XAML 里 31 个资源键全都能解析；
+- 55 个事件处理器与 XAML 绑定一一对应；
+- 配置结构版本迁移（v1→v2→v3）逻辑与断言一致。
+
+---
+
 ---
 
 MIT License · © 2026 QQQOrange

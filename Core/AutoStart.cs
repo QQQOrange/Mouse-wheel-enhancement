@@ -68,12 +68,6 @@ public static class AutoStart
         }
     }
 
-    /// <summary>兼容旧调用点。</summary>
-    public static bool Set(bool on) => SetRunKey(on, out _);
-
-    /// <summary>当前是否"任何一种"自启方式生效（界面显示开关状态用）。</summary>
-    public static bool IsEnabled() => IsRunKeyEnabled() || AdminStart.IsEnabled();
-
     /// <summary>
     /// 把两种自启方式同步到目标状态。
     ///

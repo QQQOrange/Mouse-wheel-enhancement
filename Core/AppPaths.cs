@@ -35,7 +35,6 @@ public static class AppPaths
     /// <summary>是不是退到了 %APPDATA%（程序目录不可写）。</summary>
     public static bool IsFallback { get; private set; }
 
-    public static string ConfigPath => Path.Combine(DataDir, "config.json");
     public static string LogDir => Path.Combine(DataDir, "logs");
     public static string LogPath => Path.Combine(LogDir, "app.log");
 
@@ -51,12 +50,33 @@ public static class AppPaths
             return d;
         }
 
-        /* 主程序被放在 <安装目录>\app\ 里时，数据目录仍然应该在**安装目录**下。
-         * 正常路径走不到这里（启动器已经用 MWE_DATA_DIR 指过去了），
-         * 但用户完全可能直接双击 app\ 里的 exe —— 那时不能让他的设置"凭空消失"。
-         * 判据：父目录里已经有数据文件夹，或者有启动器。 */
+        /* 主程序被放在版本目录 <安装目录>\app\<版本>\ 里时，数据目录必须在
+         * **安装目录**下（也就是往上**两级**），理由见本类开头。
+         *
+         * 这里曾经写错过：判据只看父目录 = 安装目录\app\，
+         * 而启动器根本不在 app\ 里 —— 于是这条永远不会命中，
+         * 用户直接双击 app\<版本>\ 里的 exe 时，设置就落在版本目录里，
+         * 下次升级被 CleanOldVersions 连目录一起删掉。 */
         var self = ExeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var parent = Directory.GetParent(self)?.FullName;
+
+        var installRoot = InstallRootOf(ExeDir);
+        if (installRoot != null)
+        {
+            var installData = Path.Combine(installRoot, DataFolderName);
+            if (Directory.Exists(installData) ||
+                File.Exists(Path.Combine(installRoot, "MouseWheelEnhancement.exe")))
+            {
+                if (TryEnsure(installData))
+                {
+                    IsFallback = false;
+                    return installData;
+                }
+            }
+        }
+
+        /* 退一级：exe 放在安装目录的某个子文件夹里（老布局），
+         * 父目录有数据文件夹或启动器就认它。 */
         if (!string.IsNullOrEmpty(parent))
         {
             var upData = Path.Combine(parent, DataFolderName);
@@ -88,6 +108,34 @@ public static class AppPaths
         // 两个都写不了（极端受限环境）：仍然返回本地路径，让后续写入自己报错
         IsFallback = false;
         return local;
+    }
+
+    /// <summary>
+    /// 若 <paramref name="exeDir"/> 形如 <c>&lt;安装目录&gt;\app\&lt;版本&gt;</c>，
+    /// 返回 <c>&lt;安装目录&gt;</c>；否则返回 null。
+    ///
+    /// <para>
+    /// 抽成纯函数是为了能在自检里断言 —— 这条判据错位过一次：原来的写法只看
+    /// 父目录（<c>&lt;安装目录&gt;\app\</c>）里有没有启动器，而启动器根本不在 app\ 里，
+    /// 于是条件永远不成立，用户直接双击版本目录里的 exe 时设置就落进了那个
+    /// 下次升级会被删掉的目录。
+    /// </para>
+    /// </summary>
+    internal static string? InstallRootOf(string? exeDir)
+    {
+        if (string.IsNullOrWhiteSpace(exeDir)) return null;
+        try
+        {
+            var self = exeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var parent = Directory.GetParent(self)?.FullName;
+            if (string.IsNullOrEmpty(parent)) return null;
+
+            if (!string.Equals(Path.GetFileName(parent), "app", StringComparison.OrdinalIgnoreCase)) return null;
+            if (!Version.TryParse(Path.GetFileName(self), out _)) return null;
+
+            return Directory.GetParent(parent)?.FullName;
+        }
+        catch { return null; }
     }
 
     /// <summary>目录能建、能写，才算可用。只判 Exists 不够 —— Program Files 下能建目录不等于能写文件。</summary>

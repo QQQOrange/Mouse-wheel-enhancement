@@ -151,6 +151,31 @@ internal static class Services
     public static void ShowWindow(int tabIndex = -1)
     {
         if (Application.Current is not App app) return;
+
+        var dispatcher = app.Dispatcher;
+        if (dispatcher == null || dispatcher.HasShutdownStarted) return;
+
+        /* 必须封送到 UI 线程再动窗口。
+         *
+         * 托盘那条链路不是从 UI 线程过来的：TrayController.ScheduleShow 用的是
+         * `Task.Delay(...).ContinueWith(..., TaskScheduler.Default)` ——
+         * 显式指定了线程池，回调跑在 MTA 线程上。
+         * 在 MTA 线程上 `new MainWindow()` 会抛"调用线程必须为 STA"，
+         * 异常被 ShowMainWindow 的 catch 吃掉 → 用户看到的是
+         * **"点托盘图标没有任何反应"**，日志里只有一行 WARN。
+         *
+         * 所有调用方（托盘单击/双击、托盘菜单、单实例唤起的外部进程）都从这里进，
+         * 所以把封送放在这一层，而不是要求每个调用方自己记得。 */
+        if (!dispatcher.CheckAccess())
+        {
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                try { app.ShowMainWindow(tabIndex); }
+                catch (Exception ex) { Log.Warn("托盘打开窗口失败：" + ex.Message); }
+            }));
+            return;
+        }
+
         app.ShowMainWindow(tabIndex);
     }
 

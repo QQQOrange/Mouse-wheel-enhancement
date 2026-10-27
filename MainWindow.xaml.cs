@@ -113,10 +113,6 @@ public partial class MainWindow : Window
         };
     }
 
-    /// <summary>
-    /// 构建日期。用 exe 文件自身的修改时间，而不是 Assembly.Location ——
-    /// 单文件发布时后者恒为空串（IL3000）。
-    /// </summary>
     /// <summary>取画刷（带缓存）。</summary>
     private Brush B(string key)
     {
@@ -126,6 +122,10 @@ public partial class MainWindow : Window
         return b;
     }
 
+    /// <summary>
+    /// 构建日期。用 exe 文件自身的修改时间，而不是 Assembly.Location ——
+    /// 单文件发布时后者恒为空串（IL3000）。
+    /// </summary>
     private static string BuildStamp()
     {
         try
@@ -350,6 +350,13 @@ public partial class MainWindow : Window
         FpsValue.Text = c.Smooth.AutoFps
             ? RefreshRateMonitor.Describe()
             : $"手动 · {c.Smooth.TargetFps} Hz（{1000.0 / c.Smooth.TargetFps:0.00} ms/帧）";
+
+        // 说明文字也要跟着变，否则关掉自动之后那句"自动跟着显示器刷新率走"还挂在那儿，
+        // 用户看不出当前到底按哪个值在跑。
+        FpsHint.Text = c.Smooth.AutoFps
+            ? "自动跟着显示器刷新率走：屏幕多少 Hz，就每多少毫秒推一小步。"
+            : "固定用你选的帧率注入。显示器更快时，手动设低了会白丢平滑度；设高了只是多算几帧，不会更顺。";
+
         FpsManualGroup.IsEnabled = !c.Smooth.AutoFps;
         FpsManualGroup.Opacity = c.Smooth.AutoFps ? 0.45 : 1.0;
 
@@ -741,10 +748,16 @@ public partial class MainWindow : Window
         if (stale)
         {
             var target = AdminStart.TaskTargetPath();
-            AdminStartBrokenText.Text =
-                "开机自启任务已失效：它指向的程序文件已经不存在" +
-                (string.IsNullOrWhiteSpace(target) ? "" : $"（{target}）") +
-                "，多半是升级后旧版本目录被清理了。下次开机不会自动启动 —— 点「立即修复」重建它。";
+            var missing = string.IsNullOrWhiteSpace(target) || !File.Exists(target);
+
+            /* 两种失效要说清楚是哪一种 —— 用户看到"文件不存在"和
+             * "指向的不是启动器"，能做的事其实不一样（前者要重建，后者要换成启动器）。 */
+            AdminStartBrokenText.Text = missing
+                ? "开机自启任务已失效：它指向的程序文件已经不存在（" +
+                  (string.IsNullOrWhiteSpace(target) ? "任务里没有可执行动作" : target) +
+                  "），多半是升级后旧版本目录被清理了。下次开机不会自动启动 —— 点「立即修复」重建它。"
+                : "开机自启任务还在，但指向的不是启动器（" + target +
+                  "）—— 这个位置在下次升级时会被清理掉，到时候开机就起不来了。点「立即修复」重建它。";
         }
     }
 
