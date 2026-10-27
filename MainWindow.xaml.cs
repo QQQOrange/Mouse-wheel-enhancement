@@ -52,6 +52,7 @@ public partial class MainWindow : Window
         AppsList.ItemsSource = _rows;
 
         SubtitleText.Text = $"{Services.AppTitleEn} · v{Services.Version}";
+        PageBadge.Text = $"v{Services.Version}";
         CurrentVersionText.Text = $"v{Services.Version}";
         RepoText.Text = Services.Updater.Repo;
         AboutVersion.Text = $"v{Services.Version}（build {BuildStamp()}）";
@@ -361,7 +362,11 @@ public partial class MainWindow : Window
 
         StatusText.Text = !on ? "已暂停" : running ? "已启用" : "钩子异常";
         StatusDot.Fill = (Brush)FindResource(!on ? "TextMuted" : running ? "SuccessBrush" : "DangerBrush");
-        StatusPill.Background = (Brush)FindResource(!on ? "CardBg2" : running ? "AccentFaint" : "CardBg2");
+        HookHint.Text = !on
+            ? "总开关关闭 · 完全走系统默认"
+            : running
+                ? $"钩子正常 · 已接管 {e.BoostedCount} 次"
+                : "钩子未启动，滚动不受影响";
 
         FooterRight.Text = Services.IsElevated
             ? $"v{Services.Version} · 管理员"
@@ -529,11 +534,68 @@ public partial class MainWindow : Window
 
     /* ══════════════ 事件：总开关与行为 ══════════════ */
 
+    private bool _navSyncing;
+
+    /// <summary>
+    /// 侧栏导航 → 页面。
+    ///
+    /// <para>
+    /// 左边是 ListBox、右边是（没有标签条的）TabControl，两者要双向同步：
+    /// 用户点导航时推 TabControl，代码调用 <see cref="SelectTab"/> 时推回导航。
+    /// 用 <c>_navSyncing</c> 挡住回环 —— 否则 A 改 B、B 又改 A，选中项会抖。
+    /// </para>
+    /// </summary>
+    private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_navSyncing || NavList.SelectedIndex < 0) return;
+
+        _navSyncing = true;
+        try { Nav.SelectedIndex = NavList.SelectedIndex; }
+        finally { _navSyncing = false; }
+    }
+
     private void Nav_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        // 标题栏显示当前页名（TabItem.Header 仍是纯文本，正好拿来当标题）
+        if (Nav.SelectedItem is TabItem ti && ti.Header != null)
+            PageTitle.Text = ti.Header.ToString();
+
+        if (!_navSyncing && Nav.SelectedIndex >= 0)
+        {
+            _navSyncing = true;
+            try { NavList.SelectedIndex = Nav.SelectedIndex; }
+            finally { _navSyncing = false; }
+        }
+
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
         if (Nav.SelectedIndex == 1) InvalidateCurve();
     }
+
+    /// <summary>
+    /// 标题栏的深浅色按钮：一次点击直接切到"另一种"，并把它记成显式选择。
+    ///
+    /// <para>
+    /// 只做浅↔深两态切换，不把"跟随系统"塞进这个循环 ——
+    /// 三态循环点起来没人能预期下一次是什么。"跟随系统"仍然在「概览 → 外观」里选。
+    /// </para>
+    /// </summary>
+    private void ThemeBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var wantLight = !Theme.IsLightNow;
+        var mode = wantLight ? Theme.Light : Theme.Dark;
+
+        Services.Config.Appearance.Theme = mode;
+        Theme.SetMode(mode);
+        UpdateThemeHints();
+        Commit(refreshDerived: false);
+
+        ThemeBtn.ToolTip = $"当前{(wantLight ? "浅色" : "深色")} · 点击切换";
+    }
+
+    private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    /// <summary>关闭按钮：走正常的 Closing 流程（默认收进托盘，可在设置里改成真退出）。</summary>
+    private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
     private const int HelpTabIndex = 5;

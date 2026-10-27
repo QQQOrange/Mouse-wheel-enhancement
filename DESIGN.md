@@ -1207,4 +1207,42 @@ v1.3.x 及更早的客户端还按旧名字找包，会得到"这个版本里没
 
 ---
 
+## 22. 设置窗口 UI 改版（v1.5.0）
+
+参照 `Keyboard enhance`（CapsLockPlus）的设计语言重写设置窗口：自绘标题栏 +
+左侧导航 + 卡片式内容区，白/夜双主题，五级文字、三态交互。结构上拆出
+`Themes/Palette.Dark/Light.xaml`（纯色，键相同）与 `Themes/Controls.xaml`（样式，
+一律 `DynamicResource`），主题切换走 `WM_SETTINGCHANGE` + 注册表 `AppsUseLightTheme`。
+
+### 22.1 标题栏图标变空心方框（tofu）的根因
+
+改版后标题栏三个图标按钮（`Content="&#xE793;"` 等 Fluent 码位）渲染成空心方框，
+而同 StackPanel 里 `<TextBlock FontFamily="IconFont">` 写法正常。
+
+根因：`Controls.xaml` 里有一条**没有 x:Key 的隐式 `TextBlock` 样式**，
+把 `FontFamily` 设为 UiFont（微软雅黑）。WPF 的 `ContentPresenter` 渲染**字符串**
+Content 时会创建内部 TextBlock，隐式样式按类型从应用级资源链命中它 ——
+字体被改成微软雅黑，而 U+E793/E921/E8BB 在微软雅黑里不存在，直接 tofu。
+显式 `<TextBlock>` 子元素上写了本地 FontFamily，优先级高于隐式样式，所以正常。
+
+修复（两层）：
+- `IconButton` 模板的 `ContentPresenter` 加 `TextElement.FontFamily`（兜底）
+- 新增显式 `IconGlyph` 样式，标题栏图标一律 `<TextBlock Text="&#xE793;"
+  Style="{StaticResource IconGlyph}" />`。挂上显式样式后隐式样式不再应用，
+  `Foreground` 改走继承链（Button.Foreground → 图标），hover 变色也因此生效
+
+教训：**隐式 TextBlock 样式是字符串 Content 的陷阱** —— 它看不见摸不着，
+却会在 ContentPresenter 内部拦截字体。凡是用图标字体的地方，都不要依赖
+ContentPresenter 对字符串的继承。
+
+### 22.2 自动化验收的两个坑（不是产品 bug）
+
+- 启动后立刻 SendInput 点击：Windows 前台锁定让 `SetForegroundWindow` 被静默
+  拒绝，点击全发到别的窗口。必须先轮询 `GetForegroundWindow()` 确认就绪
+- DPI：测量进程若非 PerMonitorV2 感知，`GetWindowRect`/`GetSystemMetrics` 全部
+  返回虚拟化值（3840×2160@192DPI 实测为 1920×1080@96DPI），布局会误判
+
+
+---
+
 MIT License · © 2026 QQQOrange
