@@ -44,8 +44,14 @@ public static class Log
 
     public static void Info(string msg) => Enqueue("INFO ", msg);
     public static void Warn(string msg) => Enqueue("WARN ", msg);
+
+    /// <summary>
+    /// 记一条错误。<paramref name="ex"/> 非空时连堆栈一起记 ——
+    /// "只记类型和消息"在排查 WPF 这种深链路异常时等于没记
+    /// （"VisualTarget 的根 Visual 不能具有父级"光看消息定位不到是哪个弹出层）。
+    /// </summary>
     public static void Error(string msg, Exception? ex = null)
-        => Enqueue("ERROR", ex == null ? msg : $"{msg} :: {ex.GetType().Name}: {ex.Message}");
+        => Enqueue("ERROR", ex == null ? msg : $"{msg} :: {ex}");
 
     /// <summary>当前程序版本（取自程序集，不手写，避免和发版号对不上）。</summary>
     public static string Version =>

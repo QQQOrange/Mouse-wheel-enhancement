@@ -14,6 +14,13 @@ public partial class App : System.Windows.Application
     private Mutex? _mutex;
     private EventWaitHandle? _activateEvent;
 
+    /// <summary>
+    /// 「显示主窗口」的重入标记。
+    /// 托盘双击会连发 MouseClick×2 + DoubleClick，三次调用可能落在同一次
+    /// 消息处理里 —— 没有这道闸，窗口会在自己还没显示完的时候被再次 Show()。
+    /// </summary>
+    private bool _showingWindow;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -56,6 +63,43 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // 诊断模式：驱动真实 NotifyIcon，走完整的托盘点击路径
+        if (e.Args.Any(a => a.Equals("--trayprobe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = TrayProbe.Run();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        // 诊断模式：用真实鼠标悬停复现 ToolTip/Popup 相关崩溃
+        if (e.Args.Any(a => a.Equals("--hover", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = HoverProbe.Run();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        // 诊断模式：验证"异常从原生 WndProc 逃出去"时走的是哪条通道
+        if (e.Args.Any(a => a.Equals("--wndprobe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = WndProcProbe.Run();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        // 诊断模式：崩溃取证探针 —— 把"托盘点击 → 打开窗口"这条链路上
+        //   每个可能出事的动作单独跑一遍，定位 VisualTarget 异常的确切触发点。
+        if (e.Args.Any(a => a.Equals("--probe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = CrashProbe.Run();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
         // 冒烟模式：真的把这套东西拉起来（装钩子、建托盘、实例化窗口、逐页布局），
         // 然后立刻退出。给"改完 XAML 到底能不能跑"一个不用肉眼盯的答案。
         if (e.Args.Any(a => a.Equals("--smoke", StringComparison.OrdinalIgnoreCase)))
@@ -83,8 +127,49 @@ public partial class App : System.Windows.Application
         StartActivateListener();
 
         DispatcherUnhandledException += OnUnhandled;
+
+        /* ══════════════════════════════════════════════════════════════
+         * 接管 **WinForms** 的未处理异常通道。
+         *
+         * 这一段是修"VisualTarget 的根 Visual 不能具有父级"那个崩溃的关键。
+         *
+         * 事情是这样的：本程序托盘图标用的是 WinForms 的 NotifyIcon，
+         * 它的鼠标消息走的是**原生 Win32 窗口过程**。异常从那里抛出来时：
+         *
+         *   · 不走 WPF 的 DispatcherUnhandledException（那不是 DispatcherOperation）
+         *   · 不走 AppDomain.UnhandledException（WinForms 先一步拦下了）
+         *   · 而是被 WinForms 的 Application.ThreadException 接住
+         *
+         * 我们从前没订阅 ThreadException，于是走的是 WinForms 的**默认**处理：
+         * 弹出框架自带的那个"应用程序的组件中发生了未经处理的异常。
+         * 如果单击"继续"……"对话框 —— 用户点「继续」程序就能继续跑，
+         * 所以看起来"没事"，但**日志里一条记录都没有**，
+         * 事后完全无从查起。
+         *
+         * 实测（见 WndProcProbe 的对照实验）：同一个异常，
+         *   · 抛在 WinForms Control 的 WndProc 里 → ThreadException 接得住
+         *   · 抛在裸 NativeWindow 的 WndProc 里 → 三条通道全都不接，直接崩
+         *
+         * 所以这里必须显式订阅，并且用与 Dispatcher 相同的处理：
+         * 记日志 → 落盘取证 → 弹我们自己的框。**用户永远不该看到框架默认弹窗。**
+         * ══════════════════════════════════════════════════════════════ */
+        try
+        {
+            System.Windows.Forms.Application.SetUnhandledExceptionMode(
+                System.Windows.Forms.UnhandledExceptionMode.CatchException);
+            System.Windows.Forms.Application.ThreadException += OnWinFormsThreadException;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("接管 WinForms 异常通道失败：" + ex.Message);
+        }
+
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
             Log.Error("未处理的域异常", args.ExceptionObject as Exception);
+            Log.Flush();
+            DumpCrash(args.ExceptionObject as Exception, "appdomain");   // 后台线程异常会带走进程
+        };
         TaskScheduler.UnobservedTaskException += (_, args) =>
         {
             Log.Error("未观察的任务异常", args.Exception);
@@ -916,25 +1001,112 @@ public partial class App : System.Windows.Application
         th.Start();
     }
 
+    /// <summary>显示主窗口。托盘图标点一下就该把它叫出来 —— 这条路必须万无一失。</summary>
+    ///
+    /// <remarks>
+    /// <para>
+    /// 这里曾是崩溃的出口：托盘图标是 WinForms 组件，它的鼠标回调在**原生 WndProc**
+    /// 里执行，异常会绕过 WPF 的 Dispatcher 直奔 WinForms 的 ThreadException。
+    /// 所以这段代码的任何异常都意味着"用户看到框架弹窗 + 日志空白"。
+    /// 现在有两层保险：① 外面包了 try/catch，异常走统一出口（记日志 + 落盘 + 弹我们的框）；
+    /// ② 里面每一步都做**状态自检**，宁可重建窗口也不在半死不活的窗口上继续操作。
+    /// </para>
+    /// </remarks>
     public void ShowMainWindow(int tabIndex = -1)
     {
-        if (Services.Window == null)
+        // 重入保护：托盘双击会连发 MouseClick×2 + DoubleClick，
+        // 三次调用可能重叠在一次消息处理里。重入时直接忽略 —— 窗口已经在显示了。
+        if (_showingWindow) return;
+        _showingWindow = true;
+        try
         {
-            Services.Window = new MainWindow();
-            Services.Window.Closed += (_, _) => Services.Window = null;
-            Services.Window.Show();
-        }
-        else
-        {
-            if (Services.Window.WindowState == WindowState.Minimized)
-                Services.Window.WindowState = WindowState.Normal;
-            Services.Window.Show();
-            Services.Window.Activate();
-        }
+            var w = Services.Window;
 
-        if (tabIndex >= 0) Services.Window.SelectTab(tabIndex);
-        Services.Window.Topmost = true;
-        Services.Window.Topmost = false;
+            // 窗口可能"看起来还在，实际已经死了"：
+            // 关闭到托盘时 OnClosing 会先 Hide 再在 ApplicationIdle 里 Close()，
+            // 而 Closed 事件把 Services.Window 置空 —— 但这中间有窗口期。
+            // 这时候对已销毁的窗口调 Show() 会抛
+            // "Cannot set Visibility or call Show ... after a Window has closed"。
+            if (w != null && PresentationSource.FromVisual(w) == null && !w.IsVisible)
+            {
+                Log.Warn("主窗口已失效（PresentationSource 丢失），重建");
+                try { w.Close(); } catch { /* 关不掉就算了，下面直接丢弃 */ }
+                w = null;
+                Services.Window = null;
+            }
+
+            if (w == null)
+            {
+                var fresh = new MainWindow();
+                // ⚠ 身份校验：旧窗口的 Closed 事件不能把**新**窗口的引用也清掉。
+                //   之前是无条件置 null，一旦"旧窗口的 Closed 晚于新窗口创建"，
+                //   Services.Window 就指向 null 而真正的窗口还开着 —— 下次点托盘
+                //   会再造一个，用户看到"开出了两个窗口"。
+                fresh.Closed += (_, _) =>
+                {
+                    if (ReferenceEquals(Services.Window, fresh)) Services.Window = null;
+                };
+                Services.Window = fresh;
+                w = fresh;
+                w.Show();
+            }
+            else
+            {
+                if (w.WindowState == WindowState.Minimized)
+                    w.WindowState = WindowState.Normal;
+                w.Show();
+                w.Activate();
+            }
+
+            if (tabIndex >= 0) w.SelectTab(tabIndex);
+
+            // 置顶再取消 —— 用来把窗口抢到前台。
+            // 这一步会触发窗口的 z 序与布局变化，是最容易和"开着的弹层"打架的地方，
+            // 所以单独包一层：真出了岔子也不该让整个"显示窗口"失败。
+            TryRaiseToFront(w);
+        }
+        catch (Exception ex)
+        {
+            /* 走到这里说明窗口状态确实坏了。
+             * 与其把异常抛到 WinForms 那条通道上去弹框架框，
+             * 不如自己收拾干净：丢掉这个窗口实例，下次重新建一个。 */
+            Log.Error("显示主窗口失败，将重建窗口", ex);
+            Log.Flush();
+            DumpCrash(ex, "showmainwindow");
+
+            try
+            {
+                var broken = Services.Window;
+                Services.Window = null;
+                if (broken != null)
+                {
+                    broken.Closed -= (_, _) => { };
+                    try { broken.Close(); } catch { }
+                }
+            }
+            catch { /* 收拾残局失败就算了 */ }
+        }
+        finally
+        {
+            _showingWindow = false;
+        }
+    }
+
+    /// <summary>
+    /// 把窗口抢到前台。失败就失败 —— 这只是个体验优化，不值得为它抛异常。
+    /// </summary>
+    private static void TryRaiseToFront(Window w)
+    {
+        try
+        {
+            w.Topmost = true;
+            w.Topmost = false;
+            w.Activate();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("窗口置顶失败（不影响使用）：" + ex.Message);
+        }
     }
 
     /// <summary>启动后静默查一次更新：没新版**什么都不弹**（用户明确要求）。</summary>
@@ -968,14 +1140,96 @@ public partial class App : System.Windows.Application
 
     private void OnUnhandled(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
-        Log.Error("界面线程未处理异常", e.Exception);
         // 界面层的小毛病不该把整个工具带走 —— 它还在替用户接管滚轮
         e.Handled = true;
-        if (e.Exception is not InvalidOperationException)
+        ReportCrash(e.Exception, "dispatcher");
+    }
+
+    /// <summary>
+    /// WinForms 通道的未处理异常（托盘图标的 WndProc 走的就是这条）。
+    ///
+    /// <para>
+    /// 这是"VisualTarget 的根 Visual 不能具有父级"那次崩溃的出口 ——
+    /// 在接上这个订阅之前，异常被 WinForms 的默认处理吃掉，
+    /// 用户看到的是框架自带的弹窗，而 app.log 里连一条 ERROR 都没有。
+    /// </para>
+    /// </summary>
+    private void OnWinFormsThreadException(object sender, System.Threading.ThreadExceptionEventArgs e)
+    {
+        ReportCrash(e.Exception, "winforms");
+    }
+
+    /// <summary>
+    /// 崩溃的统一出口：记日志 → 同步落盘取证 → 弹我们自己的框。
+    ///
+    /// <para>
+    /// 顺序不能改：先 <c>Log.Flush()</c> 把异步日志队列落盘，
+    /// 再用 <see cref="DumpCrash"/> 同步写一份 crash-*.txt
+    /// （进程可能紧接着就没了，异步队列扛不住）。
+    /// </para>
+    /// </summary>
+    private void ReportCrash(Exception ex, string channel)
+    {
+        try
         {
-            MessageBox.Show($"出了个小问题（已记录日志）：{e.Exception.Message}\n\n日志：{Log.FilePath}",
+            // 连堆栈一起记 + 落盘后再弹框：异步日志在进程随后退出时会整段丢掉，
+            // 而"到底是哪个弹出层炸的"全在堆栈里
+            Log.Error($"未处理异常（{channel}）", ex);
+            Log.Flush();
+            DumpCrash(ex, channel);
+        }
+        catch { /* 取证本身失败也不能二次爆炸 */ }
+
+        // InvalidOperationException 多半是"对已关闭窗口再 Show()"这类良性情况，
+        // 不打扰用户；其余都要明确告知 —— 用户看到框架默认弹窗只会更懵。
+        if (ex is InvalidOperationException) return;
+
+        try
+        {
+            MessageBox.Show(
+                $"出了个小问题（已记录日志，不会影响滚轮增强）：\n{ex.Message}\n\n" +
+                $"日志：{Log.FilePath}",
                 Services.AppTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        catch { /* 弹框失败就算了，不能因此崩 */ }
+    }
+
+    /// <summary>
+    /// 把未处理异常**同步**写到数据目录（不经过异步日志队列）。
+    ///
+    /// <para>
+    /// 异步日志在"异常之后进程立刻没了"的场景下整段丢失 —— 实测就出现过：
+    /// 用户看到框架的默认异常弹窗，而 app.log 里连 ERROR 都没有。
+    /// 堆栈是定位的唯一线索（"VisualTarget 的根 Visual 不能具有父级"光看消息
+    /// 定位不到是哪个弹出层），所以这里用最笨但最可靠的方式：直接写文件。
+    /// </para>
+    /// </summary>
+    private static void DumpCrash(Exception? ex, string channel)
+    {
+        try
+        {
+            var dir = AppPaths.DataDir;
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"crash-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"渠道：{channel}");
+            sb.AppendLine($"时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
+            sb.AppendLine($"版本：v{Log.Version}");
+            sb.AppendLine();
+            sb.AppendLine(ex?.ToString() ?? "(异常对象为空)");
+            sb.AppendLine();
+            sb.AppendLine("---- 全部线程 ----");
+            foreach (System.Diagnostics.ProcessThread t in System.Diagnostics.Process.GetCurrentProcess().Threads)
+            {
+                try
+                {
+                    sb.AppendLine($"  线程 {t.Id} 状态={t.ThreadState} 起始={t.StartTime:HH:mm:ss.fff}");
+                }
+                catch { /* 线程可能已退出 */ }
+            }
+            File.WriteAllText(path, sb.ToString(), new System.Text.UTF8Encoding(false));
+        }
+        catch { /* 取证失败也不能二次爆炸 */ }
     }
 
     /// <summary>真正的退出入口（托盘菜单、安装完更新重启都用它）。</summary>

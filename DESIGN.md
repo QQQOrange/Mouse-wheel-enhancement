@@ -1323,4 +1323,94 @@ smoke 断言控件类型，并额外用 `RenderTargetBitmap` 截图留证：
 
 ---
 
+## 24. 崩溃归因与修复：「VisualTarget 的根 Visual 不能具有父级」（v1.5.2）
+
+用户报：托盘图标上点一下，弹出"应用程序的组件中发生了未经处理的异常。
+如果单击"继续"……"，异常文本是 `VisualTarget 的根 Visual 不能具有父级`。
+点「继续」程序还能跑，但**日志里一条记录都没有**，事后完全无从查起。
+
+### 24.1 异常通道：为什么三条常规通道全都接不住
+
+本程序托盘图标用的是 WinForms 的 `NotifyIcon`，它的鼠标消息走**原生 Win32
+窗口过程**。异常从那里抛出来时：
+
+| 通道 | 是否接得住 | 原因 |
+|------|------------|------|
+| WPF `DispatcherUnhandledException` | ❌ | 那条通道只处理 `DispatcherOperation` 异常 |
+| `AppDomain.UnhandledException` | ❌ | WinForms 的 `Application.ThreadException` 先一步拦下 |
+| WinForms `Application.ThreadException` | ✅ | 但**我们从没订阅它** |
+
+我们没订阅 → 走的是 WinForms 的**默认**处理：弹框架自带的那句弹窗。
+这与用户日志**逐字吻合**（崩溃窗口 3.3 秒内零 ERROR 记录）。
+
+`WndProcProbe` 做了对照实验坐实这一点：
+
+```
+用例5（裸 NativeWindow WndProc 里直接抛）→ dispatcher=0 appdomain=0 thread=0
+用例6（WinForms Control WndProc 里直接抛）→ dispatcher=0 appdomain=0 thread=1
+   捕获：ArgumentException: VisualTarget 的根 Visual 不能具有父级。
+```
+
+即：抛在 WinForms `Control` 的 WndProc 里能命中 `ThreadException`，
+抛在裸 `NativeWindow` 的 WndProc 里三条通道全不接、直接崩。
+
+**修复**：`App.OnStartup` 里显式
+`SetUnhandledExceptionMode(CatchException)` + 订阅 `ThreadException`，
+处理方式与 Dispatcher 一致（记日志 → 落盘取证 → 弹我们自己的框）。
+用户从此永远看不到框架默认弹窗，且每次崩溃必有 ERROR 日志 + `crash-*.txt` 完整堆栈。
+
+### 24.2 弹层风险面：Popup 的根 Visual 不能有父级
+
+`ToolTip` 和 `ContextMenu` 底层都是 `Popup`，各自**自建一个 HwndSource**
+（自己一个顶层窗口），并把该窗口的根 Visual 设成弹层内容。
+`CompositionTarget.SetRootVisual` 在"这个 Visual 已有父级、或已是某个
+CompositionTarget 的根"时会抛 `ArgumentException: VisualTarget 的根 Visual 不能具有父级`。
+
+于是规矩是：**要动宿主窗口之前，先把弹层都关掉**。
+
+新增 `PopupCleanup`：
+
+- `CloseAllIn(root)` —— 递归扫**视觉树**（`VisualTreeHelper`）、
+  **逻辑树**（`LogicalTreeHelper`）以及根元素 `Resources` 里声明的
+  `ContextMenu`，把所有 `IsOpen` 的 `Popup` 关掉；
+- `CloseCurrentToolTip()` —— 先试反射拿 `ToolTipService` 的内部静态字段
+  （不同 .NET 版本字段名可能不同，依次试 `_currentToolTip` /
+  `s_currentToolTip` / `currentToolTip`），拿不到就退回扫全部窗口的树。
+
+接入点：
+
+| 位置 | 动作 | 理由 |
+|------|------|------|
+| `MainWindow.OnClosing` | `CloseOpenPopups()` | 窗口销毁/隐藏前必须先收弹层 |
+| `ThemeBtn_Click` | 换 `ToolTip` 前 `CloseCurrentToolTip()` | 用户就是悬停在按钮上点的它，气泡正开着 |
+| `RefreshTokenUi` | 换 `ToolTip` 前 `CloseCurrentToolTip()` | 同上（保存/清除令牌后重设提示） |
+
+### 24.3 `ShowMainWindow` 加固
+
+- 重入标记 + `PresentationSource` 存活检查（窗口已被 GC/卸载时不再碰）
+- 异常后销毁重建窗口，不留半死状态
+- `Closed` 事件**身份校验** —— 修掉"旧窗口的 Closed 把新窗口引用清空"的隐患
+- `Topmost` 翻转独立包 try/catch，不再连累主流程
+- 托盘单击/双击合并为单次触发（400ms 延迟窗口），杜绝 `ShowWindow()` 三连发
+
+### 24.4 排查过程中的排除项
+
+以下路径经探针实证**不是**元凶（都有兜底或压根不在这条链路上）：
+
+- `Core/WheelEngine.cs` 的 `HookProc` —— 独立线程 + 完整 try/catch + 异常节流 5s 记 `Log.Error`；若在此抛出必留 ERROR 记录，而用户日志一条没有
+- `Core/RefreshRateMonitor.cs` 的 `Changed?.Invoke` —— try/catch 包裹
+- `Core/Theme.cs` 的 `HwndSourceParameters("MWE.ThemeWatcher")` —— 未设 `RootVisual`
+- 纯 WPF 上下文中的 Topmost 翻转 / Popup+Topmost / Hide→Show / 切主题 / 切页面 / 重入 Show（`CrashProbe` 8 用例全过）
+- 真实 `NotifyIcon` 消息投递的 5 个场景（`TrayProbe` 全过）
+
+### 24.5 探针文件保留
+
+`CrashProbe` / `WndProcProbe` / `HoverProbe` / `TrayProbe` 四个探针
+保留在仓库里，作为长期回归手段 —— 它们各自有独立的 CLI 开关
+（`--probe` / `--wndprobe` / `--hover` / `--trayprobe`），
+不参与正常启动路径，体积影响可忽略。
+
+
+---
+
 MIT License · © 2026 QQQOrange

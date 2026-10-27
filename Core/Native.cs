@@ -197,6 +197,13 @@ internal static class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetCursorPos(out POINT lpPoint);
 
+    /// <summary>
+    /// 取系统度量。探针要用它把屏幕坐标换算成虚拟桌面归一化坐标
+    /// （SendInput 的绝对坐标是按虚拟桌面算的，不是按主显示器）。
+    /// </summary>
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int nIndex);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 

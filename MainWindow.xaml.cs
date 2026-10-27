@@ -627,6 +627,11 @@ public partial class MainWindow : Window
         UpdateThemeHints();
         Commit(refreshDerived: false);
 
+        // 换掉 ToolTip 之前先把这个按钮的提示气泡收掉。
+        // 用户就是悬停在按钮上点它的，此时气泡正开着；
+        // 直接换字符串会触发 WPF 去重挂正在显示的 Popup，
+        // 那是"根 Visual 不能具有父级"最容易冒头的时机。
+        PopupCleanup.CloseCurrentToolTip();
         ThemeBtn.ToolTip = $"当前{(wantLight ? "浅色" : "深色")} · 点击切换";
     }
 
@@ -1283,6 +1288,7 @@ public partial class MainWindow : Window
             if (tok == null)
             {
                 // 没保存过：可编辑状态
+                PopupCleanup.CloseCurrentToolTip();
                 TokenBox.IsEnabled = true;
                 TokenBox.Password = "";
                 TokenBox.ToolTip = "粘贴令牌后点「保存令牌」，例如 ghp_xxx 或 github_pat_xxx";
@@ -1293,6 +1299,7 @@ public partial class MainWindow : Window
             else
             {
                 // 已保存：PasswordBox 没有 IsReadOnly，用禁用 + 一串圆点表示"锁着"
+                PopupCleanup.CloseCurrentToolTip();
                 TokenBox.IsEnabled = false;
                 TokenBox.Password = Text.MaskToken(tok);
                 TokenBox.ToolTip = "令牌已加密保存。要换一个请点「更换」。";
@@ -1480,6 +1487,19 @@ public partial class MainWindow : Window
     {
         Services.Store.SaveNow();
 
+        /* 窗口要没了，先把弹层都收掉。
+         *
+         * 提示气泡和右键菜单底层是 Popup，各自有独立的 HwndSource。
+         * 窗口在它们还开着的时候被销毁/隐藏，那两个 HwndSource 就会处于
+         * "内容已经脱离、但根 Visual 还挂着"的半吊子状态 ——
+         * 之后任何一次布局更新都可能在这个状态下炸出
+         * "VisualTarget 的根 Visual 不能具有父级"。
+         *
+         * 而且这个异常是从 NotifyIcon 的原生 WndProc 里冒出去的
+         * （异常通道见 App.OnWinFormsThreadException 的说明），
+         * 以前的结果是：用户看到框架默认弹窗，日志里一片空白。 */
+        CloseOpenPopups();
+
         if (_allowClose) return; // 真正销毁这条路径，放手让 WPF 关
 
         if (!Services.Config.Behavior.CloseToTray)
@@ -1507,6 +1527,29 @@ public partial class MainWindow : Window
             _allowClose = true;
             Close();
         }), DispatcherPriority.ApplicationIdle);
+    }
+
+    /// <summary>
+    /// 把当前开着的所有弹层（ToolTip / ContextMenu）收掉。
+    ///
+    /// <para>
+    /// 窗口马上要没了的时候必须先做这件事 —— 理由见 <see cref="OnClosing"/> 里的注释。
+    /// </para>
+    /// </summary>
+    private void CloseOpenPopups()
+    {
+        try
+        {
+            var n = PopupCleanup.CloseAllIn(this);
+            if (n > 0) Log.Info($"关闭了 {n} 个弹层");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("清理弹层失败：" + ex.Message);
+        }
+
+        try { PopupCleanup.CloseCurrentToolTip(); }
+        catch { /* 关不掉提示气泡无害 */ }
     }
 }
 

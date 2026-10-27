@@ -66,20 +66,54 @@ internal sealed class TrayController : IDisposable
             ContextMenuStrip = menu,
             Text = Tooltip(),
         };
-        /* 打开设置：双击为主，单击也认。
+        /* 打开设置：**单击与双击合并成一次触发**。
          *
-         * 单击也绑上不是偷懒 —— NotifyIcon.DoubleClick 依赖 Shell 的两次单击间隔判定，
-         * 在高 DPI / 远程桌面 / 某些触控板驱动下经常**根本不触发**，用户看到的就是
-         * "点了没反应"。而"点托盘图标把窗口叫出来"是这个软件最常用的入口，
-         * 宁可多绑一个幂等的单击，也不能让它偶尔失灵。 */
-        _icon.DoubleClick += (_, _) => Services.ShowWindow();
+         * 之前是 MouseClick 和 DoubleClick 各绑一个 ShowWindow()，
+         * 结果双击托盘会连发 2~3 次 —— 每次都是一次完整的
+         * "Show() + 置顶翻转 + 布局更新"，而这些全都发生在
+         * NotifyIcon 的原生 WndProc 里（异常通道见 App.OnWinFormsThreadException
+         * 的说明）。触发次数越多，撞上"窗口正在显示 / 弹层正在重定位"的时间窗越大。
+         *
+         * 现在改成：单击先**等 400ms**；如果这期间来了双击，就取消单击，
+         * 只按双击处理一次。用户体感一样（点一下就开），但内部只走一遍。 */
         _icon.MouseClick += (_, e) =>
         {
-            if (e.Button == MouseButtons.Left) Services.ShowWindow();
+            if (e.Button != MouseButtons.Left) return;
+            ScheduleShow();
+        };
+        _icon.DoubleClick += (_, _) =>
+        {
+            _pendingShowCts?.Cancel();
+            _pendingShowCts = null;
+            Services.ShowWindow();
         };
 
         Services.StateChanged += RefreshVisual;
     }
+
+    /// <summary>
+    /// 单击托盘后延迟一点再真的打开窗口。
+    ///
+    /// <para>
+    /// 这 400ms 是用来"等双击"的：双击的第二次按下会在这个窗口期内到达，
+    /// 那时就把这次单击取消，只让双击处理一次。
+    /// 于是无论用户点一下还是点两下，内部都**只走一遍**打开流程。
+    /// </para>
+    /// </summary>
+    private void ScheduleShow()
+    {
+        _pendingShowCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _pendingShowCts = cts;
+        _ = Task.Delay(400, cts.Token).ContinueWith(t =>
+        {
+            if (t.IsCanceled) return;
+            try { Services.ShowWindow(); }
+            catch (Exception ex) { Log.Warn("托盘打开窗口失败：" + ex.Message); }
+        }, TaskScheduler.Default);
+    }
+
+    private CancellationTokenSource? _pendingShowCts;
 
     private static string Tooltip()
     {
@@ -300,6 +334,10 @@ internal sealed class TrayController : IDisposable
     public void Dispose()
     {
         Services.StateChanged -= RefreshVisual;
+
+        try { _pendingShowCts?.Cancel(); } catch { }
+        try { _pendingShowCts?.Dispose(); } catch { }
+        _pendingShowCts = null;
 
         try { _icon.Visible = false; } catch { }
         try { _icon.ContextMenuStrip = null; } catch { }
