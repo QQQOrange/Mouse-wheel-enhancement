@@ -94,6 +94,21 @@ public sealed class SmoothConfig
     /// </summary>
     public int FramesPerNotch { get; set; } = 4;
 
+    /// <summary>
+    /// 接管系统的「每次滚动几行」：先降到 1 行，再由注入侧按倍数补回来。
+    ///
+    /// <para>
+    /// WPF / WinForms 的滚动粒度**只有一个来源**就是这个设置，所以这是让那类程序
+    /// 也能有平滑过程的唯一办法 —— 系统 3 行时，它们的最小步进就是 3 行，
+    /// 任何注入技巧都没法让一步走得更细；改成 1 行之后，一格可以拆成 3 步。
+    /// </para>
+    /// <para>
+    /// 代价是这是**全局设置**（HKCU，所有程序共享）：软件没运行时全系统滚动会变慢，
+    /// 所以退出、崩溃自愈、以及设置页里的开关都是必要的配套。
+    /// </para>
+    /// </summary>
+    public bool NormalizeWheelLines { get; set; } = true;
+
     /// <summary>指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。</summary>
     public double TailTauMs { get; set; } = 45.0;
 

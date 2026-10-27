@@ -136,6 +136,57 @@ internal sealed class ScrollAnimator : IDisposable
     /// </summary>
     internal Action<int, double, double>? FrameSink;
 
+    private volatile bool _wholeNotch;
+
+    /// <summary>
+    /// 整格模式下，两档之间至少隔这么久。
+    ///
+    /// <para>
+    /// 帧间隔只有 6 ms（160Hz），三档挤在 19 ms 里人眼还是"一下就跳过去了"。
+    /// 人感知"过程"大约需要 40~60 ms，所以这里刻意把步进压到 16 ms：
+    /// 三档 ≈ 48 ms、五档 ≈ 80 ms —— 既能看清推进，又不至于慢得像卡顿。
+    /// </para>
+    /// </summary>
+    private const double WholeStepMs = 16.0;
+
+    /// <summary>上一档是什么时候发出去的（毫秒，整格模式专用）。</summary>
+    private long _lastWholeMs;
+
+    /// <summary>
+    /// 整格模式：每帧只发**一个整格**（120 单位的整数倍），不做亚格摊薄。
+    ///
+    /// <para>
+    /// 给 WPF / WinForms 那类"一个滚轮事件滚固定一档"的框架用的。
+    /// 它们只看向号、不看 delta 大小，所以发小 delta 就是多发几次
+    /// （见 DESIGN 第 30 节）。这里退而求其次：
+    /// </para>
+    /// <list type="bullet">
+    /// <item>**不再亚格摊薄** —— 一档就是一档，位移永远准确；</item>
+    /// <item>但**仍然按帧逐格发**：加速 5 倍时是 5 帧各发一格，
+    /// 而不是一次性怼 5 个事件。这样快滚至少还有推进的节奏感，
+    /// 而不是"啪"一下跳过去 5 档。</item>
+    /// </list>
+    /// <para>
+    /// 单格（1 档）无论如何都无法平滑：那类框架的最小粒度就是一格，
+    /// 实测 <c>delta=15 / 40 / 120</c> 滚的距离完全一样。
+    /// </para>
+    /// </summary>
+    public bool WholeNotch
+    {
+        get => _wholeNotch;
+        set
+        {
+            if (_wholeNotch == value) return;
+            _wholeNotch = value;
+            /* 换模式时把积压清掉：剩下的是另一种语义下的零头，
+             * 在整格模式下它凑不满一格会永远卡住。 */
+            Interlocked.Exchange(ref _pendingMilli, 0);
+            Interlocked.Exchange(ref _glideStartTicks, 0);
+            /* 让下一档立刻发出去，别被上一轮的时间戳拖住。 */
+            Interlocked.Exchange(ref _lastWholeMs, 0);
+        }
+    }
+
     public void UpdateSettings(RuntimeSettings s) => Volatile.Write(ref _settings, s);
 
     public void Start()
@@ -193,6 +244,20 @@ internal sealed class ScrollAnimator : IDisposable
     {
         Interlocked.Exchange(ref _pendingMilli, 0);
         Interlocked.Exchange(ref _glideStartTicks, 0);
+    }
+
+    /// <summary>
+    /// 整格模式的一帧：够一格就发一格，否则这一帧什么都不发。
+    ///
+    /// <para>
+    /// pending 在整格模式下永远是 120 的整数倍（<see cref="WheelEngine"/> 会先量化），
+    /// 所以这里不会留下凑不满一格的零头把线程卡在忙循环里。
+    /// </para>
+    /// </summary>
+    public static int WholeNotchFrame(double pendingUnits)
+    {
+        if (Math.Abs(pendingUnits) < Native.WHEEL_DELTA) return 0;
+        return Math.Sign(pendingUnits) * Native.WHEEL_DELTA;
     }
 
     /// <summary>
@@ -351,7 +416,22 @@ internal sealed class ScrollAnimator : IDisposable
                     }
                 }
 
-                var units = ComputeFrame(pendingUnits, dtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+                int units;
+                if (_wholeNotch)
+                {
+                    /* 整格模式：一帧最多一档，而且两档之间至少隔 WholeStepMs。
+                     * 这一步是"看得见的平滑"的关键 —— 帧间隔 6 ms 太密，
+                     * 三档挤在 19 ms 里仍然是一次跳。 */
+                    var nowMsWhole = TicksToMs(now);
+                    units = nowMsWhole - Interlocked.Read(ref _lastWholeMs) >= WholeStepMs
+                        ? WholeNotchFrame(pendingUnits)
+                        : 0;
+                    if (units != 0) Interlocked.Exchange(ref _lastWholeMs, (long)nowMsWhole);
+                }
+                else
+                {
+                    units = ComputeFrame(pendingUnits, dtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+                }
 
                 if (units != 0)
                 {

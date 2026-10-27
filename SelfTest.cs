@@ -340,6 +340,51 @@ internal static class SelfTest
         Check("不足一格也至少发 1 个", ScrollSemantics.WholeNotchesFor(30) == 1);
         Check("异常大的量被夹到 16 格", ScrollSemantics.WholeNotchesFor(999_999) == 16);
         Check("负数按绝对值算（方向由调用方给）", ScrollSemantics.WholeNotchesFor(-360) == 3);
+
+        /* 整格模式怎么出帧：一帧一格，不够一格就不发。 */
+        Check("整格模式：一格就发一格", ScrollAnimator.WholeNotchFrame(120) == 120);
+        Check("整格模式：一帧绝不多发（3 格也是先发 1 格）",
+            ScrollAnimator.WholeNotchFrame(360) == 120);
+        Check("整格模式：不足一格不发（留着等下次）",
+            ScrollAnimator.WholeNotchFrame(60) == 0);
+        Check("整格模式：方向跟着走", ScrollAnimator.WholeNotchFrame(-240) == -120);
+        Check("整格模式：没积压不发", ScrollAnimator.WholeNotchFrame(0) == 0);
+
+        /* 关键不变式：分帧只是把"一坨"摊成"几帧"，总量一单位不能差。 */
+        var pending = 600.0;
+        var sent = 0;
+        var frames = 0;
+        while (Math.Abs(pending) >= 120 && frames < 100)
+        {
+            var u = ScrollAnimator.WholeNotchFrame(pending);
+            if (u == 0) break;
+            sent += u;
+            pending -= u;
+            frames++;
+        }
+        Check("整格模式：5 格分 5 帧发完，总量不差", sent == 600 && frames == 5,
+            $"发出 {sent} / {frames} 帧");
+
+        /* ── 接管系统滚动行数之后的补偿 ──
+         * 系统 3 行 → 1 行，所以原来"一档"要发 3 档才凑回同样的位移；
+         * 这 3 档就是 3 步平滑。 */
+        Section("接管系统滚动行数（粒度变细）");
+
+        Check("系统 3 行 → 补偿 3×", SystemWheelLines.CompensationFor(3) == 3);
+        Check("系统 5 行 → 补偿 5×", SystemWheelLines.CompensationFor(5) == 5);
+        Check("已经是 1 行 → 不接管（补偿 1×）", SystemWheelLines.CompensationFor(1) == 1);
+        Check("禁用滚轮（0）→ 不接管", SystemWheelLines.CompensationFor(0) == 1);
+        Check("「一次滚一页」（-1）→ 不接管（按行补不了）",
+            SystemWheelLines.CompensationFor(-1) == 1);
+        Check("行数过大时补偿夹到 8×", SystemWheelLines.CompensationFor(20) == 8);
+
+        Check("一格 + 补偿 3 → 3 档（3 步平滑）",
+            SystemWheelLines.WholeEventsFor(1, 3) == 3);
+        Check("5 格 + 补偿 3 → 15 档", SystemWheelLines.WholeEventsFor(5, 3) == 15);
+        Check("没接管时档数不变（1 格还是 1 档）",
+            SystemWheelLines.WholeEventsFor(1, 1) == 1);
+        Check("档数有上限，不会一次怼出几十个事件",
+            SystemWheelLines.WholeEventsFor(8, 8) == 24);
     }
 
     private static void TestPrecisionInput()

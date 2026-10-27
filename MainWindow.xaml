@@ -545,6 +545,23 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
+                                        <TextBlock Text="接管系统滚动粒度" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}"
+                                                   Text="把系统的「每次滚动几行」降到 1 行，再由本软件把位移补回来。WPF / WinForms 写的程序（很多国产工具、自研软件）只有这样才会有平滑过程——它们的最小步进就是系统的行数，改不小就只能一步跳完。" />
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                                   Text="这是全局设置：关掉本软件时会自动还原；万一异常退出，下次启动会先把系统改回去。如果你手动改过「鼠标设置 → 每次要滚动的行数」，以那次为准，本项会被跳过。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="NormalizeSwitch" Grid.Column="1" Style="{StaticResource Switch}"
+                                                  VerticalAlignment="Center" Checked="Normalize_Changed"
+                                                  Unchecked="Normalize_Changed" />
+                                </Grid>
+
+                                <Grid Margin="0,18,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
                                         <TextBlock Text="施加范围" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
                                                    Text="「所有滚动」是默认：慢慢拨一格也会被拆成几帧滑上去；「仅加速时」则只处理快滚，普通滚动完全交给系统。" />

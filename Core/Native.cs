@@ -21,6 +21,16 @@ internal static class Native
 
     public const int GA_ROOT = 2;
 
+    /* 系统「每次滚动几行」。这是 WPF / WinForms 那类框架**唯一的粒度来源**：
+     * 它们一个滚轮事件就滚这么多行，改小它等于把最小步长变细。 */
+    public const uint SPI_GETWHEELSCROLLLINES = 0x0068;
+    public const uint SPI_SETWHEELSCROLLLINES = 0x0069;
+    public const uint SPIF_UPDATEINIFILE = 0x01;
+    public const uint SPIF_SENDCHANGE = 0x02;
+
+    /// <summary><c>WheelScrollLines</c> 取这个值表示"一次滚一页"。</summary>
+    public const int WHEELSCROLLLINES_PAGE = -1;
+
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
     public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
@@ -192,7 +202,6 @@ internal static class Native
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
-
     /// <summary>
     /// 取窗口的类名。
     ///
@@ -210,6 +219,30 @@ internal static class Native
         var sb = new StringBuilder(256);
         var n = GetClassNameW(hwnd, sb, sb.Capacity);
         return n > 0 ? sb.ToString(0, n) : "";
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref uint pvParam, uint fWinIni);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+
+    /// <summary>读「每次滚动几行」。返回 -1 表示"一次滚一页"。</summary>
+    public static int GetWheelScrollLines()
+    {
+        uint v = 0;
+        if (!SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, ref v, 0)) return 0;
+        return unchecked((int)v);
+    }
+
+    /// <summary>
+    /// 写「每次滚动几行」。会同时更新用户配置并广播 <c>WM_SETTINGCHANGE</c>
+    /// （<c>SPIF_SENDCHANGE</c>），正在运行的程序会立刻按新值算它的滚动量。
+    /// </summary>
+    public static bool SetWheelScrollLines(int lines)
+    {
+        return SystemParametersInfo(SPI_SETWHEELSCROLLLINES, unchecked((uint)lines), IntPtr.Zero,
+            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
     }
 
     [DllImport("user32.dll", SetLastError = true)]

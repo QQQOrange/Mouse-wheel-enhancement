@@ -31,8 +31,22 @@ public partial class App : System.Windows.Application
     /// </summary>
     private bool _showingWindow;
 
+    /// <summary>
+    /// 兜底还原：不管是正常退出、点关闭、还是未经 ExitApp 的路径，
+    /// 都要把「每次滚动几行」改回去 —— 把用户永久留在 1 行是不可接受的。
+    /// </summary>
+    protected override void OnExit(ExitEventArgs e)
+    {
+        SystemWheelLines.Restore();
+        base.OnExit(e);
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        /* 最后一道保险：Environment.Exit / 被系统关掉时 WPF 的 OnExit 未必会走，
+         * 但 ProcessExit 一般会。Restore 可重入，没有待还原项时直接返回。 */
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => SystemWheelLines.Restore();
+
         base.OnStartup(e);
 
         // 自检模式：不建窗口、不装钩子，只跑纯逻辑断言然后退出
@@ -252,6 +266,11 @@ public partial class App : System.Windows.Application
          * 万一失败也不能让进程半死不活地留在后台。 */
         try
         {
+            /* 接管系统滚动粒度要**早于**引擎 —— 钩子从第一条事件起就得知道
+             * 该补多少倍，晚一步就会有几百毫秒的滚动速度是错的。
+             * 内部先做自愈：上次异常退出留下的 1 行会在这里被改回去。 */
+            SystemWheelLines.Start(Services.Config.Smooth.NormalizeWheelLines);
+
             Services.InitRuntime();
         }
         catch (Exception ex)
@@ -1632,6 +1651,10 @@ public partial class App : System.Windows.Application
     /// <summary>真正的退出入口（托盘菜单、安装完更新重启都用它）。</summary>
     public static void ExitApp(int exitCode = 0)
     {
+        /* 先还系统设置：把「每次滚动几行」改回去。
+         * 放在最前面 —— 后面任何一步抛异常都不能把用户留在 1 行。 */
+        SystemWheelLines.Restore();
+
         Services.Shutdown();
         if (Current is App app)
         {

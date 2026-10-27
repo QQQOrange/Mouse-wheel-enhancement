@@ -271,6 +271,7 @@ public partial class MainWindow : Window
             PrecisionSwitch.IsChecked = c.Input.EnhancePrecisionInput;
 
             SmoothSwitch.IsChecked = c.Smooth.Enabled;
+            NormalizeSwitch.IsChecked = c.Smooth.NormalizeWheelLines;
             ScopeBoosted.IsChecked = c.Smooth.Scope == SmoothScope.BoostedOnly;
             ScopeAlways.IsChecked = c.Smooth.Scope == SmoothScope.Always;
             Fps60.IsChecked = c.Smooth.TargetFps == 60;
@@ -997,6 +998,29 @@ public partial class MainWindow : Window
     {
         if (_loading) return;
         Services.Config.Smooth.Enabled = SmoothSwitch.IsChecked == true;
+        Commit();
+    }
+
+    /// <summary>
+    /// 「接管系统滚动粒度」开关：立刻作用到系统设置上，不等保存。
+    ///
+    /// <para>
+    /// 关掉时必须**马上**把行数改回去 —— 用户点这个开关的动机通常就是
+    /// "别的程序滚起来变慢了"，晚一拍都算失职。
+    /// </para>
+    /// </summary>
+    private void Normalize_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+
+        var want = NormalizeSwitch.IsChecked == true;
+        if (Services.Config.Smooth.NormalizeWheelLines == want) return;
+
+        Services.Config.Smooth.NormalizeWheelLines = want;
+
+        if (want) Core.SystemWheelLines.Apply();
+        else Core.SystemWheelLines.Restore();
+
         Commit();
     }
 
