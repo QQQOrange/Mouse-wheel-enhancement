@@ -354,6 +354,35 @@ internal static class SelfTest
         // 到期必须整块冲掉（不能让尾巴无限拖）
         var flush = ScrollAnimator.ComputeFrame(360, 8, 0, 45, 30, true);
         Check("超过截止时间立刻发完", flush == 360, $"实际 {flush}");
+
+        /* ── 单格滚动（120 单位）的平滑形态 ──
+         * 这是用户实测反馈的场景："一格一格拨，还是段落式的开始和结束"。
+         * 修复前的每帧下限写死 30 单位（=1/4 格）：120 的积压被 30/30/30
+         * 轰掉四分之三，剩下的再按截止期赶工 —— 开头就是一个大跳。
+         * 下限改成按比例给之后，开头必须是指数曲线那条平滑的递减序列。 */
+        var single = 120.0;
+        var remainOne = 100.0;                    // MaxLatencyMs 的默认值
+        var firstEmit = ScrollAnimator.ComputeFrame(single, 6.94, remainOne, 45, 30, true);
+        Check("单格滚动首帧不超过五分之一格（不突发）", firstEmit <= 24, $"首帧 {firstEmit}");
+
+        var p = single;
+        var seq = new List<int>();
+        while (p > 0 && seq.Count < 200)
+        {
+            var e = ScrollAnimator.ComputeFrame(p, 6.94, remainOne, 45, 30, true);
+            if (e <= 0) break;
+            if (e > p + 0.001) break;             // 发超了也是失败
+            p -= e;
+            seq.Add(e);
+            remainOne -= 6.94;
+        }
+        Check("单格滚动能完整发完", p <= 0.5, $"剩余 {p}");
+        Check("单格滚动总量一单位不差", seq.Sum() == 120, $"发出 {seq.Sum()}");
+        Check("单格滚动摊成多帧（≥8 帧）", seq.Count >= 8, $"{seq.Count} 帧");
+        Check("单格滚动每帧不超过四分之一格", seq.Max() <= 30, $"最大 {seq.Max()}");
+        Check("单格滚动开头单调递减（不是 30/30/30 的阶梯）",
+            seq.Count >= 7 && seq.Take(6).Zip(seq.Skip(1), (a, b) => b <= a).All(x => x),
+            string.Join("/", seq.Take(8)));
     }
 
     private static void TestFrameRateFollowsDisplay()
@@ -536,7 +565,8 @@ internal static class SelfTest
         legacy.Behavior.PauseWhileSettingsOpen = true;
         legacy.Normalize();
         Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
-        Check("迁移后 schemaVersion 记为 2", legacy.SchemaVersion == 2, legacy.SchemaVersion.ToString());
+        // v1 的配置会一路迁移到当前版本（v2 的自排除 + v3 的平滑范围）
+        Check("迁移后 schemaVersion 记为当前版本 3", legacy.SchemaVersion == 3, legacy.SchemaVersion.ToString());
 
         // 已经是 v2 之后，用户自己打开就不再被覆盖
         var kept = AppConfig.Default();
@@ -544,6 +574,25 @@ internal static class SelfTest
         kept.Behavior.PauseWhileSettingsOpen = true;
         kept.Normalize();
         Check("v2 之后用户手动打开的开关不再被覆盖", kept.Behavior.PauseWhileSettingsOpen);
+
+        /* ── v2 → v3 的迁移 ──
+         * 老配置的平滑范围是「仅加速时」：慢速滚动根本不经过本程序，
+         * 用户实测"一格一格拨还是段落式"，所以默认改成「所有滚动」，
+         * 升级时一次性纠正。 */
+        var scope2 = AppConfig.Default();
+        scope2.SchemaVersion = 2;
+        scope2.Smooth.Scope = SmoothScope.BoostedOnly;
+        scope2.Normalize();
+        Check("v2 老配置的平滑范围被纠正为所有滚动", scope2.Smooth.Scope == SmoothScope.Always,
+            scope2.Smooth.Scope.ToString());
+        Check("迁移后 schemaVersion 记为 3", scope2.SchemaVersion == 3, scope2.SchemaVersion.ToString());
+
+        // v3 之后用户自己选回「仅加速时」不再被覆盖
+        var keptScope = AppConfig.Default();
+        keptScope.SchemaVersion = 3;
+        keptScope.Smooth.Scope = SmoothScope.BoostedOnly;
+        keptScope.Normalize();
+        Check("v3 之后用户选回仅加速时不再被覆盖", keptScope.Smooth.Scope == SmoothScope.BoostedOnly);
     }
 
     private static void TestFilter()
@@ -615,7 +664,7 @@ internal static class SelfTest
             Near("默认触发阈值", c.Boost.FastThresholdPerSec, 10);
             Near("默认最大倍率", c.Boost.MaxMultiplier, 3.0);
             Check("默认开启平滑", c.Smooth.Enabled);
-            Check("默认只平滑加速过的滚动", c.Smooth.Scope == SmoothScope.BoostedOnly);
+            Check("默认平滑所有滚动（单格滚动也要有平滑过程）", c.Smooth.Scope == SmoothScope.Always);
             Check("默认黑名单模式", c.Filter.Mode == FilterMode.Blacklist);
             Check("默认名单里有远程桌面", c.Filter.Apps.Any(a => a.Exe == "mstsc.exe"));
 

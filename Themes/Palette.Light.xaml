@@ -68,6 +68,9 @@
     <SolidColorBrush x:Key="SliderThumbStroke" Color="#FFFFFF" />
     <SolidColorBrush x:Key="PrimaryBtnFg" Color="#FFFFFF" />
 
+    <SolidColorBrush x:Key="PrimaryBtnDisabledBg" Color="#D9E1F0" />
+    <SolidColorBrush x:Key="PrimaryBtnDisabledFg" Color="#5A6478" />
+
     <!-- 倍率曲线 -->
     <SolidColorBrush x:Key="CurveGrid" Color="#DCE2EE" />
     <SolidColorBrush x:Key="CurveGuide" Color="#552F6BF0" />

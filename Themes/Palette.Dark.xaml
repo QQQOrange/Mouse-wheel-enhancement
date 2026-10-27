@@ -67,6 +67,11 @@
     <SolidColorBrush x:Key="SliderThumbStroke" Color="#0F1218" />
     <SolidColorBrush x:Key="PrimaryBtnFg" Color="#FFFFFF" />
 
+    <!-- 主按钮禁用态：不能再整块 Opacity 褪色（蓝底白字一起变淡，
+         深色底下几乎看不见），改成专用的低饱和底 + 中等亮度字。 -->
+    <SolidColorBrush x:Key="PrimaryBtnDisabledBg" Color="#2A3444" />
+    <SolidColorBrush x:Key="PrimaryBtnDisabledFg" Color="#9AA6BC" />
+
     <!-- 倍率曲线用（Canvas 里现画的线，代码按 Key 取） -->
     <SolidColorBrush x:Key="CurveGrid" Color="#2A3040" />
     <SolidColorBrush x:Key="CurveGuide" Color="#665B93FF" />

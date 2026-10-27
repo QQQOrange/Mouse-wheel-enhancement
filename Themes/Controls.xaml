@@ -342,8 +342,11 @@
                         <Trigger Property="IsPressed" Value="True">
                             <Setter TargetName="Bd" Property="Opacity" Value="0.86" />
                         </Trigger>
+                        <!-- 禁用态不用整块 Opacity：那会让文字一起褪成浅灰，
+                             浅色主题下直接糊在底色里。换成专用的弱化文字色。 -->
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Bd" Property="Opacity" Value="0.45" />
+                            <Setter Property="Foreground" Value="{DynamicResource TextMuted}" />
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource BorderBrushSoft}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -372,8 +375,13 @@
                         <Trigger Property="IsPressed" Value="True">
                             <Setter TargetName="Bd" Property="Opacity" Value="0.88" />
                         </Trigger>
+                        <!-- 蓝底按钮的禁用态：整块 Opacity 0.45 会把白字一起冲淡，
+                             在浅色主题里就是"蓝底黑字看不清"。换成专用配色，
+                             PrimaryBtnDisabledBg/Fg 两份调色板各有一份，跟随主题。 -->
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Bd" Property="Opacity" Value="0.45" />
+                            <Setter Property="Foreground" Value="{DynamicResource PrimaryBtnDisabledFg}" />
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource PrimaryBtnDisabledBg}" />
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource PrimaryBtnDisabledBg}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -541,6 +549,13 @@
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
                             <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
                         </Trigger>
+                        <!-- 令牌保存之后输入框会被禁用（只显示一串圆点）：
+                             换个底色 + 弱化文字，肉眼看得出"这里是锁着的" -->
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource CardBg2}" />
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource BorderBrushSoft}" />
+                            <Setter Property="Foreground" Value="{DynamicResource TextMuted}" />
+                        </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
@@ -699,6 +714,44 @@
         <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushStrong}" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="12.5" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContextMenu">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="10"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
+                            SnapsToDevicePixels="True">
+                        <ScrollViewer CanContentScroll="True" Padding="4">
+                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 菜单项：默认模板是直角的，这里自己画一个圆角的 -->
+    <Style TargetType="MenuItem">
+        <Setter Property="Padding" Value="10,7" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="MenuItem">
+                    <Border x:Name="Bd" Background="Transparent" CornerRadius="7"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBg}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource TextMuted}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <Style TargetType="ToolTip">

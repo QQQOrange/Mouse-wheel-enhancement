@@ -35,8 +35,10 @@ namespace MouseWheelEnhancement.Core;
 ///     越大越"绵"，也就是触控板那种惯性尾巴；
 ///   · **截止期限均摊** <c>pending · dt / 剩余时间</c> 是保险：保证无论曲线多慢，
 ///     输入后 <c>MaxLatencyMs</c> 内一定发完；
-///   · 每帧至少推进 <c>UnitsPerFrame</c>（默认 30 单位 = 1/4 格），否则尾巴会
-///     退化成一点一点挪，看起来像掉帧。
+///   · 每帧至少推进「积压 × <see cref="RuntimeSettings.MinFrameRatio"/>」与
+///     <c>UnitsPerFrame</c> 里的较小值，否则积压快见底时会退化成一点一点挪。
+///     **必须是比例**：绝对值下限（曾经的 30 单位 = 1/4 格）会在单格滚动时
+///     把前三帧劫持成突发，那正是"段落式的开始"。
 ///
 /// # 无锁
 ///
@@ -156,9 +158,13 @@ internal sealed class ScrollAnimator : IDisposable
         Interlocked.Exchange(ref _glideStartTicks, 0);
     }
 
-    /// <summary>测试与自检用的同步调用：绕过线程，按给定参数算一帧该发多少。</summary>
+    /// <summary>
+    /// 测试与自检用的同步调用：绕过线程，按给定参数算一帧该发多少。
+    /// </summary>
+    /// <param name="minFrameRatio">跟手期的每帧下限比例，见 <see cref="RuntimeSettings.MinFrameRatio"/>。</param>
     public static int ComputeFrame(double pendingUnits, double dtMs, double remainingMs,
-        double tauMs, int unitsPerFrame, bool smooth, bool glide = false)
+        double tauMs, int unitsPerFrame, bool smooth, bool glide = false,
+        double minFrameRatio = RuntimeSettings.MinFrameRatio)
     {
         if (pendingUnits == 0) return 0;
         if (!smooth) return RoundUnits(pendingUnits);
@@ -179,17 +185,28 @@ internal sealed class ScrollAnimator : IDisposable
              * remainingMs 那套的存在意义是"保证跟手"——一次输入最多拖 MaxLatencyMs。
              * 但松手之后已经没有"跟手"这回事了：继续按 deadline 发完，表现就是
              * 内容流畅地滚一下、然后咔一下停死，也就是用户说的"段落式的停"。
-             * 去掉这个约束，剩下的量才会像有惯性一样慢慢滑到静止。 */
+             * 去掉这个约束，剩下的量才会像有惯性一样慢慢滑到静止。
+             *
+             * 这里也**不设每帧下限**：尾巴本来就是该越来越慢的，
+             * 强行托一个下限会把指数衰减掰成匀速，惯性感就没了。 */
             emit = byCurve;
         }
         else
         {
             var byDeadline = pendingUnits * Math.Min(1.0, dtMs / Math.Max(dtMs, remainingMs));
             emit = Math.Max(byCurve, byDeadline);
-        }
 
-        if (Math.Abs(emit) < unitsPerFrame && Math.Abs(pendingUnits) > unitsPerFrame)
-            emit = Math.Sign(pendingUnits) * unitsPerFrame;
+            /* 跟手期的每帧下限：至少推进「积压 × 比例」与「一个标准帧量」里的较小值。
+             *
+             * 这条只为兜住尾巴（积压快见底时别按 1 unit/帧 爬），
+             * 所以按比例给 —— 绝对值下限卡的是"每帧至少 30 单位"，
+             * 单格滚动（积压 120）时前三帧会被劫持成 30/30/30 的突发，
+             * 也就是段落式的开始；按比例给，下限永远追不上曲线本身。 */
+            var floor = Math.Min(unitsPerFrame,
+                Math.Abs(pendingUnits) * Math.Clamp(minFrameRatio, 0.02, 0.5));
+            if (Math.Abs(emit) < floor && Math.Abs(pendingUnits) > floor)
+                emit = Math.Sign(pendingUnits) * floor;
+        }
 
         if (Math.Abs(emit) > Math.Abs(pendingUnits)) emit = pendingUnits;
         return RoundUnits(emit);

@@ -106,7 +106,11 @@ public partial class MainWindow : Window
              * "谁打开的就谁负责还" —— 任何路径销毁窗口都会走到这里。 */
             MemoryTrim.TrimIfLarge();
         };
-        Loaded += (_, _) => ApplyTitleBar(Theme.IsLightNow);
+        Loaded += (_, _) =>
+        {
+            ApplyTitleBar(Theme.IsLightNow);
+            ApplyWindowCorner();
+        };
     }
 
     /// <summary>
@@ -154,6 +158,40 @@ public partial class MainWindow : Window
                 Native.DwmSetWindowAttribute(hwnd, 19, ref dark, sizeof(int));
         }
         catch { /* 非关键美化 */ }
+    }
+
+    /// <summary>
+    /// 窗口外框四角变圆角（Win11 22000+；取不到就保持直角，不报错）。
+    ///
+    /// <para>
+    /// 自绘标题栏之后窗口不再有标准边框，Win11 的默认圆角就不生效了，
+    /// 得显式把 DWMWA_WINDOW_CORNER_PREFERENCE 设成 DWMWCP_ROUND。
+    /// </para>
+    /// <para>
+    /// 圆角只影响**窗口外形**：左侧栏是直角方块，不跟着收角的话，
+    /// 左上/左下会露出两块缺口（后面是桌面）。所以这里顺手把侧栏的
+    /// 左外角也打成同一个半径 —— 只有真的圆上时才打，Win10 上仍是直角，
+    /// 不会出现"窗口方、侧栏圆"的割裂感。
+    /// </para>
+    /// </summary>
+    private void ApplyWindowCorner()
+    {
+        try
+        {
+            if (Environment.OSVersion.Version.Build < 22000) return;   // 只有 Win11 有得设
+
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+
+            var pref = Native.DWMWCP_ROUND;
+            if (Native.DwmSetWindowAttribute(hwnd, Native.DWMWA_WINDOW_CORNER_PREFERENCE,
+                    ref pref, sizeof(int)) != 0)
+                return;   // 设不上（旧版 DWM、远程桌面之类）就老老实实直角
+
+            // 侧栏左外角跟窗口圆角对齐，半径取窗口圆角的 8px 同款
+            if (Sidebar != null) Sidebar.CornerRadius = new CornerRadius(8, 0, 0, 8);
+        }
+        catch { /* 纯美化，任何失败都不该影响启动 */ }
     }
 
     /// <summary>
@@ -1231,7 +1269,12 @@ public partial class MainWindow : Window
 
     /* ══════════════ 事件：令牌 ══════════════ */
 
-    private void RefreshTokenUi()
+    /// <summary>
+    /// 事件：令牌 —— 把界面刷成与"当前有没有令牌"一致的状态。
+    /// 做成 internal 是给 smoke 用：它要在无人工参与的情况下把界面推到
+    /// "已保存令牌"那一态，再截图留证。
+    /// </summary>
+    internal void RefreshTokenUi()
     {
         var tok = Services.Store.CurrentToken();
         _loading = true;
@@ -1239,8 +1282,9 @@ public partial class MainWindow : Window
         {
             if (tok == null)
             {
-                TokenBox.IsReadOnly = false;
-                TokenBox.Text = "";
+                // 没保存过：可编辑状态
+                TokenBox.IsEnabled = true;
+                TokenBox.Password = "";
                 TokenBox.ToolTip = "粘贴令牌后点「保存令牌」，例如 ghp_xxx 或 github_pat_xxx";
                 EditTokenBtn.Visibility = Visibility.Collapsed;
                 ClearTokenBtn.Visibility = Visibility.Collapsed;
@@ -1248,8 +1292,9 @@ public partial class MainWindow : Window
             }
             else
             {
-                TokenBox.IsReadOnly = true;
-                TokenBox.Text = Text.MaskToken(tok);
+                // 已保存：PasswordBox 没有 IsReadOnly，用禁用 + 一串圆点表示"锁着"
+                TokenBox.IsEnabled = false;
+                TokenBox.Password = Text.MaskToken(tok);
                 TokenBox.ToolTip = "令牌已加密保存。要换一个请点「更换」。";
                 EditTokenBtn.Visibility = Visibility.Visible;
                 ClearTokenBtn.Visibility = Visibility.Visible;
@@ -1262,8 +1307,8 @@ public partial class MainWindow : Window
     private void EditToken_Click(object sender, RoutedEventArgs e)
     {
         _loading = true;
-        TokenBox.IsReadOnly = false;
-        TokenBox.Text = "";
+        TokenBox.IsEnabled = true;
+        TokenBox.Password = "";
         _loading = false;
         SaveTokenBtn.IsEnabled = true;
         EditTokenBtn.Visibility = Visibility.Collapsed;
@@ -1273,8 +1318,8 @@ public partial class MainWindow : Window
 
     private async void SaveToken_Click(object sender, RoutedEventArgs e)
     {
-        if (TokenBox.IsReadOnly) return;
-        var raw = TokenBox.Text;
+        if (!TokenBox.IsEnabled) return;
+        var raw = TokenBox.Password;
         if (Text.SanitizeToken(raw) == null)
         {
             TokenStatus.Foreground = B("DangerBrush");
@@ -1291,10 +1336,10 @@ public partial class MainWindow : Window
 
     private async void VerifyToken_Click(object sender, RoutedEventArgs e)
     {
-        if (!TokenBox.IsReadOnly)
+        if (TokenBox.IsEnabled)
         {
             // 输入框里是新粘贴的：直接验证这一串，不落盘
-            var raw = TokenBox.Text;
+            var raw = TokenBox.Password;
             if (Text.SanitizeToken(raw) == null)
             {
                 TokenStatus.Foreground = B("DangerBrush");

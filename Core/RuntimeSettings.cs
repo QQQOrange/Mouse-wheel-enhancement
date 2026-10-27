@@ -54,6 +54,22 @@ public sealed class RuntimeSettings
     public bool InvertDirection { get; init; }
     public bool EnhancePrecisionInput { get; init; }
 
+    /// <summary>
+    /// 每帧出帧量的**下限比例**：跟手期每帧至少发掉当前积压的这个比例。
+    ///
+    /// <para>
+    /// 只作用于跟手期（滑行期是纯指数衰减，见 <see cref="ScrollAnimator.ComputeFrame"/>），
+    /// 用途是兜住尾巴 —— 别让最后几个单位按 1 unit/帧 爬半天。
+    /// </para>
+    /// <para>
+    /// 必须是**比例**而不能是绝对值：曾经的下限写死 30 单位（=1/4 格），
+    /// 单格滚动（积压 120）时前三帧会被劫持成 30/30/30 的突发，
+    /// 四分之三的量在 20ms 内砸出去，剩下的再一帧帧爬 ——
+    /// 这正是"段落式的开始"的来源。改成比例后，下限永远追不上曲线本身。
+    /// </para>
+    /// </summary>
+    public const double MinFrameRatio = 0.15;
+
     public FilterMode FilterMode { get; init; }
     public IReadOnlySet<string> FilterApps { get; init; } = new HashSet<string>();
     public Regex? TitleRegex { get; init; }

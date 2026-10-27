@@ -15,10 +15,17 @@ public enum FilterMode
 /// <summary>平滑滚动施加在哪些滚动上。</summary>
 public enum SmoothScope
 {
-    /// <summary>默认：只平滑"被加速过的"滚动，普通滚动完全交给系统。</summary>
+    /// <summary>只平滑"被加速过的"滚动，普通滚动完全交给系统。</summary>
     BoostedOnly = 0,
 
-    /// <summary>所有滚动都平滑（普通速度也会被拆帧重放）。</summary>
+    /// <summary>
+    /// **默认**：所有滚动都平滑（普通速度也会被拆帧重放）。
+    /// <para>
+    /// 改成默认是必修的一项：选「仅加速时」时，慢慢拨一格根本不经过本程序，
+    /// 用户看到的就是系统原生的一跳 —— 无论摊帧和惯性调得多好都没作用。
+    /// 装了"平滑滚动"却对最常用的单格滚动无效，就是这个默认值的锅。
+    /// </para>
+    /// </summary>
     Always = 1,
 }
 
@@ -64,7 +71,11 @@ public sealed class SmoothConfig
 {
     public bool Enabled { get; set; } = true;
 
-    public SmoothScope Scope { get; set; } = SmoothScope.BoostedOnly;
+    /// <summary>
+    /// 默认「所有滚动」。理由见 <see cref="SmoothScope.Always"/> 的注释 ——
+    /// 选「仅加速时」的话，慢慢拨一格完全不经过本程序，平滑等于没开。
+    /// </summary>
+    public SmoothScope Scope { get; set; } = SmoothScope.Always;
 
     /// <summary>
     /// 注入帧率是否自动跟随显示器刷新率（默认**开**）。
@@ -86,8 +97,17 @@ public sealed class SmoothConfig
     /// <summary>指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。</summary>
     public double TailTauMs { get; set; } = 45.0;
 
-    /// <summary>一次输入最多拖多久必须发完（毫秒）。这是体感延迟的硬上限。</summary>
-    public double MaxLatencyMs { get; set; } = 60.0;
+    /// <summary>
+    /// 一次输入最多拖多久必须发完（毫秒）。这是体感延迟的硬上限。
+    ///
+    /// <para>
+    /// 默认 100 ms 而不是 60：60 ms 在高刷新率屏幕（144/165Hz，一帧 6~7ms）上
+    /// 比指数曲线本身还短，截止期均摊会压过曲线，一次单格滚动就被摊成
+    /// "前几帧猛发、后面赶工"的两段式。100 ms 给了 τ=45ms 的曲线两个多
+    /// 时间常数，让摊帧真正按曲线走，截止期只当兜底。
+    /// </para>
+    /// </summary>
+    public double MaxLatencyMs { get; set; } = 100.0;
 
     /// <summary>允许积压多少格。防止连续甩动时积雪越滚越远。</summary>
     public double MaxBacklogNotches { get; set; } = 5.0;
@@ -223,7 +243,7 @@ public sealed class AppBehaviorConfig
 public sealed class AppConfig
 {
     /// <summary>配置结构版本，用于将来的迁移。</summary>
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 3;
 
     /// <summary>功能总开关（托盘和界面都能切）。</summary>
     public bool Enabled { get; set; } = true;
@@ -270,7 +290,22 @@ public sealed class AppConfig
             SchemaVersion = 2;
         }
 
-        SchemaVersion = Math.Max(2, SchemaVersion);
+        /* ── v3 迁移：平滑范围默认从「仅加速时」改成「所有滚动」 ──
+         *
+         * 用户实测反馈：开着平滑滚动一格一格拨，起停仍然是段落式，没有平滑过程。
+         * 根因就是 Scope=BoostedOnly —— 慢速滚动不被判定为"加速过"，
+         * 于是整条平滑链路（摊帧 + 惯性）根本不接手，滚轮交回系统原样处理。
+         *
+         * 这一版把默认改成「所有滚动」，并对 v2 及更早的配置一次性纠正。
+         * 只有用户在本版之后主动选回「仅加速时」才会保持那个选择
+         * （SchemaVersion 已经是 3，迁移块不再进入）。 */
+        if (SchemaVersion < 3)
+        {
+            Smooth.Scope = SmoothScope.Always;
+            SchemaVersion = 3;
+        }
+
+        SchemaVersion = Math.Max(3, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* 所有"格"相关与时间相关的数值一律取整。

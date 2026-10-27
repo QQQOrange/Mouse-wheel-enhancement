@@ -313,6 +313,21 @@ internal static class Native
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
+    /* ══════════════ 窗口外框圆角（Win11 22000+）══════════════
+     *
+     * Win11 起系统默认就把顶层窗口的角画成圆的，但自绘标题栏
+     * （WindowChrome + GlassFrameThickness=0）会把窗口风格改成
+     * 不带标准边框，DWM 就不再自动圆角 —— 得显式提要求。
+     * 属性在旧系统上不存在，DwmSetWindowAttribute 会返回失败，
+     * 调用方按"尽力而为"处理即可。 */
+    public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+
+    /// <summary>让系统把窗口外框的四角画成圆角。</summary>
+    public const int DWMWCP_ROUND = 2;
+
+    /// <summary>不要圆角（Win11 默认值的反面）。</summary>
+    public const int DWMWCP_ROUNDSMALL = 3;
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DestroyIcon(IntPtr hIcon);

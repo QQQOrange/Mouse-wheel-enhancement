@@ -299,6 +299,11 @@ public partial class App : System.Windows.Application
 
             var themeCode = CheckTheme(w);
             if (themeCode != 0) code = themeCode;
+
+            var uiCode = CheckUpdatePageUi(w);
+            if (uiCode != 0) code = uiCode;
+
+            ShotUpdatePage(w);
             Log.Info($"smoke: 注入 {sent}/16 次，钩子接管 {boosted} 次、放行 {passed} 次，" +
                      $"倍率 {Services.Engine.LastMultiplier:0.00}×");
 
@@ -333,6 +338,188 @@ public partial class App : System.Windows.Application
             Log.Flush();
         }
         return code;
+    }
+
+    /// <summary>
+    /// 更新页两处 UI 的硬检查 —— "改完 XAML 到底对不对"不用肉眼盯的那类：
+    ///
+    /// <para>
+    /// ① **令牌框必须是暗文**。曾经是普通 TextBox，用户一粘贴整串令牌明文摆在那里；
+    /// 必须是 <see cref="System.Windows.Controls.PasswordBox"/>。
+    /// </para>
+    /// <para>
+    /// ② **主按钮禁用态必须换专用配色**。曾经的禁用 Trigger 是整块 Opacity 0.45，
+    /// 蓝底白字一起冲淡，浅色主题下对比度直接塌到看不清（用户原话："蓝底黑字，有时候看不清"）。
+    /// 现在改成 PrimaryBtnDisabledBg/Fg 两份调色板各一套，跟随主题。
+    /// </para>
+    ///
+    /// 判定方式：读控件**模板里那个 Border 的真实 Background**，再和调色板里的值对。
+    /// 这样换主题也成立 —— 两份调色板各有一份禁用色，谁生效就和谁比。
+    /// </summary>
+    private static int CheckUpdatePageUi(MainWindow w)
+    {
+        var code = 0;
+
+        // WCAG 对比度：禁用态不是"装饰性文字"，也得能读
+        static double Lin(System.Windows.Media.Color c)
+        {
+            static double Ch(double v)
+            {
+                var s = v / 255.0;
+                return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);
+            }
+            return 0.2126 * Ch(c.R) + 0.7152 * Ch(c.G) + 0.0722 * Ch(c.B);
+        }
+        static double Contrast(System.Windows.Media.Color a, System.Windows.Media.Color b)
+        {
+            var l1 = Lin(a);
+            var l2 = Lin(b);
+            return (Math.Max(l1, l2) + 0.05) / (Math.Min(l1, l2) + 0.05);
+        }
+        static string Hex(System.Windows.Media.Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+
+        try
+        {
+            w.SelectTab(4);          // 更新页
+            w.UpdateLayout();
+
+            /* ① 暗文 ── */
+            if (w.TokenBox is not System.Windows.Controls.PasswordBox)
+            {
+                Log.Error("smoke: 令牌输入框不是 PasswordBox —— 令牌会以明文显示在屏幕上");
+                code = 20;
+            }
+            else
+            {
+                Log.Info("smoke: 令牌输入框是 PasswordBox（暗文）");
+            }
+
+            /* ② 主按钮禁用态配色 ── */
+            var wantBg = (System.Windows.Media.SolidColorBrush)w.FindResource("PrimaryBtnDisabledBg");
+            var wantFg = (System.Windows.Media.SolidColorBrush)w.FindResource("PrimaryBtnDisabledFg");
+
+            var btn = w.SaveTokenBtn;
+            var bd = (System.Windows.Controls.Border)btn.Template.FindName("Bd", btn);
+
+            btn.IsEnabled = false;
+            w.UpdateLayout();
+            var disBg = (bd.Background as System.Windows.Media.SolidColorBrush)?.Color;
+            var disFg = (btn.Foreground as System.Windows.Media.SolidColorBrush)?.Color;
+            var disOpacity = bd.Opacity;
+
+            btn.IsEnabled = true;
+            w.UpdateLayout();
+            var enBg = (bd.Background as System.Windows.Media.SolidColorBrush)?.Color;
+
+            Log.Info($"smoke: 主按钮禁用态 底色={Hex(disBg ?? default)} 字色={Hex(disFg ?? default)} " +
+                     $"整体不透明度={disOpacity:0.00}；常态底色={Hex(enBg ?? default)}");
+
+            if (disBg != wantBg.Color)
+            {
+                Log.Error($"smoke: 主按钮禁用态底色不是专用配色（期望 {Hex(wantBg.Color)}，" +
+                          $"实际 {(disBg.HasValue ? Hex(disBg.Value) : "取不到")}）");
+                code = 21;
+            }
+            if (disFg != wantFg.Color)
+            {
+                Log.Error($"smoke: 主按钮禁用态字色不是专用配色（期望 {Hex(wantFg.Color)}，" +
+                          $"实际 {(disFg.HasValue ? Hex(disFg.Value) : "取不到")}）");
+                code = 22;
+            }
+            // 整块褪色正是"蓝底黑字看不清"的成因，不允许回来
+            if (disOpacity < 0.99)
+            {
+                Log.Error($"smoke: 主按钮禁用态仍在整块褪色（不透明度 {disOpacity:0.00}）—— " +
+                          "蓝底白字会被一起冲淡，这就是『蓝底黑字看不清』的根因");
+                code = 23;
+            }
+            if (disBg.HasValue && disFg.HasValue && Contrast(disBg.Value, disFg.Value) < 4.0)
+            {
+                Log.Error($"smoke: 主按钮禁用态对比度只有 {Contrast(disBg.Value, disFg.Value):0.00}:1，低于 4:1");
+                code = 24;
+            }
+            if (disBg.HasValue && enBg.HasValue && disBg.Value == enBg.Value)
+            {
+                Log.Error("smoke: 主按钮禁用态和常态底色一模一样，用户看不出按钮禁用了");
+                code = 25;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("smoke: 更新页 UI 检查抛异常", ex);
+            code = 26;
+        }
+        return code;
+    }
+
+    /// <summary>
+    /// smoke 附赠：把更新页按浅色/深色各截一张图，存进数据目录。
+    ///
+    /// <para>
+    /// 圆角、令牌暗文、禁用态配色这类"看一眼就知道对不对"的东西，断言只能覆盖到
+    /// 颜色值和控件类型；像素层面的观感（圆角是不是真圆了、暗文是不是一串圆点、
+    /// 浅色下按钮还清不清楚）得有张图才说得清。
+    /// </para>
+    /// <para>
+    /// 用 <see cref="System.Windows.Media.Imaging.RenderTargetBitmap"/> 而不是 BitBlt：
+    /// 它渲染的是视觉树，不依赖屏幕 DC、窗口可见性和置顶，所以窗口被别的进程挡着
+    /// （甚至桌面被锁）也照样出图 —— 实测里那些 UIPI / 遮挡坑一个都碰不到。
+    /// </para>
+    /// <para>
+    /// 截图前会写一个假令牌把界面推到"已保存"态（PasswordBox 显示圆点、
+    /// 「保存令牌」禁用），这正是本轮两处改动的对照面；用完把原令牌还回去。
+    /// </para>
+    /// </summary>
+    private static void ShotUpdatePage(MainWindow w)
+    {
+        var cfgMode = Theme.Normalize(Services.Config.Appearance.Theme);
+        var origToken = Services.Store.CurrentToken();
+        try
+        {
+            Services.Store.SetToken("ghp_smoketest0000000000000000000000");
+            w.RefreshTokenUi();
+            w.SelectTab(4);          // 更新页
+            w.UpdateLayout();
+
+            foreach (var (mode, name) in new[] { (Theme.Light, "light"), (Theme.Dark, "dark") })
+            {
+                Theme.SetMode(mode);
+                w.UpdateLayout();
+                // DynamicResource 换字典要过一次渲染优先级才能落到新画刷上
+                w.Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
+
+                var path = Path.Combine(AppPaths.DataDir, $"smoke-update-{name}.png");
+                SaveWindowShot(w, path);
+                Log.Info($"smoke: 更新页截图（{name}）→ {path}");
+            }
+        }
+        catch (Exception ex)
+        {
+            // 截图只是留证，失败不影响 smoke 判定
+            Log.Warn("smoke: 截图失败（不影响判定）：" + ex.Message);
+        }
+        finally
+        {
+            Services.Store.SetToken(origToken ?? "");
+            w.RefreshTokenUi();
+            Theme.SetMode(cfgMode);
+            w.UpdateLayout();
+        }
+    }
+
+    private static void SaveWindowShot(MainWindow w, string path)
+    {
+        var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            Math.Max(1, (int)w.ActualWidth),
+            Math.Max(1, (int)w.ActualHeight),
+            96, 96,
+            System.Windows.Media.PixelFormats.Pbgra32);
+        rtb.Render(w);
+
+        var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
+        using var fs = File.Create(path);
+        enc.Save(fs);
     }
 
     /// <summary>
@@ -443,14 +630,24 @@ public partial class App : System.Windows.Application
     /// <para>
     /// 这是本功能唯一真正容易做错的地方：如果样式里用的是 StaticResource，
     /// 换字典对已建好的元素毫无作用 —— 界面看起来"没反应"，重开一次才对。
-    /// 所以这里读的是**窗口自己的 Background**（一个真实的、已经建好的控件属性），
+    /// 所以这里读的是**一个真实控件的 Background**（侧栏，绑的是 PanelBg），
     /// 而不是资源字典里的值。后者换了只能证明"字典换了"，证明不了"界面跟着变了"。
+    /// </para>
+    /// <para>
+    /// 曾经这里读的是 <c>w.Background</c>，而窗口底是渐变画笔 ——
+    /// <c>as SolidColorBrush</c>永远失败，落到 <see cref="Colors.Transparent"/>，
+    /// 而 Transparent 的 RGB 是 #FFFFFF（alpha 为 0），于是无论切到哪个主题
+    /// 都打印"底色 #FFFFFF、亮度 1.00"，这条检查从 UI 改版起就一直在误报。
     /// </para>
     /// </summary>
     private static int CheckTheme(MainWindow w)
     {
         static double Lum(System.Windows.Media.Color c) =>
             (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
+
+        static System.Windows.Media.Color BgOf(System.Windows.Controls.Border e) =>
+            (e.Background as System.Windows.Media.SolidColorBrush)?.Color
+            ?? System.Windows.Media.Colors.Transparent;
 
         var cfgMode = Theme.Normalize(Services.Config.Appearance.Theme);
         var code = 0;
@@ -459,16 +656,14 @@ public partial class App : System.Windows.Application
         {
             Theme.SetMode(Theme.Light);
             w.UpdateLayout();
-            var light = (w.Background as System.Windows.Media.SolidColorBrush)?.Color
-                        ?? System.Windows.Media.Colors.Transparent;
+            var light = BgOf(w.Sidebar);
 
             Theme.SetMode(Theme.Dark);
             w.UpdateLayout();
-            var dark = (w.Background as System.Windows.Media.SolidColorBrush)?.Color
-                       ?? System.Windows.Media.Colors.Transparent;
+            var dark = BgOf(w.Sidebar);
 
-            Log.Info($"smoke: 主题热切换 → 浅色底 #{light.R:X2}{light.G:X2}{light.B:X2}" +
-                     $"（亮度 {Lum(light):0.00}），深色底 #{dark.R:X2}{dark.G:X2}{dark.B:X2}" +
+            Log.Info($"smoke: 主题热切换 → 浅色侧栏 #{light.R:X2}{light.G:X2}{light.B:X2}" +
+                     $"（亮度 {Lum(light):0.00}），深色侧栏 #{dark.R:X2}{dark.G:X2}{dark.B:X2}" +
                      $"（亮度 {Lum(dark):0.00}）");
 
             if (Lum(light) < 0.7)

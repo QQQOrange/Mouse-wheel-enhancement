@@ -31,8 +31,10 @@
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <!-- ══════════════ 左侧栏：品牌 + 导航 + 状态 ══════════════ -->
-        <Border Grid.Column="0" Background="{DynamicResource PanelBg}"
+        <!-- ══════════════ 左侧栏：品牌 + 导航 + 状态 ══════════════
+             外框左角由代码按需打成圆角（ApplyWindowCorner）：
+             只有 Win11 上窗口真的圆了才打，避免"窗口方、侧栏圆"。 -->
+        <Border x:Name="Sidebar" Grid.Column="0" Background="{DynamicResource PanelBg}"
                 BorderBrush="{DynamicResource BorderBrushSoft}" BorderThickness="0,0,1,0">
             <Grid>
                 <Grid.RowDefinitions>
@@ -102,7 +104,7 @@
                 <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="24,0,0,0" VerticalAlignment="Center">
                     <TextBlock x:Name="PageTitle" Text="概览" Style="{StaticResource PageTitle}" />
                     <Border Style="{StaticResource Badge}" Margin="10,0,0,0">
-                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="v1.5.0" />
+                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="v1.5.1" />
                     </Border>
                 </StackPanel>
 
@@ -186,11 +188,11 @@
                             <StackPanel>
                                 <TextBlock Text="它是怎么做事的" Style="{StaticResource H2}" Margin="0,0,0,10" />
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="1 · 正常速度滚动时，程序什么都不做，事件原样交给 Windows —— 所以手感、精度、惯性都和你没装它时一模一样。" />
+                                           Text="1 · 滚动事件先经过本程序：量是多少、按什么节奏发，由下面的参数决定。默认「所有滚动」都接管，慢慢拨一格也是分成几小步滑上去，不再是一跳。" />
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="2 · 连续快速拨动滚轮时，速度超过阈值，程序接管这一次滚动，按设定倍率放大后再发出去，并可拆成多帧让画面顺滑推进。" />
+                                           Text="2 · 连续快速拨动滚轮、速度超过阈值时，在平滑的基础上再按倍率放大 —— 长页面几下就能到底。" />
                                 <TextBlock Style="{StaticResource Caption}"
-                                           Text="3 · 松手后不再介入，速度掉回阈值以下就立刻回到完全原生的模式。" />
+                                           Text="3 · 松手后不立刻收工：剩下的量按惯性慢慢衰减发完，所以停的时候是滑到尾而不是咔一下停住。想完全回到原生手感，把「平滑滚动」整个关掉即可。" />
                             </StackPanel>
                         </Border>
 
@@ -508,7 +510,7 @@
                                     <StackPanel>
                                         <TextBlock Text="施加范围" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
-                                                   Text="「仅加速时」保持普通滚动 100% 原生，是默认也是推荐值；「所有滚动」会把普通滚动也拆帧重放。" />
+                                                   Text="「所有滚动」是默认：慢慢拨一格也会被拆成几帧滑上去；「仅加速时」则只处理快滚，普通滚动完全交给系统。" />
                                     </StackPanel>
                                     <Border Grid.Column="1" Style="{StaticResource SegGroup}" VerticalAlignment="Center">
                                         <StackPanel Orientation="Horizontal">
@@ -651,7 +653,7 @@
                                                    Text="一次滚动最多拖这么久必须发完。这是体感延迟的硬上限，调大平滑更明显但会有「跟不上手」的感觉。" />
                                     </StackPanel>
                                     <TextBlock x:Name="LatencyValue" Grid.Column="1" Style="{StaticResource Value}"
-                                               Text="60 ms" />
+                                               Text="100 ms" />
                                 </Grid>
                                 <Slider x:Name="LatencySlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                         Minimum="16" Maximum="200" SmallChange="4" LargeChange="10"
@@ -870,8 +872,11 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="TokenBox" Style="{StaticResource DarkTextBox}"
-                                             ToolTip="粘贴后点「保存令牌」" />
+                                    <!-- 令牌是机密：一律用 PasswordBox 显示成圆点。
+                                         PasswordChar 显式写出来，不依赖控件默认值 -->
+                                    <PasswordBox x:Name="TokenBox" PasswordChar="&#x25CF;"
+                                                 Style="{StaticResource DarkPasswordBox}"
+                                                 ToolTip="粘贴后点「保存令牌」" />
                                     <Button Grid.Column="1" x:Name="EditTokenBtn" Content="更换"
                                             Style="{StaticResource GhostButton}" Margin="8,0,0,0" Click="EditToken_Click"
                                             Visibility="Collapsed" />
