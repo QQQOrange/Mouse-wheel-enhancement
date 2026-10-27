@@ -190,6 +190,28 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    /// <summary>
+    /// 取窗口的类名。
+    ///
+    /// <para>
+    /// 用来判断"这个窗口属于哪个 UI 框架"—— 因为不同框架消费滚轮 delta 的方式不一样：
+    /// WPF 和 WinForms 是**一个事件滚一档**（无视 delta 大小），
+    /// 浏览器 / Qt / Office 是**按 delta 比例滚像素**。
+    /// 摊帧（把一个 120 拆成多个小 delta）只对后者成立，对前者会放大成"一滚一整页"。
+    /// 见 <c>TargetResolver.ScrollsOncePerEvent</c>。
+    /// </para>
+    /// </summary>
+    public static string ClassNameOf(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return "";
+        var sb = new StringBuilder(256);
+        var n = GetClassNameW(hwnd, sb, sb.Capacity);
+        return n > 0 ? sb.ToString(0, n) : "";
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 

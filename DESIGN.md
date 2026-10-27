@@ -416,7 +416,7 @@ Windows 锁的是"删除/写入"，**不锁改名**。所以：
 不靠"看起来正常"，两套自检都能在没有人工干预的情况下跑：
 
 ```bash
-# 204 条纯逻辑断言：曲线、速度判定、起步护栏、精度输入、反向、取整、摊帧、滑行收尾、帧率跟随刷新率、
+# 219 条纯逻辑断言：曲线、速度判定、起步护栏、精度输入、反向、取整、摊帧、滑行收尾、帧率跟随刷新率、
 # 版本比较、SHA 解析、令牌清洗、名单匹配、仓库解析、配置读写、整格化
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全通过
 
@@ -1984,6 +1984,104 @@ rate  = rate × (1 − alpha) + inst × alpha
 
 ---
 
+
+---
+
+## 30. 轻轻一滚翻整页的真正原因：WPF / WinForms 无视 delta
+
+### 30.1 用户把阈值调到 25，问题照旧
+
+第 29 节的起步护栏上线后，用户反馈：**「把触发阈值调到 25 格每秒，还是照样触发。」**
+并且给出了一条可复现的路径：在 KeyboardEnhance（他自己的另一个 WPF 软件）的设置页上，
+现象极其明显。
+
+阈值调到 25 还犯，说明**根本不是加速**——倍率那条路已经被护栏堵住了。
+能绕过护栏的只剩一个环节：**摊帧**。因为 `smoothAlways` 默认开着，
+哪怕倍率是 1.0，一格也会被拆成 `framesPerNotch`（默认 8）个小事件。
+
+### 30.2 根因：两类完全不同的滚动语义
+
+| 语义 | 谁是这样 | 收 8 个 `delta=15` 会怎样 |
+|------|---------|--------------------------|
+| 按 delta 比例滚像素 | Chromium、Qt、Office、系统 Edit | 和收 1 个 `delta=120` 一样远 —— 摊帧安全 |
+| **按事件次数滚一档** | **WPF、WinForms** | **滚 8 档** —— 一格变一屏 |
+
+WPF 这一条是它自己的已知缺陷，官方 issue dotnet/wpf#5936 的原话是：
+
+> the `ScrollViewer` **always scrolls a fixed amount** in response to mouse wheel events
+> despite `MouseWheelEventArgs` returning the Delta value
+
+至今没改，因为改了会动所有人的滚动距离。于是它只看向号、不看大小：
+`delta=15`、`delta=40`、`delta=120` 在 WPF 里**滚得一模一样远**。
+
+我们的摊帧（1 个 120 → 8 个 15）对第一类完美，对第二类就是灾难。
+这也顺带解释了"为什么只在某些软件里明显"——那些软件是 WPF/WinForms 写的，
+不是"页面短"。用户看到的"短页面"其实多半就是各种设置页。
+
+### 30.3 实测（UIA 读 ScrollViewer 的真实位置）
+
+探针 `mwprobe-wpf`：找目标窗口的 ScrollViewer，用 UIA 读 `ScrollPattern.VerticalScrollPercent`，
+每次注入一条滚轮、等 450 ms 再读一次。用增强器自己的签名 `WBOO`（`dwExtraInfo`）可以
+绕开钩子，测到 WPF 的原始行为；`dwExtraInfo=0` 则会被钩子接管。
+
+修复前（v1.5.7，阈值 10、上限 5×、每格 8 帧）：
+
+| 注入 | 位移（百分点） |
+|------|---------------|
+| `delta=-120`（绕过增强器） | 6.49 |
+| `delta=-40`（绕过增强器） | **6.49** |
+| `delta=-15`（绕过增强器） | **6.49** |
+| `delta=-15` 再来一次 | 6.49 |
+| **`delta=-120` 经增强器** | **74.04（100%，到底）** |
+
+前三行是铁证：120 / 40 / 15 的位移分毫不差，WPF 确实只看方向。
+最后一行：一个事件被放大成 **11.4 档**（8 帧摊帧叠加加速），页面直接到底。
+
+修复后（v1.5.8）同一页面同一动作：**6.49 个点**，与纯 WPF 的一档完全一致。
+
+### 30.4 修法：按目标窗口的滚动语义分流
+
+`TargetResolver` 在解析目标时顺手取一次顶层窗口类名（跟着 pid 一起缓存，
+不额外增加每次事件的开销），`ScrollSemantics.IsPerEventScroll` 判定：
+
+- `HwndWrapper[...]` → WPF
+- `WindowsForms10.*` → WinForms
+
+命中之后，`WheelEngine` 走**整格语义**，不再进动画器：
+
+```csharp
+if (target.ScrollsOncePerEvent)
+{
+    if (_animator.PendingUnits != 0) _animator.Clear();
+
+    if (!decision.Boosted || Math.Abs(delta) < WHEEL_DELTA)
+        return CallNextHookEx(...);          // 没加速 → 原样一档
+
+    var n = ScrollSemantics.WholeNotchesFor(decision.OutputUnits);  // 1..16
+    for (var i = 0; i < n; i++) InputInjector.SendWheel(sign * WHEEL_DELTA);
+    return (IntPtr)1;                        // 吞掉原事件
+}
+```
+
+倍率因此兑现成"**事件个数**"而不是"更小的 delta"：3× 就发 3 个整格，
+那类框架滚 3 档，正好 3 倍。小于一格的 delta（触控板）在这类框架里本来就是一档，
+所以原样放行，绝不放大。
+
+### 30.5 取舍
+
+**WPF / WinForms 应用里没有摊帧的平滑感。** 这不是偷懒：那类框架的最小粒度就是一格，
+再细的 delta 只会被当成"又一次滚动"。想让它们平滑，只能改它们的源码
+（就是 issue #5936 想要的东西）。设置页的说明里已经写清这一点。
+
+代价换来的是：这些应用里一格永远是一格，不再有"轻轻一滚翻一页"。
+
+### 30.6 验证
+
+自检 204 → **219 条**，新增 `滚动语义（按事件 vs 按比例）` 一组 15 条：
+WPF / WinForms 判为按事件滚动，Chrome / Firefox / Office / Qt / Notepad 不算，
+空类名与近似前缀不误判，以及 `WholeNotchesFor` 的 1/3/5 格、下限 1、上限 16、负数取绝对值。
+
+端到端：见 30.3 的对照表（同一台机器、同一个窗口、同一次点击）。
 
 ---
 

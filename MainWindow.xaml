@@ -548,6 +548,8 @@
                                         <TextBlock Text="施加范围" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
                                                    Text="「所有滚动」是默认：慢慢拨一格也会被拆成几帧滑上去；「仅加速时」则只处理快滚，普通滚动完全交给系统。" />
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                                   Text="注意：WPF / WinForms 写的程序（很多国产工具、自研软件）滚动时只看方向、不看增量，一个消息就滚固定一档。对它们会自动改用「整格」方式，所以那些程序里没有摊帧的平滑感——这是框架限制，不这么做就会一滚一整页。" />
                                     </StackPanel>
                                     <Border Grid.Column="1" Style="{StaticResource SegGroup}" VerticalAlignment="Center">
                                         <StackPanel Orientation="Horizontal">

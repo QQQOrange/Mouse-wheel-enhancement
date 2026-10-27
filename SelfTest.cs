@@ -32,6 +32,7 @@ internal static class SelfTest
             TestBoostCurve();
             TestVelocityTracking();
             TestBurstGuard();
+            TestScrollSemantics();
             TestPrecisionInput();
             TestReversal();
             TestRounding();
@@ -299,6 +300,46 @@ internal static class SelfTest
         }
         Check("真实参数下连续快滚仍到 5×", fast.Boosted && fast.Multiplier > 4.5,
             $"mult={fast.Multiplier:0.00}");
+    }
+
+    /// <summary>
+    /// 滚动语义分流：哪些窗口"一个事件滚一档"，以及那种窗口该怎么发。
+    ///
+    /// <para>
+    /// 这一组是"轻轻一滚翻一整页"的最终答案。WPF / WinForms 的滚动**只看方向、
+    /// 不看 delta 大小**（WPF 官方 issue #5936 至今未改），所以把一个 120 摊成
+    /// 8 个 15 会被它们当成 8 次滚动 —— 一格变一屏。浏览器 / Qt / Office 按像素
+    /// 比例滚，摊帧才安全。
+    /// </para>
+    /// </summary>
+    private static void TestScrollSemantics()
+    {
+        Section("滚动语义（按事件 vs 按比例）");
+
+        Check("WPF 窗口算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("HwndWrapper[CapsLockPlus.exe;;3f2a1b0c-1234-4567-89ab-cdef01234567]"));
+        Check("WinForms 窗口算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("WindowsForms10.Window.8.app.0.141b42a_r7_ad1"));
+
+        Check("Chrome / Electron 不算（按像素比例）",
+            !ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1"));
+        Check("Firefox 不算", !ScrollSemantics.IsPerEventScroll("MozillaWindowClass"));
+        Check("Office 不算", !ScrollSemantics.IsPerEventScroll("XLMAIN"));
+        Check("Qt 不算", !ScrollSemantics.IsPerEventScroll("Qt5152QWindowIcon"));
+        Check("记事本（系统 Edit）不算", !ScrollSemantics.IsPerEventScroll("Notepad"));
+        Check("空类名不算（拿不到就按比例处理，别误伤）",
+            !ScrollSemantics.IsPerEventScroll(""));
+        Check("前缀相近但不等的不算",
+            !ScrollSemantics.IsPerEventScroll("HwndWrapperXX") &&
+            !ScrollSemantics.IsPerEventScroll("WindowsForms11.Window.8.app.0"));
+
+        /* 拆成几个整格：倍率兑现成"事件个数"，而不是"更小的 delta"。 */
+        Check("没用加速时只发一格", ScrollSemantics.WholeNotchesFor(120) == 1);
+        Check("3 倍 → 3 个整格", ScrollSemantics.WholeNotchesFor(360) == 3);
+        Check("5 倍 → 5 个整格", ScrollSemantics.WholeNotchesFor(600) == 5);
+        Check("不足一格也至少发 1 个", ScrollSemantics.WholeNotchesFor(30) == 1);
+        Check("异常大的量被夹到 16 格", ScrollSemantics.WholeNotchesFor(999_999) == 16);
+        Check("负数按绝对值算（方向由调用方给）", ScrollSemantics.WholeNotchesFor(-360) == 3);
     }
 
     private static void TestPrecisionInput()

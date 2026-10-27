@@ -268,6 +268,42 @@ public sealed class WheelEngine : IDisposable
             Interlocked.Increment(ref _events);
             Volatile.Write(ref _lastRate, decision.RatePerSec);
 
+            /* ── 按"事件次数"滚动的框架（WPF / WinForms）：只发整格，绝不摊帧 ──
+             *
+             * 这类框架**只看向号、不看 delta 大小**：一个 WM_MOUSEWHEEL 就滚固定一档。
+             * 我们的摊帧会把一个 120 拆成 8 个 15，对浏览器（按像素比例）毫无问题，
+             * 对它们就是"滚了 8 档"—— 一格变一整屏。这也是为什么把倍率阈值调到 25
+             * 都无关：问题出在摊帧，不在加速。
+             *
+             * 所以这里换成整格语义：
+             *   · 没加速 → 原样放行（一个事件，正好一档）；
+             *   · 加速了 → 拆成 N 个整格逐个发（N = 倍率）。
+             * 代价是这类应用里没有平滑（框架的最小粒度就是一格，做不到更细）。 */
+            if (target.ScrollsOncePerEvent)
+            {
+                if (_animator.PendingUnits != 0) _animator.Clear();
+
+                /* 小于一格的 delta（触控板/自由滚轮）在这类框架里本来就是一档，
+                 * 放大成 120 只会更糟 —— 原样放行。 */
+                if (!decision.Boosted || Math.Abs(delta) < Native.WHEEL_DELTA)
+                {
+                    Interlocked.Increment(ref _passed);
+                    return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+                }
+
+                Volatile.Write(ref _lastMultiplier, decision.Multiplier);
+
+                /* 上限 16 格：倍率上限 8× 时最坏也就 8 格，留一倍余量防止
+                 * 某个异常值把一次性注入撑爆（钩子里不能做耗时的事）。 */
+                var notches = ScrollSemantics.WholeNotchesFor(decision.OutputUnits);
+                var oneNotch = Math.Sign(decision.OutputUnits) * Native.WHEEL_DELTA;
+                for (var i = 0; i < notches; i++)
+                    if (!InputInjector.SendWheel(oneNotch)) break;
+
+                Interlocked.Increment(ref _boosted);
+                return (IntPtr)1;
+            }
+
             var shouldSmooth = s.SmoothEnabled && (decision.Boosted || s.SmoothAlways);
             if (!decision.Boosted && !shouldSmooth)
             {
