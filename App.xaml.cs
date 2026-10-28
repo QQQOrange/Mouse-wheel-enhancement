@@ -18,7 +18,21 @@ public partial class App : System.Windows.Application
     /// 一行折合多少 DIP。WPF 自己按"行"滚时大约是 16~20 DIP 一行，
     /// 取 20 让"一格"的位移和系统原生滚动基本一致。
     /// </summary>
-    private const double PixelsPerLine = 20.0;
+    internal const double PixelsPerLine = 20.0;
+
+    /// <summary>
+    /// <c>--wheeltest</c> 用：把每次像素换算的判据原样记下来。
+    ///
+    /// <para>
+    /// 用户报"一格滚了一页"这类问题时，光看代码分不出是哪一层在滚
+    /// （钩子放行后 WPF 自己滚 / 我们换算的像素 / 内层容器抢走），
+    /// 所以让这条路径自己留痕。
+    /// </para>
+    /// </summary>
+    internal static readonly System.Collections.Concurrent.ConcurrentQueue<string> WheelDiagLog = new();
+
+    /// <summary>打开上面的留痕。默认关 —— 正常滚动时每帧都会过这里，不能白记。</summary>
+    internal static bool WheelDiagOn;
 
     /// <summary>
     /// 页面按像素滚动的入口（挂在 App.xaml 里那条隐式 ScrollViewer 样式上）。
@@ -46,32 +60,87 @@ public partial class App : System.Windows.Application
         if (e.Handled) return;
         if (sender is not ScrollViewer sv) return;
 
+        /* 诊断留痕（--wheeltest 专用）：每一条"为什么不换算 / 换算了多少"都记下来。
+         * 正常使用时 WheelDiagOn 是 false，这里什么都不做。 */
+        void Bypass(string why)
+        {
+            if (WheelDiagOn) WheelDiagLog.Enqueue($"bypass: {why}（delta={e.Delta}）");
+        }
+
         /* 列表类容器（ListBox / ComboBox 下拉）是 CanContentScroll=true，按"项"滚。
          * 对它们换算像素没有意义，直接交回系统。 */
-        if (sv.CanContentScroll) return;
+        if (sv.CanContentScroll) { Bypass("CanContentScroll（按项滚）"); return; }
 
         /* 滚不动就别拦：让事件继续隧道，外层（或系统）接。
          * 这一条同时解决了"页面到底了还吃掉滚轮"的老问题。 */
-        if (sv.ScrollableHeight <= 0) return;
+        if (sv.ScrollableHeight <= 0) { Bypass($"ScrollableHeight={sv.ScrollableHeight}"); return; }
 
         /* Ctrl+滚轮是缩放、Shift+滚轮是横向，都不是我们要管的。 */
-        if ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != 0) return;
+        if ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != 0)
+        { Bypass("Ctrl/Shift 修饰键"); return; }
 
         /* 鼠标正悬在**内层可滚容器**上（比如设置页里的黑名单列表）时让给它。
          * Preview 是隧道、外层先收到，不判断就会把内层的滚动抢过来。 */
-        if (HasInnerScrollable(e.OriginalSource as DependencyObject, sv)) return;
+        if (HasInnerScrollable(e.OriginalSource as DependencyObject, sv)) { Bypass("有内层可滚容器"); return; }
 
         var lines = SystemWheelLines.Current();
-        if (lines <= 0) return;   // -1 = "一次滚一页"，0 = 读不到；都不归我们换算
+        if (lines <= 0) { Bypass($"行数={lines}（≤0 不换算）"); return; }
 
         var px = e.Delta * PixelsPerLine * lines / (double)Native.WHEEL_DELTA;
-        var target = Math.Clamp(sv.VerticalOffset - px, 0, sv.ScrollableHeight);
+        var before = sv.VerticalOffset;
+        var planned = PlanScroll(before, px, sv.ScrollableHeight);
 
-        // 已经在边界上：不标 handled，让事件继续往上走
-        if (Math.Abs(target - sv.VerticalOffset) < 0.5) return;
+        /* 只有"夹过之后还是原地"才叫到边界 —— 那一侧真的没得滚了，
+         * 不标 handled，让事件继续隧道（外层或系统接）。
+         *
+         * ⚠ 这里以前写的是 `Math.Abs(target - before) < 0.5`，把"位移不到半像素"
+         * 也当成了边界。摊帧会把一格拆成 8 帧小 delta，v1.7.1 的零头累积又让尾帧
+         * 出现 delta=1/2/3 这种值（px 只有 0.17~0.5），于是每一格的收尾帧
+         * 全部被判成"在边界上"而放行 —— 而 WPF 的 ScrollViewer 拿到一个事件
+         * 就滚**一整行**（16 px 起步；它缓存的行数若还是 3，就是 48 px）。
+         * 我们辛辛苦苦摊出去 17 px，它一跳就是几十 px，一格直接顶到一页多。
+         * 实测：慢滚一格 offset 跳 784.5 px（视口才 741 px），
+         * 而绕过钩子时同样的一格只滚 20 px（正确值）。
+         *
+         * 现在按"夹过之后有没有动"判：0.33 px 也是位移，ScrollViewer 的
+         * VerticalOffset 是 double，小数照样滚得动。见 <see cref="PlanScroll"/>。 */
+        if (planned == null)
+        {
+            Bypass($"到边界了（offset={before:0.##}，delta={e.Delta}）");
+            return;
+        }
 
-        sv.ScrollToVerticalOffset(target);
+        sv.ScrollToVerticalOffset(planned.Value);
         e.Handled = true;
+
+        if (WheelDiagOn)
+            WheelDiagLog.Enqueue($"px={px:0.##} lines={lines} delta={e.Delta} " +
+                                 $"offset {before:0.##}→{planned.Value:0.##} " +
+                                 $"Δ={planned.Value - before:0.##}");
+    }
+
+    /// <summary>
+    /// 这一下该滚到哪。<c>null</c> = 这一侧真的没得滚了（该放行，让外层或系统接）。
+    ///
+    /// <para>
+    /// 判据只有一条：<b>夹过之后有没有动</b>。到顶 / 到底 / 内容比视口还短时，
+    /// <see cref="Math.Clamp(double,double,double)"/> 会把目标夹回当前值，
+    /// 这时才放行。
+    /// </para>
+    /// <para>
+    /// **不能把"位移小"当成边界。** 摊帧的尾帧只有 1~3 单位（0.17~0.5 px），
+    /// 按位移大小判会把每一格的收尾全部放行给 WPF 原生，而它一个事件就滚一整行
+    /// （16 px 起步）—— 一格直接顶到一页多。这是 v1.7.2 修掉的 bug，
+    /// 判据单独抽成函数，自检可以直接钉住（见 SelfTest）。 </para>
+    /// </summary>
+    internal static double? PlanScroll(double offset, double px, double scrollableHeight)
+    {
+        /* 先把上界夹成非负：ScrollableHeight 理论上是 ExtentHeight - ViewportHeight
+         * （不会为负），但 Math.Clamp 在 min > max 时是抛异常而不是返回，
+         * 而这里正处在滚轮事件的处理链上 —— 抛一次就等于这一次滚动彻底丢掉。 */
+        var max = Math.Max(0, scrollableHeight);
+        var target = Math.Clamp(offset - px, 0, max);
+        return target == offset ? null : target;
     }
 
     /// <summary>
@@ -229,6 +298,31 @@ public partial class App : System.Windows.Application
             var code = SmokeTest();
             Shutdown(code);
             Environment.Exit(code);
+            return;
+        }
+
+        /* 自身窗口滚动实测：`--wheeltest [lines=N]`。
+         *
+         * 用户报"设置页里一格滚了一页 / 加速失效"时，光读代码分不出是哪一层在滚：
+         * 可能是钩子放行后 WPF 自己滚、可能是我们的像素换算、也可能是内层容器抢走。
+         * 这条命令把三条路径分别量出来（位移读自 ScrollViewer.VerticalOffset），
+         * 并让 OnPreviewMouseWheelScroll 把每一条判据写进 wheeltest.txt。 */
+        if (e.Args.Any(a => a.StartsWith("--wheeltest", StringComparison.OrdinalIgnoreCase)))
+        {
+            var lines = 0;
+            foreach (var a in e.Args)
+            {
+                var k = a.IndexOf("lines=", StringComparison.OrdinalIgnoreCase);
+                if (k >= 0 && int.TryParse(a.AsSpan(k + 6), out var v)) lines = v;
+            }
+
+            Services.Init();
+            var wtWin = new MainWindow();
+            wtWin.Show();
+            wtWin.UpdateLayout();
+            var wtCode = WheelTest.Run(wtWin, lines);
+            Shutdown(wtCode);
+            Environment.Exit(wtCode);
             return;
         }
 

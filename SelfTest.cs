@@ -38,6 +38,7 @@ internal static class SelfTest
             TestRounding();
             TestFrameSpreading();
             TestGlide();
+            TestPlanScroll();
             TestFrameRateFollowsDisplay();
             TestVersionCompare();
             TestShaParse();
@@ -1039,6 +1040,51 @@ internal static class SelfTest
         glideOff.Normalize();
         Check("关掉滑行的老配置升级后仍然是关的", glideOff.Smooth.GlideMs == 0,
             glideOff.Smooth.GlideMs.ToString());
+    }
+
+    /// <summary>
+    /// 设置页自己的页面（按像素滚动）的**边界判据**。
+    ///
+    /// <para>
+    /// 这是 v1.7.2 修掉的 bug 的回归防线。以前判据是
+    /// <c>Math.Abs(target - offset) &lt; 0.5</c> —— "位移不到半像素"被当成了
+    /// "到边界了"，于是摊帧的尾帧（delta=1~3 单位，0.17~0.5 px）全部被放行，
+    /// 而 WPF 的 ScrollViewer 拿到一个事件就滚一整行（16 px 起步）。
+    /// 我们摊出去 17 px，它一跳几十 px，一格直接顶到一页多 ——
+    /// 用户看到的就是"设置页里一滚动就是一页"。
+    /// </para>
+    /// <para>
+    /// 实测记录（<c>--wheeltest lines=1</c>，视口 741 px）：
+    /// 修复前单格 784.5 px，修复后 20 px（= 1 行 × 20 px/行，精确）。
+    /// </para>
+    /// </summary>
+    private static void TestPlanScroll()
+    {
+        Section("设置页像素滚动：边界判据");
+
+        /* 核心：小数位移也是位移，ScrollViewer 的 VerticalOffset 是 double。 */
+        Check("0.33 px 的小数位移照常滚（不是边界）",
+            App.PlanScroll(2214, 0.33, 5949) is double t1 && Math.Abs(t1 - 2213.67) < 1e-9,
+            $"得到 {App.PlanScroll(2214, 0.33, 5949):0.####}");
+        Check("摊帧尾帧那种 0.17 px 也滚",
+            App.PlanScroll(1973.5, 0.17, 5949) is double t2 && Math.Abs(t2 - 1973.33) < 1e-9,
+            $"得到 {App.PlanScroll(1973.5, 0.17, 5949):0.####}");
+        Check("一个整像素也滚", App.PlanScroll(1000, 1, 5949) == 999);
+
+        /* 只有"夹过之后没动"才放行。 */
+        Check("到顶了才放行", App.PlanScroll(0, 20, 5949) == null);
+        Check("到底了才放行", App.PlanScroll(5949, -20, 5949) == null);
+        Check("内容比视口还短时放行（ScrollableHeight=0）", App.PlanScroll(0, 20, 0) == null);
+        Check("负的 ScrollableHeight 也放行", App.PlanScroll(0, 20, -5) == null);
+
+        /* 正常路径。 */
+        Check("正常往下滚 20 px", App.PlanScroll(100, -20, 5949) == 120);
+        Check("正常往上滚 20 px", App.PlanScroll(100, 20, 5949) == 80);
+        Check("跨过底部时被夹住（不越界）", App.PlanScroll(5940, -20, 5949) == 5949);
+        Check("跨过顶部时被夹住（不越界）", App.PlanScroll(10, 20, 5949) == 0);
+
+        /* 位移为 0（理论上不会发生，但判据必须自洽）。 */
+        Check("位移为 0 时放行（夹过之后确实没动）", App.PlanScroll(100, 0, 5949) == null);
     }
 
     private static void TestFilter()

@@ -643,7 +643,7 @@ public partial class MainWindow : Window
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
-    private const int HelpTabIndex = 5;
+    internal const int HelpTabIndex = 5;
 
     /// <summary>
     /// 第一次真正打开「帮助」页时再生成内容。
