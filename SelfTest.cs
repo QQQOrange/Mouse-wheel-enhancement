@@ -245,8 +245,8 @@ internal static class SelfTest
         Near("快滚倍率到上限", last.Multiplier, cfg.MaxMultiplier, 0.05);
 
         /* ⑥ 护栏刚过时倍率只放开一部分，不能从 1× 一步窜到上限。
-         *    60 ms 一格（≈16.7 格/秒）：第 3 格过护栏（2 格护栏），
-         *    此时倍率应明显低于上限；再滚两格渐入到顶。 */
+         *    60 ms 一格（≈16.7 格/秒）：第 2 格过护栏（1 格护栏），
+         *    此时倍率应明显低于上限；再滚一格渐入到顶。 */
         t.Reset();
         now = 12000;
         BoostDecision at3 = default, at6 = default, at8 = default;
@@ -259,7 +259,7 @@ internal static class SelfTest
             now += 60;
         }
         Check("护栏刚过时倍率没顶满（渐入）",
-            at3.Multiplier < cfg.MaxMultiplier * 0.8,
+            at3.Multiplier < cfg.MaxMultiplier * 0.9,
             $"第3格 mult={at3.Multiplier:0.00} 上限={cfg.MaxMultiplier:0.0}");
         Check("再滚几格才接近配置倍率",
             at8.Multiplier > at3.Multiplier,
@@ -513,11 +513,11 @@ internal static class SelfTest
         var t = new WheelVelocityTracker();
         var now = 0L;
 
-        /* 起步护栏会吃掉开头几格（2 格护栏 + 2 格渐入；12 ms 一格时还有 70 ms
-         * 的"够久"护栏，实际要 6 格才放开），所以"长期平均倍率"
+        /* 起步护栏会吃掉开头几格（1 格护栏 + 1 格渐入；12 ms 一格时还有 70 ms
+         * 的"够久"护栏，实际要 5~6 格才放开），所以"长期平均倍率"
          * 只能从**预热之后**开始量。那之后的余量累积必须严丝合缝 ——
          * 这正是这条断言原本要守的不变式。 */
-        const int warmup = 8;
+        const int warmup = 6;
         var lead = 0;
         var steady = 0;
         for (var i = 0; i < 100; i++)
@@ -610,7 +610,7 @@ internal static class SelfTest
 
         // ④ 单帧上限：追赶时也不许"一帧跨好几格"
         var burst = ScrollAnimator.FrameAmount(600, 16.7, Tau, Upf, true);
-        Check("单帧不超过 3 个标准帧量（默认 90 单位）", burst <= Upf * 3, $"{burst:0.0} 单位");
+        Check("单帧不超过 4 个标准帧量（默认 120 单位）", burst <= Upf * 4, $"{burst:0.0} 单位");
 
         /* ⑤ 关闭平滑仍然一次发完；**尾段不再被抬成 1 单位**（本轮修复的核心）。
          *
@@ -649,15 +649,16 @@ internal static class SelfTest
                 string.Join("/", seq.TakeLast(10)));
             Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）最后一帧 ≤ 2 单位（结尾不补发）",
                 last <= 2, $"{last} 单位");
-            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）单帧 ≤ 90 单位", maxFrame <= 90, $"{maxFrame} 单位");
+            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）单帧 ≤ 120 单位", maxFrame <= 120, $"{maxFrame} 单位");
         }
 
         /* ⑦ 收尾不砸停：这一组是本轮修复的验收标准。
          *
          * 指标用"末 6 帧的平均速度"（单位/秒）而不是"最后一帧多大"：
          * 砸停的形态是"速度还有 1.3 格/秒，然后突然 0"，关键在**停下来之前的速率**。
-         * 修复前实测 160~264 单位/秒（1.3~2.2 格/秒），现在是 38~51。
-         * 阈值 96 单位/秒（0.8 格/秒）留在两者之间。 */
+         * 修复前实测 160~264 单位/秒（1.3~2.2 格/秒）；v1.7.1 起 38~51；
+         * v1.7.4 落地段加宽（半格 + τ=90）后压到 30 以内。阈值 72 单位/秒
+         * （0.6 格/秒）留在"肉眼读作渐停"和"砸停"之间。 */
         foreach (var (start, fps, glideMs) in new[]
                  {
                      (120.0, 60.0, 100), (120.0, 160.0, 100),
@@ -669,8 +670,8 @@ internal static class SelfTest
             var t95 = TimeToPercent(fr, 0.95);
             var land = (fr.Count == 0 ? 0 : fr[^1].AtMs) - t95;
 
-            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末 6 帧平均速度 ≤ 96 单位/秒（渐停而非砸停）",
-                rate <= 96, $"{rate:0} 单位/秒");
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末 6 帧平均速度 ≤ 72 单位/秒（渐停而非砸停）",
+                rate <= 72, $"{rate:0} 单位/秒");
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：走完 95% 之后仍有 ≥ 40 ms 的落地段",
                 land >= 40, $"{land:0} ms");
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：总量守恒", sent == (int)start, $"{sent}");
@@ -729,7 +730,7 @@ internal static class SelfTest
                 w = w * w * (3 - 2 * w);
                 tau = Tau + (glideTau - Tau) * w;
 
-                /* 落地段：手里不足 1/3 格时把 τ 抬到 LandingTauMs（只减速不加速）。 */
+                /* 落地段：手里不足 1/2 格时把 τ 抬到 LandingTauMs（只减速不加速）。 */
                 if (p < ScrollAnimator.LandingStartUnits)
                 {
                     var k = 1.0 - p / ScrollAnimator.LandingStartUnits;

@@ -58,7 +58,7 @@ internal static class FrameTrace
     /// 内容还在以 1 格/秒以上的速度走，然后一帧之内归零，所以看起来是撞停。
     /// </para>
     /// </summary>
-    private const double MaxTailRateUnits = 96.0;
+    private const double MaxTailRateUnits = 72.0;
 
     public static int Run(string[] args)
     {
@@ -80,7 +80,7 @@ internal static class FrameTrace
             sb.AppendLine(
                 $"　　　滑行 {s.GlideMs:0} ms / 松手判定 {s.GlideDelayMs:0} ms" +
                 $"　积压上限 {s.MaxBacklogUnits:0} 单位　平滑 {(s.SmoothEnabled ? "开" : "关")}");
-            sb.AppendLine($"　　　单帧上限 {s.UnitsPerFrame * 3} 单位（单帧量 × 3）");
+            sb.AppendLine($"　　　单帧上限 {s.UnitsPerFrame * 4} 单位（单帧量 × 4）");
             sb.AppendLine();
 
             if (!s.SmoothEnabled)
@@ -153,7 +153,7 @@ internal static class FrameTrace
             $"差 {sent - total:+#;-#;0} 单位");
 
         /* ③ 单帧上限。连甩时靠它保证"一帧不会跨大半格"。 */
-        var cap = s.UnitsPerFrame * 3;
+        var cap = s.UnitsPerFrame * 4;
         var maxFrame = frames.Max(f => Math.Abs(f.Units));
         fail += Check(sb, $"单帧不超过 {cap} 单位（实测 {maxFrame}）", maxFrame <= cap,
             $"最大单帧 {maxFrame} 单位");

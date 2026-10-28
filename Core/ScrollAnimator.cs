@@ -37,7 +37,7 @@ namespace MouseWheelEnhancement.Core;
 ///   · **松手后** τ 由「滑行时长」反解：<c>τ = GlideMs / ln(积压 / 1)</c>，
 ///     保证到 GlideMs 时只剩最后 1 个单位，自然停住；下限是跟手 τ
 ///     （滑行只能让收尾更慢，不能更快，见 <see cref="GlideTau"/>）；
-///   · **落地段**（手里不足 1/3 格时）τ 平滑抬到 <see cref="LandingTauMs"/>，
+///   · **落地段**（手里不足 1/2 格时）τ 平滑抬到 <see cref="LandingTauMs"/>，
 ///     让最后那几个像素慢慢落地，见下面"收尾为什么会砸停"；
 ///   · 各段之间都用 smoothstep 过渡。**τ 不能一步跳变** ——
 ///     从 45 直接换成 110 会让出帧速率瞬间掉一半，手感就是"咔"一下。
@@ -114,22 +114,35 @@ internal sealed class ScrollAnimator : IDisposable
     /// 把 τ 平滑抬到这个值，让最后几个单位慢慢发完（见主循环里的注释）。
     ///
     /// <para>
-    /// 70 ms 的依据：末段速度 ≈ 剩余量 / τ。剩 2 单位时 2/0.07 ≈ 29 单位/秒
-    /// （0.24 格/秒），在"看起来已经停住"的区间里；同时一个单格滚动的总时长
-    /// 只从 ~140 ms 涨到 ~230 ms，还不至于拖手。
+    /// 70 → 90（v1.7.4）：末段速度 ≈ 剩余量 / τ。剩 2 单位时 2/0.09 ≈ 22 单位/秒
+    /// （0.18 格/秒），在"看起来已经停住"的区间里；同时一个单格滚动的总时长
+    /// 只从 ~230 ms 涨到 ~280 ms，还不至于拖手。70 在 160 Hz 上还偏快：
+    /// 末 6 帧速度 ~51 单位/秒，仍读得出"匀速走一段然后停"。
     /// </para>
     /// </summary>
-    internal const double LandingTauMs = 70.0;
+    internal const double LandingTauMs = 90.0;
 
     /// <summary>
-    /// 从多少剩余量开始进入"落地段"（单位）。取 1/3 格：
-    /// 再早会把正常滚动的中段也拖慢，再晚就只剩两三帧可调。
+    /// 从多少剩余量开始进入"落地段"（单位）。取 1/2 格：
+    /// v1.7.4 从 1/3 格（40）放宽到 60 —— 1/3 格在 8 帧/格 的拆分下只剩 3~4 帧
+    /// 可调，τ 还没抬起来就已经落地；半格给落地段留出 5~8 帧，
+    /// 平滑过渡才有地方发生。再早会把正常滚动的中段也拖慢。
     /// </summary>
-    internal const int LandingStartUnits = Native.WHEEL_DELTA / 3;
+    internal const int LandingStartUnits = Native.WHEEL_DELTA / 2;
 
     /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（ UnitsPerFrame 已含倍率容量，
     /// 见 <see cref="RuntimeSettings.UnitsPerFrameFor"/>）。</summary>
-    private const double MaxCatchUpFactor = 3.0;
+    /// <para>
+    /// 3 → 4（v1.7.4）：用户配置 8 帧/格 × 5× 时单帧量是 75，3 倍上限（225 单位/帧）
+    /// 在 160 Hz 上折合 36000 单位/秒 = 300 格/秒。听着够，但**τ 曲线本身要的
+    /// 峰值**在猛甩时超过它：曲线按"手里还剩多少"给量，积压越大给得越快，
+    /// 反复触顶的形态是「这一帧发满 225 → 下一帧又发满 225」——
+    /// 节奏被拉成等间隔大步，看着就是一段一段的"段落感"。
+    /// 放到 4 倍（300 单位/帧 = 400 格/秒）后曲线峰值不再触顶，出帧回到自然衰减。
+    /// 一帧 300 单位 = 2.5 格，仍在"看得见是连贯滚动"的范围里（旧注释担心的
+    /// "一帧跨好几格"指的是 5+ 格的大跳）。
+    /// </para>
+    private const double MaxCatchUpFactor = 4.0;
 
     private readonly AutoResetEvent _wake = new(false);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -423,7 +436,9 @@ internal sealed class ScrollAnimator : IDisposable
 
         /* 单帧上限：连续甩动时按这个量追赶，不会一帧跨好几格。
          * 追赶期的量本来就不该再大 —— 一帧发出去的位移是"看得见的一跳"，
-         * 超过 3/4 格就会和"手指滚一格"混淆。 */
+         * 超过 2 格多就会和"手指滚一格"混淆。4 倍标准帧量（默认 30 / 用户 75）
+         * 折合 1~2.5 格，在 160 Hz 上每秒最多倒 400 格，曲线峰值不再触顶
+         * （触顶的形态是"发满→等→发满"，读作段落感）。 */
         var cap = Math.Max(1.0, unitsPerFrame * MaxCatchUpFactor);
         if (Math.Abs(emit) > cap) emit = Math.Sign(pendingUnits) * cap;
 
@@ -601,14 +616,14 @@ internal sealed class ScrollAnimator : IDisposable
                         w = w * w * (3 - 2 * w);
                         tau = s.TauMs + (_glideTauMs - s.TauMs) * w;
 
-                        /* ── 落地段：手里已经不到 1/3 格时，把 τ 平滑抬到 LandingTauMs ──
+                        /* ── 落地段：手里已经不到 1/2 格时，把 τ 平滑抬到 LandingTauMs ──
                          *
                          * 这是"结尾砸停"的第二层修法（第一层是零头累积）。
                          * 原因是量化的物理下限：最小可发单位就是 1 单位（约 0.8 px），
                          * 而 τ=30ms 的曲线在剩 5 单位时速度还有 100~160 单位/秒 ——
                          * 最后这 4 px 会在一两帧内冲过去，然后归零，所以看着像撞停。
-                         * 把 τ 抬到 70ms，这 4 px 摊到 ~100ms 里，落到 50 单位/秒左右
-                         * （0.4 格/秒）再结束，人眼读作"慢慢停住"。
+                         * 把 τ 抬到 90ms，这 4 px 摊到 ~120ms 里，落到 20 单位/秒左右
+                         * （0.18 格/秒）再结束，人眼读作"慢慢停住"。
                          *
                          * 只在**松手之后**生效：手还在滚的时候抬 τ 会变成拖影。
                          * Math.Max 保证它只减速、不加速 —— 滑行 τ 本来比它大的时候
