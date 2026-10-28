@@ -111,29 +111,42 @@ public sealed class RuntimeSettings
     private static long _revision;
 
     /// <summary>
-    /// 一帧发多少单位（一格 = 120 单位）。4 帧/格 → 每帧 30 单位。
+    /// 一帧发多少单位（一格 = 120 单位）。<c>120 ÷ 每格拆分 × 倍率容量</c>。
     ///
     /// <para>
     /// 曾经它叫 <c>ScaledUnitsPerFrame</c> 并且要乘"系统行数补偿倍数"（接管方案）。
-    /// 补偿撤掉之后那个参数恒为 1，留着只是噪音，于是直接去掉 ——
-    /// 现在每帧的量就是 <c>120 ÷ 每格帧数</c>，一眼能核对。
+    /// 补偿撤掉之后那个参数恒为 1，于是连着公式一起简化成了 <c>120 ÷ 每格拆分</c>——
+    /// **但那一并删掉了倍率对交付容量的放大，加速从此被单帧上限勒住**（v1.7.3 修）。
+    /// </para>
+    /// <para>
+    /// 为什么必须跟着倍率放大：加速 5× 时一格是 600 单位，而追赶上限是
+    /// <c>单帧量 × 3</c>。单帧量不放大，动画器每秒最多只能倒出
+    /// <c>15 × 3 × 160 = 7200</c> 单位（60 格/秒）；一次 22 格/秒的快滚要的是
+    /// <c>22 × 2.5 = 55</c> 格/秒，一次猛甩（40 格/秒 × 5×）要 200 格/秒 ——
+    /// 超出部分被积压上限**静默截断**，现象就是"倍率读着 5×，实际只快一丁点"。
+    /// 这正是 v1.6.0 的"加速失效"（当年靠补偿倍数间接撑大了容量，
+    /// v1.7.0 撤补偿时把这个不变式一起弄丢了）。
     /// </para>
     /// </summary>
-    public static int UnitsPerFrameFor(int framesPerNotch) =>
-        Math.Max(1, (int)Math.Round(Native.WHEEL_DELTA / (double)Math.Max(1, framesPerNotch)));
+    public static int UnitsPerFrameFor(int framesPerNotch, int boostScale = 1) =>
+        Math.Max(1, (int)Math.Round(
+            Native.WHEEL_DELTA * Math.Max(1, boostScale) / (double)Math.Max(1, framesPerNotch)));
 
     /// <summary>
-    /// 积压上限（单位）。防止连续甩动时越滚越远。
+    /// 积压上限（单位）。<c>格数 × 120 × 倍率容量</c>。
     ///
     /// <para>
     /// 同样曾按补偿倍数放大（叫 <c>ScaledBacklog</c>）：不放大时 5× 加速的 1800 单位
     /// 会被 600 的上限截回 1/3，表现成"加速失效"（v1.6.0 的真实 bug）。
-    /// 补偿撤掉后这个放大倍数恒为 1，公式回到最朴素的一行。
+    /// 补偿撤掉后这个放大倍数恒为 1，公式回到最朴素的一行 —— 也同时把
+    /// "满倍率的一格必须装得进积压"这条不变式弄丢了（v1.7.3 修）。
+    /// </para>
+    /// <para>
     /// 整格模式另有自己的上限，见 <c>ScrollAnimator.PushWholeNotches</c>。
     /// </para>
     /// </summary>
-    public static double BacklogUnitsFor(double maxBacklogNotches) =>
-        Math.Max(1.0, maxBacklogNotches) * Native.WHEEL_DELTA;
+    public static double BacklogUnitsFor(double maxBacklogNotches, int boostScale = 1) =>
+        Math.Max(1.0, maxBacklogNotches) * Native.WHEEL_DELTA * Math.Max(1, boostScale);
 
     public static RuntimeSettings From(AppConfig c)
     {
@@ -163,13 +176,20 @@ public sealed class RuntimeSettings
             }
         }
 
-        /* 这里**没有**任何"补偿倍数"。
+        /* 倍率容量：**加速开着的时候，注入侧的两个"以单位计的边界"都要按倍率上限放大**。
          *
-         * v1.6.x 时代注入侧要乘一个 comp（系统行数从 N 降到 1 之后的补量），
-         * 于是"以单位计的边界"必须跟着放大，否则加速会被积压上限截断。
-         * 接管方案撤掉之后 comp 恒为 1，把这些乘法留在代码里只会让下一个人
-         * 以为"还有一层缩放要考虑"，所以整段删除 —— 现在：
-         *   单帧量 = 120 ÷ 每格帧数，积压上限 = 格数 × 120，就这两条。 */
+         * 这条不变式 v1.6.1 就有（"5× 加速的量必须装得进积压上限"），当年是靠
+         * "系统行数补偿倍数"间接撑大的 —— 补偿恒等于 3，容量也恒等于 3 倍。
+         * v1.7.0 撤掉接管方案时把补偿删了，容量跟着缩回 1 倍，于是：
+         *   · 积压上限还是 5 格（600）→ 满倍率一格就是 600，第二格起全被截断；
+         *   · 单帧量还是 15 → 追赶上限 45，动画器每秒最多倒 7200 单位（60 格/秒），
+         *     猛甩时要 200 格/秒，超出部分被静默丢弃。
+         * 两者都表现为"倍率读着 5×、页面只快一两成"—— 用户报的就是这个（v1.7.3 修）。
+         * 现在按配置里的倍率上限直接放大；关掉加速时容量回到 1 倍，行为与从前一致。 */
+        var boostScale = c.Enabled && c.Boost.Enabled
+            ? (int)Math.Max(1, Math.Round(Math.Max(1, c.Boost.MaxMultiplier)))
+            : 1;
+
         return new RuntimeSettings
         {
             Revision = Interlocked.Increment(ref _revision),
@@ -184,9 +204,9 @@ public sealed class RuntimeSettings
             SmoothAlways = c.Smooth.Scope == SmoothScope.Always,
             FrameIntervalMs = frameMs,
             AutoFps = c.Smooth.AutoFps,
-            UnitsPerFrame = UnitsPerFrameFor(framesPerNotch),
+            UnitsPerFrame = UnitsPerFrameFor(framesPerNotch, boostScale),
             TauMs = c.Smooth.TailTauMs,
-            MaxBacklogUnits = BacklogUnitsFor(c.Smooth.MaxBacklogNotches),
+            MaxBacklogUnits = BacklogUnitsFor(c.Smooth.MaxBacklogNotches, boostScale),
             GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
             IgnoreCtrlAlt = c.Input.IgnoreCtrlAltWheel,

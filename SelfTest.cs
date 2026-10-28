@@ -245,23 +245,28 @@ internal static class SelfTest
         Near("快滚倍率到上限", last.Multiplier, cfg.MaxMultiplier, 0.05);
 
         /* ⑥ 护栏刚过时倍率只放开一部分，不能从 1× 一步窜到上限。
-         *    60 ms 一格（≈16.7 格/秒）：第 4 格过护栏，此时倍率应明显低于上限。 */
+         *    60 ms 一格（≈16.7 格/秒）：第 3 格过护栏（2 格护栏），
+         *    此时倍率应明显低于上限；再滚两格渐入到顶。 */
         t.Reset();
         now = 12000;
-        BoostDecision at4 = default, at8 = default;
+        BoostDecision at3 = default, at6 = default, at8 = default;
         for (var i = 0; i < 8; i++)
         {
             var dd = t.Sample(120, now, cfg, false, false);
-            if (i == 3) at4 = dd;
+            if (i == 2) at3 = dd;
+            if (i == 5) at6 = dd;
             if (i == 7) at8 = dd;
             now += 60;
         }
         Check("护栏刚过时倍率没顶满（渐入）",
-            at4.Multiplier < cfg.MaxMultiplier * 0.8,
-            $"第4格 mult={at4.Multiplier:0.00} 上限={cfg.MaxMultiplier:0.0}");
+            at3.Multiplier < cfg.MaxMultiplier * 0.8,
+            $"第3格 mult={at3.Multiplier:0.00} 上限={cfg.MaxMultiplier:0.0}");
         Check("再滚几格才接近配置倍率",
-            at8.Multiplier > at4.Multiplier,
+            at8.Multiplier > at3.Multiplier,
             $"第8格 mult={at8.Multiplier:0.00}");
+        Check("渐入两格内到位（第 6 格已接近满倍率）",
+            at6.Multiplier >= at8.Multiplier - 0.05,
+            $"第6格 {at6.Multiplier:0.00} / 第8格 {at8.Multiplier:0.00}");
 
         /* ⑦ dt 下限：两个"同一毫秒"到达的事件不该算出 1000 格/秒这种没有物理意义的数。 */
         t.Reset();
@@ -366,18 +371,17 @@ internal static class SelfTest
         Check("整格模式：5 格分 5 帧发完，总量不差", sent == 600 && frames == 5,
             $"发出 {sent} / {frames} 帧");
 
-        /* ── 补偿层已彻底删除（v1.7.1）──
+        /* ── 注入边界：单帧量与积压上限必须装得下「加速之后的量」 ──
          *
-         * v1.6.x 的"接管系统行数"要成立，注入量就得乘一个补偿倍数，
-         * 于是这两个"以单位计的边界"必须跟着放大 —— 也就有了一整套缩放公式。
-         * 补偿撤掉之后这些公式的参数恒为 1，索性整套删掉：
-         * 现在单帧量和积压上限都只有一条最朴素的算式，能一眼核对。
-         *
-         * 这里断言的是"删除之后仍然成立的不变式"：
+         * 这条不变式 v1.6.1 就有，当年靠"系统行数补偿倍数"间接兑现（补偿恒为 3，
+         * 容量也恒为 3 倍）。v1.7.0 撤掉接管方案时把补偿删了，容量跟着缩回 1 倍，
+         * 满倍率一格（5× = 600 单位）正好顶到积压上限，猛甩时超出部分被静默截断 ——
+         * 用户看到的"倍率读着 5×、页面只快一两成"就是这么来的（v1.7.3 修）。
+         * 现在容量按配置的倍率上限放大，这里把三条不变式钉死：
          * ① 帧数 × 单帧量 ≈ 一格（摊帧不丢量）；
-         * ② 加速量能整块进积压（不会被上限截断，那正是 v1.6.0 的"加速失效"）；
+         * ② 满倍率的一格必须整块装得进积压（否则就是 v1.6.0 的"加速失效"）；
          * ③ 整格模式的单次投递上限容得下满倍率（否则 8× 会悄悄变成 5 格）。 */
-        Section("注入边界（补偿删除后只剩朴素算式）");
+        Section("注入边界（容量随倍率放大）");
 
         Check("单帧量 = 120 ÷ 每格帧数（4 帧 → 30）", RuntimeSettings.UnitsPerFrameFor(4) == 30);
         Check("8 帧/格 → 每帧 15", RuntimeSettings.UnitsPerFrameFor(8) == 15);
@@ -387,11 +391,42 @@ internal static class SelfTest
         Check("积压上限 = 格数 × 120（5 格 → 600）", RuntimeSettings.BacklogUnitsFor(5.0) == 600);
         Check("1 格 → 120", RuntimeSettings.BacklogUnitsFor(1.0) == 120);
 
-        /* ② 3× 加速 = 360 单位，默认 5 格的积压上限必须整块装得下。
-         *    装不下就是 v1.6.0 那个"加速失效"（被截回一部分）。 */
-        Check("3× 加速（360 单位）不会被积压上限截断",
-            360 <= RuntimeSettings.BacklogUnitsFor(5.0),
-            $"上限 {RuntimeSettings.BacklogUnitsFor(5.0)}");
+        /* ② 倍率容量：5× 加速的一格是 600 单位，5 格上限必须整块装得下
+         *    （装不下就是 v1.6.0 那个"加速失效"：被截回一部分，还没处查）。 */
+        Check("5× 加速的一格（600 单位）不会被积压上限截断",
+            5 * 120 <= RuntimeSettings.BacklogUnitsFor(5.0, 5),
+            $"上限 {RuntimeSettings.BacklogUnitsFor(5.0, 5)}");
+        Check("8× 加速的一格（960 单位）也装得下",
+            8 * 120 <= RuntimeSettings.BacklogUnitsFor(5.0, 8),
+            $"上限 {RuntimeSettings.BacklogUnitsFor(5.0, 8)}");
+        Check("倍率容量同时放大单帧量（8 帧/格 × 5× → 75）",
+            RuntimeSettings.UnitsPerFrameFor(8, 5) == 75);
+        Check("关掉加速时容量回到 1 倍（行为与从前一致）",
+            RuntimeSettings.UnitsPerFrameFor(8, 1) == 15
+            && RuntimeSettings.BacklogUnitsFor(5.0, 1) == 600);
+
+        /* 用真实配置端到端验一遍：用户那份（阈值 10 / 饱和 39 / 上限 5× /
+         * 8 帧每格）烘焙出来的快照，容量必须按 5× 放大。 */
+        var realCfg = AppConfig.Default();
+        realCfg.Boost.Enabled = true;
+        realCfg.Boost.MaxMultiplier = 5;
+        realCfg.Smooth.FramesPerNotch = 8;
+        realCfg.Smooth.MaxBacklogNotches = 5;
+        var real = RuntimeSettings.From(realCfg);
+        Check("真实配置（5× / 5 格）积压上限 = 3000 单位",
+            Math.Abs(real.MaxBacklogUnits - 3000) < 1e-9, $"实际 {real.MaxBacklogUnits}");
+        Check("真实配置单帧量 = 75（8 帧/格 × 5×）", real.UnitsPerFrame == 75,
+            $"实际 {real.UnitsPerFrame}");
+
+        /* 关掉加速：容量回到 1 倍，和从前的行为完全一致。 */
+        var noBoost = AppConfig.Default();
+        noBoost.Boost.Enabled = false;
+        noBoost.Boost.MaxMultiplier = 5;
+        var off = RuntimeSettings.From(noBoost);
+        Check("关掉加速后容量不放大（5 格 → 600）",
+            Math.Abs(off.MaxBacklogUnits - 600) < 1e-9, $"实际 {off.MaxBacklogUnits}");
+        Check("关掉加速后单帧量 = 120 ÷ 帧数", off.UnitsPerFrame == 30,
+            $"实际 {off.UnitsPerFrame}");
 
         /* ③ 整格模式：一次投满 16 档（1920 单位）也不能被普通上限吃掉。 */
         Check("整格模式单次投递上限容得下满倍率（16 档 > 5 格上限）",
@@ -478,7 +513,8 @@ internal static class SelfTest
         var t = new WheelVelocityTracker();
         var now = 0L;
 
-        /* 起步护栏会吃掉开头几格（3 格护栏 + 3 格渐入），所以"长期平均倍率"
+        /* 起步护栏会吃掉开头几格（2 格护栏 + 2 格渐入；12 ms 一格时还有 70 ms
+         * 的"够久"护栏，实际要 6 格才放开），所以"长期平均倍率"
          * 只能从**预热之后**开始量。那之后的余量累积必须严丝合缝 ——
          * 这正是这条断言原本要守的不变式。 */
         const int warmup = 8;

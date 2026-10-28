@@ -141,22 +141,37 @@ internal static class WheelTest
                 sb.AppendLine($"   向下 #{i + 1}：{before:0.##} → {after:0.##}（Δ{after - before:0.##} px）");
             }
 
-            /* ── ③ 快滚：倍率应当兑现成位移 ── */
+            /* ── ③ 快滚：倍率应当兑现成位移 ──
+             *
+             * 这一段量的是用户真正关心的事："我拨得越快，页面是不是真的滚得越多"。
+             * 按几档常见手速各打一段 8 格，位移除以「8 × 单格位移」就是**兑现倍率**；
+             * 再和钩子读到的倍率对照 —— 两者差得远，说明量在动画器里被截断了
+             * （v1.6.0 的"加速失效"、v1.7.3 修的回归，都是这个症状）。 */
             sb.AppendLine();
-            sb.AppendLine("③ 外来签名 + 连续快滚 8 格（45 ms 间隔）：");
-            var b3 = sv.VerticalOffset;
-            var clock = Stopwatch.StartNew();
-            for (var i = 0; i < 8; i++)
+            sb.AppendLine("③ 不同手速下的倍率兑现（每段 8 格，往下滚）：");
+            var baseline = single.Count == 0 ? 0 : single.Max(Math.Abs);
+            var delivered = new List<double>();
+            foreach (var gap in new[] { 150, 100, 70, 45 })
             {
-                InputInjector.SendWheelWith(-Native.WHEEL_DELTA, ForeignSig);
-                var due = 45 * (i + 1);
-                while (clock.ElapsedMilliseconds < due) Thread.Sleep(0);
+                ScrollToTop(sv, baseline);
+                var before3 = sv.VerticalOffset;
+                var d = RunBurst(sv, 8, gap);
+                var ratio = baseline > 0 ? d / (8 * baseline) : 0;
+                delivered.Add(ratio);
+                sb.AppendLine($"   {gap,3} ms/格（{1000.0 / gap,4:0.#} 格/秒）：" +
+                              $"{before3:0.##} → {sv.VerticalOffset:0.##}（Δ{d:0.##} px）" +
+                              $" → 兑现 {ratio:0.00}×，钩子读数 {Services.Engine.LastMultiplier:0.00}×");
             }
-            Pump(900);                       // 等动画器把积压发完
-            var after3 = sv.VerticalOffset;
-            sb.AppendLine($"   8 格：{b3:0.##} → {after3:0.##}（Δ{after3 - b3:0.##} px），" +
-                          $"倍率读数 {Services.Engine.LastMultiplier:0.00}×，" +
-                          $"钩子接管 {Services.Engine.BoostedCount} 次");
+
+            /* ③b 持续猛甩：16 格 @35 ms。这段专治"积压上限截断"——
+             *     需求是 16 × 满倍率，动画器每秒最多倒 60 格/秒（修前），
+             *     超出的部分被静默丢掉，表现为"读着 5×、只快一两成"。 */
+            ScrollToTop(sv, baseline);
+            var beforeS = sv.VerticalOffset;
+            var dS = RunBurst(sv, 16, 35);
+            var ratioS = baseline > 0 ? dS / (16 * baseline) : 0;
+            sb.AppendLine($"   持续猛甩 16 格 @35 ms：Δ{dS:0.##} px → 兑现 {ratioS:0.00}×" +
+                          $"，钩子读数 {Services.Engine.LastMultiplier:0.00}×");
 
             /* ── ④ 判定 ── */
             sb.AppendLine();
@@ -184,6 +199,28 @@ internal static class WheelTest
             sb.AppendLine($"{(bypass == 0 ? "✓" : "⚠")} 像素换算被绕过的次数：{bypass}" +
                           $"（>0 说明事件没有走 OnPreviewMouseWheelScroll）");
 
+            /* ④ 兑现判定：倍率必须变成位移。
+             *    · 随速度单调不减 —— 慢滚不加速、快滚明显更快；
+             *    · 最快档 ≥ 1.5×、持续猛甩 ≥ 2.0× —— 被积压上限截断的老毛病
+             *      （v1.6.0 / v1.7.3 回归）在这个档位上现形：修前分别只有
+             *      1.68× 和 1.8×，而配置里写的是 5×。 */
+            var monoOk = true;
+            for (var i = 1; i < delivered.Count; i++)
+                if (delivered[i] < delivered[i - 1] - 0.05) monoOk = false;
+            sb.AppendLine($"{(monoOk ? "✓" : "✗")} 兑现倍率随速度单调不减" +
+                          $"（{string.Join(" → ", delivered.ConvertAll(r => $"{r:0.00}×"))}）");
+            if (!monoOk) fail = 6;
+
+            var fastOk = delivered.Count == 0 || delivered[^1] >= 1.5;
+            sb.AppendLine($"{(fastOk ? "✓" : "✗")} 最快档（45 ms/格）兑现 {delivered[^1]:0.00}×" +
+                          $"（≥1.5×；不足说明量被动画器截断）");
+            if (!fastOk) fail = 7;
+
+            var sustainOk = ratioS >= 2.0;
+            sb.AppendLine($"{(sustainOk ? "✓" : "✗")} 持续猛甩兑现 {ratioS:0.00}×" +
+                          $"（≥2.0×；修前只有 ~1.8×，就是「加速失效」）");
+            if (!sustainOk) fail = 8;
+
             sb.AppendLine();
             sb.AppendLine($"像素换算调用明细（共 {App.WheelDiagLog.Count} 条，最多列 40 条）：");
             var shown = 0;
@@ -210,7 +247,7 @@ internal static class WheelTest
         return fail;
     }
 
-    /// <summary>等待 <paramref name="ms"/> 毫秒，期间把消息泵干 —— 否则注入的滚轮事件没人处理。</summary>
+    /// <summary>等待 <paramref="ms"/> 毫秒，期间把消息泵干 —— 否则注入的滚轮事件没人处理。</summary>
     private static void Pump(int ms)
     {
         var frame = new DispatcherFrame();
@@ -218,6 +255,37 @@ internal static class WheelTest
         timer.Tick += (s, e) => { frame.Continue = false; timer.Stop(); };
         timer.Start();
         Dispatcher.PushFrame(frame);
+    }
+
+    /// <summary>
+    /// 打一段快滚：<paramref="notches"/> 格、每格间隔 <paramref="intervalMs"/> 毫秒，
+    /// 返回这段的位移（px）。等 900 ms 让动画器把积压发完再量。
+    /// </summary>
+    private static double RunBurst(ScrollViewer sv, int notches, int intervalMs)
+    {
+        var before = sv.VerticalOffset;
+        var clock = Stopwatch.StartNew();
+        for (var i = 0; i < notches; i++)
+        {
+            InputInjector.SendWheelWith(-Native.WHEEL_DELTA, ForeignSig);
+            var due = intervalMs * (i + 1);
+            while (clock.ElapsedMilliseconds < due) Thread.Sleep(0);
+        }
+        Pump(900);
+        return sv.VerticalOffset - before;
+    }
+
+    /// <summary>
+    /// 把帮助页滚回顶（用自有签名注入，钩子不接管、直接按像素滚，一步一格）。
+    /// 每档手速测试前都调一次，保证每段都有足够的滚动空间。
+    /// </summary>
+    private static void ScrollToTop(ScrollViewer sv, double pxPerNotch)
+    {
+        if (sv.VerticalOffset <= 0.5) return;
+        var need = (int)Math.Ceiling(sv.VerticalOffset / Math.Max(1.0, pxPerNotch)) + 2;
+        for (var i = 0; i < need; i++)
+            InputInjector.SendWheelWith(Native.WHEEL_DELTA, InputInjector.Signature);
+        Pump(400);
     }
 
     /// <summary>外来签名：钩子会当成"用户的真滚轮"处理（和 smoke 用的是同一个值）。</summary>

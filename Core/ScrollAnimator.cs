@@ -79,8 +79,12 @@ namespace MouseWheelEnhancement.Core;
 ///
 /// # 单帧上限
 ///
-/// <c>UnitsPerFrame × 3</c>（默认 90 单位 = 3/4 格）。连续甩动导致积压很大时，
-/// 最多按这个量追赶，不会出现"一帧跨三格"的瞬移；追不上的部分在推送侧截断
+/// <c>UnitsPerFrame × 3</c>。<see cref="RuntimeSettings.UnitsPerFrame"/> 里已经含着
+/// **倍率容量**（加速 5× 时它是 75 而不是 15）—— 不这样的话，动画器每秒最多只能
+/// 倒出 7200 单位（60 格/秒），猛甩时要的量是它的三倍多，超出部分被积压上限
+/// 静默截断，倍率就"读着 5×、只快一两成"（v1.7.3 修，就是 v1.6.0 的老毛病
+/// 换了个样子回来）。连续甩动导致积压很大时，最多按这个量追赶，
+/// 不会出现"一帧跨三格"的瞬移；追不上的部分在推送侧截断
 /// （见 <see cref="Push"/>），宁可少滚一点，也不要跳一下。
 ///
 /// # 无锁
@@ -123,7 +127,8 @@ internal sealed class ScrollAnimator : IDisposable
     /// </summary>
     internal const int LandingStartUnits = Native.WHEEL_DELTA / 3;
 
-    /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（默认 90 单位 = 3/4 格）。</summary>
+    /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（ UnitsPerFrame 已含倍率容量，
+    /// 见 <see cref="RuntimeSettings.UnitsPerFrameFor"/>）。</summary>
     private const double MaxCatchUpFactor = 3.0;
 
     private readonly AutoResetEvent _wake = new(false);
@@ -302,10 +307,11 @@ internal sealed class ScrollAnimator : IDisposable
     ///
     /// <para>
     /// 单独开一个入口，是因为整格模式的一次投递是"不可切分的一坨"：
-    /// 8× 加速就是 8 档（960 单位）。用普通积压上限（默认 5 格 = 600）去截它，
+    /// 8× 加速就是 8 档（960 单位）。用普通积压上限去截它，
     /// 结果是"8× 加速只滚了 5 格"—— 悄悄少滚，用户只会觉得倍率没生效。
     /// 这个坑 v1.5.x 就踩过一次（那时是靠补偿把上限放大绕过去的，补偿撤掉后
-    /// 必须在这里正面解决）。
+    /// 必须在这里正面解决）。普通上限现在也含倍率容量了（v1.7.3），
+    /// 但 16 档的硬上限仍可能超过它，所以这个入口保留自己的兜底。
     /// </para>
     /// <para>
     /// 档数本身有上限（<see cref="MaxWholeNotches"/>），所以这里给出的上限是安全的：

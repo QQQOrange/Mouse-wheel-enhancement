@@ -25,7 +25,16 @@ public readonly record struct BoostDecision(
 public sealed class WheelVelocityTracker
 {
     /// <summary>速度平滑的时间常数（毫秒）。越小越"跟手"，越大越稳。</summary>
-    private const double RateTauMs = 70.0;
+    ///
+    /// <para>
+    /// 50 ms 的由来：一次快滚的格子间隔是 25~80 ms，τ 取 50 意味着**两格之内**
+    /// 速度估计就接近真实值（70 ms 时要三四格）。护栏本身已经吃掉开头几格，
+    /// 估计还慢三四格的话，等倍率爬起来这一次拨动已经结束了 —— 实测表现为
+    /// "14 格/秒的拨动只兑现 1.1×"（v1.7.3 从 70 收到 50）。
+    /// 代价是节奏不匀时倍率会轻微起伏，但倍率是乘在动画器队列上的，
+    /// 摊帧本身会把这种起伏抹平。
+    /// </para>
+    private const double RateTauMs = 50.0;
 
     /// <summary>间隔超过这么久就认为上一段甩动已经结束，速度清零重算。</summary>
     private const double BurstGapMs = 400.0;
@@ -57,21 +66,27 @@ public sealed class WheelVelocityTracker
     private const double BurstJoinMs = 120.0;
 
     /// <summary>
-    /// 起步护栏：一段连续滚动的**前 3 格**一律不加速，只做平滑。
+    /// 起步护栏：一段连续滚动的**前 2 格**一律不加速，只做平滑。
     ///
     /// <para>
     /// 这是"轻轻滚一下却整页翻过去"的正解。轻轻一拨在物理上是 1~2 个事件、
     /// 间隔可能只有 10 ms —— 按"格/秒"口径算出来是 100 格/秒以上，
-    /// 越不越阈值根本不由手感决定。而真实连续滚动**至少**要滚五六格、
-    /// 持续一两百毫秒，所以"前几格不加速"能把抖动和真滚动彻底分开，
-    /// 代价只是快滚起步慢一两格（约 50 ms，基本无感）。
+    /// 越不越阈值根本不由手感决定。所以"够长"这条按 2 格卡：主观上的"一下"
+    /// 到这儿为止，再往后的滚动至少是用户在连续拨。
+    /// </para>
+    /// <para>
+    /// 从 3 格收到 2 格（v1.7.3）：实测一次快滚通常只有 5~8 格，3 格护栏 +
+    /// 3 格渐入意味着**前 6 格都不加速**，等倍率爬起来拨动已经结束 ——
+    /// "8 格 @45 ms 的快滚只兑现 1.68×"就是这么来的。防抖的真正主力是
+    /// 下面的 <see cref="WarmupMs"/>（持续不到 70 ms 的抖动爆发一律不加速），
+    /// 格数护栏只负责"一两下"这种最常见的误触，2 格足够。
     /// </para>
     /// <para>
     /// 刻意做成常量而不是配置项：这是防抖，不是手感。做成开关，
     /// 用户把它关掉就又回到"轻轻一拨翻一页"。
     /// </para>
     /// </summary>
-    private const int WarmupUnits = Native.WHEEL_DELTA * 3;
+    private const int WarmupUnits = Native.WHEEL_DELTA * 2;
 
     /// <summary>
     /// 起步护栏的第二条：一段滚动至少要持续这么久才允许加速。
@@ -84,14 +99,15 @@ public sealed class WheelVelocityTracker
     private const double WarmupMs = 70.0;
 
     /// <summary>
-    /// 护栏结束后，倍率不是立刻放开，而是在接下来 3 格里从 1× 线性爬到正常倍率。
+    /// 护栏结束后，倍率不是立刻放开，而是在接下来 2 格里从 1× 线性爬到正常倍率。
     ///
     /// <para>
-    /// 没有这一层的话，第 4 格会从 1× 直接跳到 5×（因为护栏期间速度一直在累计），
-    /// 手感就是"前三格好好的、第四格突然窜出去"。
+    /// 没有这一层的话，第 3 格会从 1× 直接跳到上限（因为护栏期间速度一直在累计），
+    /// 手感就是"前两格好好的、第三格突然窜出去"。2 格是"看得见是渐入"的下限：
+    /// 一次快滚总共才 5~8 格，渐入占 3 格的话一半的拨动都在爬坡（v1.7.3 从 3 收到 2）。
     /// </para>
     /// </summary>
-    private const int RampUnits = Native.WHEEL_DELTA * 3;
+    private const int RampUnits = Native.WHEEL_DELTA * 2;
 
     private double _ratePerSec;
     private long _lastMs = -1;
@@ -174,7 +190,7 @@ public sealed class WheelVelocityTracker
         /* ③ 起步护栏：一段滚动必须**同时**满足「够长」和「够久」才允许加速。
          *
          *    两条都要，是因为它们各自挡掉一类假信号：
-         *      · 够长（> 3 格）—— 挡"一拨就散成好几个事件"的抖动；
+         *      · 够长（> 2 格）—— 挡"一拨就散成好几个事件"的抖动；
          *      · 够久（> 70 ms）—— 挡"格数多但全挤在一瞬间"的驱动拆分。
          *        有的鼠标一次拨动会连发五六个 delta=120，格数看起来够了，
          *        但整段只有二三十毫秒 —— 那是解码器的抖动，不是人在滚。
@@ -187,8 +203,8 @@ public sealed class WheelVelocityTracker
         /* ④ 曲线：阈值以下倍率恰好 1.0（交给系统），之后 smoothstep 爬到上限。 */
         var mult = MultiplierFor(_ratePerSec, cfg);
 
-        /* ④b 护栏刚过：倍率只放开一部分，再滚 3 格才到配置值。
-         *     没有这一层，第 4 格会从 1× 直接窜到上限 —— 因为护栏期间速度一直在累计。 */
+        /* ④b 护栏刚过：倍率只放开一部分，再滚 2 格才到配置值。
+         *     没有这一层，第 3 格会从 1× 直接窜到上限 —— 因为护栏期间速度一直在累计。 */
         var open = Math.Clamp((_burstUnits - WarmupUnits) / (double)RampUnits, 0, 1);
         mult = 1.0 + (mult - 1.0) * open;
 
