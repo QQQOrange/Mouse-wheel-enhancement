@@ -24,8 +24,10 @@ namespace MouseWheelEnhancement;
 ///
 /// <para>
 /// 断言（任一条不过 → 退出码非 0）：① 首帧不超过 8 单位；② 总量守恒；
-/// ③ 单帧不超过 <c>UnitsPerFrame × 3</c>；④ 末尾不回升（曲线单调收尾）；
-/// ⑤ 能停下来（不残留积压）。
+/// ③ 单帧不超过 <c>UnitsPerFrame × 4</c>；④ 末尾不回升（曲线单调收尾）；
+/// ④b 末帧间隔 ≤ 70 ms（最后一帧不拖）；④c 落地段 ≤ 150 ms（收尾不拖）；
+/// ④d 中段步长起伏 ≤ 3.5×（不一顿一顿）；⑤ 能停下来（不残留积压）；
+/// ⑥ 末 6 帧平均速度 ≤ 72 单位/秒。
 /// </para>
 /// </summary>
 internal static class FrameTrace
@@ -59,6 +61,31 @@ internal static class FrameTrace
     /// </para>
     /// </summary>
     private const double MaxTailRateUnits = 72.0;
+
+    /// <summary>
+    /// 相邻两次发送之间的最大间隔（毫秒）。
+    ///
+    /// <para>
+    /// 用户报的"每次滚完最后一下，真的有一种延迟"，形态就是收尾的最后 1~2 单位
+    /// 拖到 80~94 ms 后才发 —— 像"页面已经停了，又偷偷补了一点"。70 ms 在
+    /// 500 Hz（2 ms）到 60 Hz（16.7 ms）之间都足够宽松，但拦得住那种"最后一帧拖走"。
+    /// </para>
+    /// </summary>
+    private const double MaxFrameGapMs = 70.0;
+
+    /// <summary>走完 95% 之后到最后一帧之间最多再花多久（毫秒）——"落地段"的长度。</summary>
+    private const double MaxLandMs = 150.0;
+
+    /// <summary>
+    /// 中段步长起伏上限（最大 / 中位）。
+    ///
+    /// <para>
+    /// 帮助页按 δ=1/2/3 摊帧时每帧是 0.5 / 1.0 / 1.5 px，长时间卡在 1 单位
+    /// 再突然来一发 3 单位，观感就是"刻度感 / 一顿一顿"。上限 3.5 允许
+    /// "首帧大、后面小"的正常指数衰减，拦得住"1,1,1,1,3,1,1,1,1,3"那种台阶。
+    /// </para>
+    /// </summary>
+    private const double MaxStepiness = 3.5;
 
     public static int Run(string[] args)
     {
@@ -167,6 +194,53 @@ internal static class FrameTrace
         fail += Check(sb, $"末尾不回升（最大回升 {Math.Max(0, rebound)} 单位，≤ 1 算连续）", rebound <= 1,
             "末尾 " + string.Join(" ", tail));
 
+        /* ④b **最后一帧别拖**：相邻两次发送的间隔不能越来越离谱。
+         *
+         * 用户原话："每次滚完最后一下，真的有一种延迟"。形态是收尾的最后 1~2 单位
+         * 要等 80~94 ms 才发（v1.7.4 实测），像"页面已经停了，又偷偷补了一点"。
+         * 阈值 70 ms：比最高刷新率（500 Hz = 2 ms）宽得多，但远小于人手能察觉的
+         * "刚才好像还动了一下"。 */
+        var gaps = new List<double>();
+        for (var i = 1; i < frames.Count; i++)
+            gaps.Add(frames[i].AtMs - frames[i - 1].AtMs);
+        var maxGap = gaps.Count == 0 ? 0 : gaps.Max();
+        fail += Check(sb, $"末帧间隔 {maxGap:0.#} ms（≤ {MaxFrameGapMs:0}，最后一帧不拖）",
+            maxGap <= MaxFrameGapMs, $"最大间隔 {maxGap:0.##} ms");
+
+        /* ④c **收尾别拖**：从"已经走完 95%"到"最后一帧"不该超过 150 ms。
+         * 单格滚动 390 ms 里有 180 ms 在磨最后 5% —— 那一段用户读作"延迟"。 */
+        var t95 = TimeToPercent(frames, 0.95);
+        var landMs = frames.Count == 0 ? 0 : frames[^1].AtMs - t95;
+        fail += Check(sb, $"走完 95% 后落地段 {landMs:0} ms（≤ {MaxLandMs:0}，收尾不拖）",
+            landMs <= MaxLandMs, $"{landMs:0} ms");
+
+        /* ④d **刻度感**：中段的步长不该大起大落。
+         *
+         * **窗口用进度（20%~80%）而不是时间**：用时间窗（t95*0.4 ~ last*0.9）
+         * 会把整段衰减尾巴扫进来 —— 大部分 1 单位小步 + 一两个 16/31 单位的开头，
+         * max/median 自然算到 5~6×，但那是**指数衰减的自然形态**，不是用户报的
+         * "刻度感 / 一顿一顿"。用户报的是"长时间卡在 1 单位再突然来一发 3 单位"，
+         * 应该看**中段**（20%~80% 进度）的步长，那里最大/中位实测 1.7~1.8×，
+         * 阈值 3.5 允许首帧大、后面小的正常衰减。 */
+        var totalUnits = frames.Sum(f => Math.Abs(f.Units));
+        var acc = 0.0;
+        var progUnits = new List<int>();
+        foreach (var f in frames)
+        {
+            acc += Math.Abs(f.Units);
+            if (acc >= totalUnits * 0.20 && acc <= totalUnits * 0.80)
+                progUnits.Add(Math.Abs(f.Units));
+        }
+        progUnits.Sort();
+        double stepiness = 1.0;
+        if (progUnits.Count >= 3)
+        {
+            var median = progUnits[progUnits.Count / 2];
+            stepiness = progUnits.Max() / Math.Max(1.0, median);
+        }
+        fail += Check(sb, $"中段步长起伏 {stepiness:0.0}×（≤ {MaxStepiness:0.#}，不一顿一顿）",
+            stepiness <= MaxStepiness, $"最大/中位 = {stepiness:0.00}");
+
         /* ⑤ 收得住：不该留下尾巴一直慢慢爬。 */
         fail += Check(sb, $"能停下来（{drainMs:0} ms 内发完）", drainMs > 0 && drainMs < 4000,
             $"{drainMs:0} ms 后仍在发");
@@ -185,9 +259,25 @@ internal static class FrameTrace
         sb.AppendLine("  前 6 帧：" + Describe(frames.Take(6)));
         sb.AppendLine("  末 6 帧：" + Describe(frames.Skip(Math.Max(0, frames.Count - 6))));
         sb.AppendLine($"  共 {frames.Count} 帧，用时 {drainMs:0} ms，最大单帧 {maxFrame} 单位，" +
-                      $"末段速度 {tailRate:0} 单位/秒");
+                      $"末段速度 {tailRate:0} 单位/秒，落地段 {landMs:0} ms");
         sb.AppendLine();
         return fail;
+    }
+
+    /// <summary>累计位移到 <paramref name="percent"/> 的时刻（毫秒）。</summary>
+    private static double TimeToPercent(List<Frame> frames, double percent)
+    {
+        if (frames.Count == 0) return 0;
+        var total = frames.Sum(f => Math.Abs(f.Units));
+        if (total <= 0) return 0;
+        var want = total * percent;
+        var acc = 0.0;
+        foreach (var f in frames)
+        {
+            acc += Math.Abs(f.Units);
+            if (acc >= want) return f.AtMs;
+        }
+        return frames[^1].AtMs;
     }
 
     /// <summary>

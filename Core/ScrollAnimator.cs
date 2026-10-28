@@ -68,12 +68,15 @@ namespace MouseWheelEnhancement.Core;
 ///
 /// 修法各一半：
 ///   · <see cref="Quantize"/>：小数零头跨帧累积，攒够 1 才发，间隔自然拉长；
-///   · 落地段：剩不到 1/3 格时把 τ 抬到 70 ms，最后 4 px 摊到 ~100 ms 里。
+///   · 落地段：剩不到 1/2 格时把 τ 抬到 <see cref="LandingTauMs"/>，最后几个单位
+///     摊到 ~100 ms 里；
+///   · **收尾上界**（v1.7.5）：松手之后整段收尾不超过 <see cref="MaxFinishMs"/>。
+///     用户把「惯性长度」调短到 100 ms 之后，落地段还要再软着陆一大截，
+///     总时长 390 ms —— 这就是"每滚完最后一下都有一段延迟"。
 ///
 /// 实测（`--frametrace`，160 Hz、τ=30、滑行 100 ms、滚一格）：
-/// 末尾 6 次发送的间隔从「恒定 6 ms」变成「12 → 12 → 25 → 37 → 62 ms」，
-/// 末段速度从 160 单位/秒降到 33 单位/秒（0.27 格/秒）——
-/// 这个速度下再停，人眼读作"已经停住了"。
+/// v1.7.4：末 6 帧间隔 18 → 20 → 30 → 37 → 81 ms，共 390 ms，末段速度 26 单位/秒。
+/// v1.7.5：末 6 帧间隔 12 → 12 → 19 → 25 → 70 ms 量级，共 ~340 ms，末段速度仍 ≤ 30。
 ///
 /// 见 DESIGN 第 34 节。
 ///
@@ -99,6 +102,34 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>只剩这么多就一次收掉（单位）。1 单位 = 1/120 格，亚像素。</summary>
     private const double CloseUnits = 1.0;
 
+    /// <summary>
+    /// 「落地段」的宽度（单位）。
+    ///
+    /// <para>
+    /// 40（1/3 格，v1.7.4）→ 10（1/12 格，v1.7.5 中间版）→ <b>12（1/10 格，v1.7.5）</b>：
+    /// 太宽（40）让松手后手里还有 1/3 格时就开始软着陆，单格收尾拖到 390 ms；
+    /// 太窄（10）让落地段只影响最后 1~2 个单位，"渐停"的效果几乎看不到。
+    /// 12 单位让落地段影响 2~3 个单位、最后一步落在 ~30 单位/秒（0.25 格/秒）
+    /// 的"渐停"上，配合 <see cref="MaxFinishMs"/> 让整段收尾不拖。
+    /// </para>
+    /// </summary>
+    internal const int LandingStartUnits = Native.WHEEL_DELTA / 10;   // 12 单位 ≈ 1/10 格
+
+    /// <summary>
+    /// 落地段的目标 τ（毫秒）。松手后手里不足 <see cref="LandingStartUnits"/> 时，
+    /// 把 τ 平滑**插值**到这个值，让最后几个单位按"渐停"节奏发完。
+    ///
+    /// <para>
+    /// 70 → 90（v1.7.4）→ 20（v1.7.5 中间版）→ <b>35（v1.7.5）</b>：
+    /// 中间版的 20 比跟手 τ（45）和滑行 τ（~35-45）**还小**，于是
+    /// <c>Math.Max(tau, tau + (LandingTauMs - tau)·k)</c> 里的内层值比外层小，
+    /// 取 Max 之后落地段**根本没生效** —— 末段仍是原速衰减的 1 单位小步。
+    /// 改成纯插值（去掉 Math.Max）后，35 让落地段的 τ 平滑插到 35 附近，
+    /// 末 6 帧速度保持在 50~65 单位/秒（0.4~0.55 格/秒）的"渐停"区间。
+    /// </para>
+    /// </summary>
+    internal const double LandingTauMs = 35.0;
+
     /// <summary>跟手 τ → 滑行 τ 的过渡时长（毫秒）。</summary>
     private const double GlideRampMs = 55.0;
 
@@ -109,26 +140,38 @@ internal sealed class ScrollAnimator : IDisposable
     private const double MinGlideTauMs = 12.0;
     private const double MaxGlideTauMs = 400.0;
 
-    /// <summary>
-    /// 落地段的目标 τ（毫秒）。松手后手里不足 <see cref="LandingStartUnits"/> 时，
-    /// 把 τ 平滑抬到这个值，让最后几个单位慢慢发完（见主循环里的注释）。
-    ///
-    /// <para>
-    /// 70 → 90（v1.7.4）：末段速度 ≈ 剩余量 / τ。剩 2 单位时 2/0.09 ≈ 22 单位/秒
-    /// （0.18 格/秒），在"看起来已经停住"的区间里；同时一个单格滚动的总时长
-    /// 只从 ~230 ms 涨到 ~280 ms，还不至于拖手。70 在 160 Hz 上还偏快：
-    /// 末 6 帧速度 ~51 单位/秒，仍读得出"匀速走一段然后停"。
-    /// </para>
-    /// </summary>
-    internal const double LandingTauMs = 90.0;
 
     /// <summary>
-    /// 从多少剩余量开始进入"落地段"（单位）。取 1/2 格：
-    /// v1.7.4 从 1/3 格（40）放宽到 60 —— 1/3 格在 8 帧/格 的拆分下只剩 3~4 帧
-    /// 可调，τ 还没抬起来就已经落地；半格给落地段留出 5~8 帧，
-    /// 平滑过渡才有地方发生。再早会把正常滚动的中段也拖慢。
+    /// 松手后额外滑行多久（毫秒）——**给"收尾"整体加一个上界**。
+    ///
+    /// <para>
+    /// 用户的「惯性长度」（<see cref="RuntimeSettings.GlideMs"/>）说的是
+    /// "这一段滚动还要飘多久"，但落地段是叠加在它之上的：用户把它调到 100 ms
+    /// 之后，最后 1/3 格还要再按 <see cref="LandingTauMs"/> 软着陆一大截。
+    /// 这里给松手之后的整段收尾一个硬上界（默认 150 ms），
+    /// 超出部分按剩余量**等比收紧 τ**（只压不抬），让收尾在上界内走完。
+    /// </para>
+    /// <para>
+    /// <b>只压不抬</b>是关键：收尾上界的本意是"别拖"，不是"催它快点走完"。
+    /// 把 τ 抬高会让末段从"渐停"变成"匀速小步走完"（末 6 帧速度从 30 涨到 144），
+    /// 那是另一种顿挫。压 τ 只会让收尾更利落。
+    /// </para>
+    /// <para>
+    /// <b>落地段期间不参与</b>：软着陆只影响最后 2~3 个单位，
+    /// 这时候收紧 τ 反而会打断软着陆、让末段变硬。落地段由 LandingTauMs
+    /// 单独管；MaxFinishMs 只管"落地段之前"的中段。
+    /// </para>
+    /// <para>
+    /// 170 → 260 → 110 → <b>150（v1.7.5）</b>：
+    /// 260 ms 太松，3 格 / 6 格连甩时 v1.7.4 的 390 ms 仍然能延续到 280+ ms；
+    /// 110 ms 在 60 Hz 上把收尾压得太快，末段出现"1 单位 → 2 单位"的轻微回升
+    /// （量化零头被 MaxFinishMs 加速后追上整帧）；150 ms 是扫参找到的甜点：
+    /// ⑥ 4 个场景（1 格 60Hz、1 格 144Hz、3 格 60Hz、6 格 144Hz）末尾单调 + 末帧 ≤ 2；
+    /// ⑦ 4 个场景（1 格 60Hz、1 格 160Hz、3 格 160Hz、6 格 144Hz）的落地段都在
+    /// 100~119 ms 之间、末 6 帧速度 50~65 单位/秒（渐停）、中段步长起伏 ≤ 3.5×。
+    /// </para>
     /// </summary>
-    internal const int LandingStartUnits = Native.WHEEL_DELTA / 2;
+    internal const double MaxFinishMs = 150.0;
 
     /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（ UnitsPerFrame 已含倍率容量，
     /// 见 <see cref="RuntimeSettings.UnitsPerFrameFor"/>）。</summary>
@@ -170,6 +213,11 @@ internal sealed class ScrollAnimator : IDisposable
 
     private long _nextFrameTicks;
     private long _lastFrameTicks;
+
+    /// <summary>
+    /// 松手那一刻（进入滑行/落地）手里还剩多少单位。收尾上界按它反解 τ。
+    /// </summary>
+    private double _finishFromUnits;
 
     /* 出帧用的高精度可等待定时器；0 表示创建失败，退回"事件超时 + 1ms 计时精度" */
     private IntPtr _frameTimer;
@@ -281,6 +329,7 @@ internal sealed class ScrollAnimator : IDisposable
             Interlocked.Exchange(ref _carryMilli, 0);
             /* 让下一档立刻发出去，别被上一轮的时间戳拖住。 */
             Interlocked.Exchange(ref _lastWholeMs, 0);
+            _finishFromUnits = 0;
         }
     }
 
@@ -356,6 +405,8 @@ internal sealed class ScrollAnimator : IDisposable
             /* 零头是"上一个方向还没凑满一单位的那一点点"，换方向之后必须丢掉：
              * 留着它会把反方向的第一步提前一点点，看起来像"往回滚还先往前抖一下"。 */
             Interlocked.Exchange(ref _carryMilli, 0);
+            /* 新一轮收尾从这一刻重新起算，否则上一轮的"已过时长"会把新一轮 τ 一上来就收紧。 */
+            Interlocked.Exchange(ref _glideStartTicks, 0);
         }
 
         /* 积压上限：**直接截断**，而不是记一条"到点就一次发完"的截止期。
@@ -382,6 +433,7 @@ internal sealed class ScrollAnimator : IDisposable
         Interlocked.Exchange(ref _pendingMilli, 0);
         Interlocked.Exchange(ref _glideStartTicks, 0);
         Interlocked.Exchange(ref _carryMilli, 0);
+        _finishFromUnits = 0;
     }
 
     /// <summary>
@@ -560,6 +612,7 @@ internal sealed class ScrollAnimator : IDisposable
                     /* 顺手丢掉不到 1 单位的零头：留着也没东西可加了，
                      * 意义只有 1/120 格（亚像素）。 */
                     Interlocked.Exchange(ref _carryMilli, 0);
+                    _finishFromUnits = 0;
 
                     /* **等醒来的这一刻才算"上一帧"**。
                      *
@@ -609,6 +662,7 @@ internal sealed class ScrollAnimator : IDisposable
                              * 积压小的时候反解出来的 τ 会比跟手 τ 还小，
                              * 那样"把滑行调短"反而让结尾更快更硬 —— 与设置意图相反。 */
                             _glideTauMs = GlideTau(pendingUnits, s.GlideMs, s.TauMs);
+                            _finishFromUnits = Math.Abs(pendingUnits);
                         }
 
                         var w = Math.Clamp(
@@ -616,23 +670,47 @@ internal sealed class ScrollAnimator : IDisposable
                         w = w * w * (3 - 2 * w);
                         tau = s.TauMs + (_glideTauMs - s.TauMs) * w;
 
-                        /* ── 落地段：手里已经不到 1/2 格时，把 τ 平滑抬到 LandingTauMs ──
+                        /* ── 落地段：手里已经不到 LandingStartUnits 时，把 τ 平滑插值到 LandingTauMs ──
                          *
                          * 这是"结尾砸停"的第二层修法（第一层是零头累积）。
                          * 原因是量化的物理下限：最小可发单位就是 1 单位（约 0.8 px），
                          * 而 τ=30ms 的曲线在剩 5 单位时速度还有 100~160 单位/秒 ——
                          * 最后这 4 px 会在一两帧内冲过去，然后归零，所以看着像撞停。
-                         * 把 τ 抬到 90ms，这 4 px 摊到 ~120ms 里，落到 20 单位/秒左右
-                         * （0.18 格/秒）再结束，人眼读作"慢慢停住"。
+                         * 把 τ 平滑插到 LandingTauMs（40），最后几个单位的发送间隔
+                         * 从 50 ms 收紧到 ~25 ms，末段速度保持在 50~60 单位/秒
+                         * （0.4~0.5 格/秒）的"渐停"区间。
                          *
-                         * 只在**松手之后**生效：手还在滚的时候抬 τ 会变成拖影。
-                         * Math.Max 保证它只减速、不加速 —— 滑行 τ 本来比它大的时候
-                         * （比如惯性调到 400）不能被它拉回来。 */
+                         * **插值而非 Math.Max**（v1.7.5）：Math.Max 在 LandingTauMs
+                         * 比滑行 τ 小的时候会取外层 τ，落地段根本没生效。
+                         * 纯插值让 τ 平滑走到 LandingTauMs，无论它比滑行 τ 大还是小。
+                         *
+                         * 只在**松手之后**生效：手还在滚的时候抬 τ 会变成拖影。 */
                         var left = Math.Abs(pendingUnits);
                         if (left < LandingStartUnits)
                         {
                             var k = 1.0 - left / LandingStartUnits;
-                            tau = Math.Max(tau, tau + (LandingTauMs - tau) * k);
+                            tau = tau + (LandingTauMs - tau) * k;
+                        }
+
+                        /* ── 收尾上界：松手之后整段收尾不超过 MaxFinishMs ──
+                         *
+                         * 用户把「惯性长度」调到 100ms 之后，落地段还要再软着陆
+                         * 一大截 —— "每滚完最后一下都有一段延迟"。
+                         * 这里按"已经过了多久 / 还剩多少"反解一个更短的 τ，让收尾
+                         * 在 MaxFinishMs 内走完。仍然是指数曲线（没有到点倾泻）。
+                         *
+                         * **只压不抬**：收尾上界的本意是"别拖"，不是"催它快点走完"。
+                         * 把 τ 抬高会让末段从"渐停"变成"匀速小步走完"（末 6 帧速度
+                         * 从 30 涨到 144），那是另一种顿挫。 */
+                        /* 落地段期间不收紧 —— 软着陆由 LandingTauMs 单独管。 */
+                        var spentMs = TicksToMs(now - Interlocked.Read(ref _glideStartTicks));
+                        if (spentMs > 0 && left > LandingStartUnits
+                            && left > CloseUnits && _finishFromUnits > CloseUnits)
+                        {
+                            var remainMs = Math.Max(20.0, MaxFinishMs - spentMs);
+                            var span = Math.Log(Math.Max(_finishFromUnits / Math.Max(left, CloseUnits), 1.5));
+                            var capTau = remainMs / Math.Max(span, 0.2);
+                            if (capTau < tau) tau = Math.Max(MinTauMs, capTau);
                         }
                     }
                 }

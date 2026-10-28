@@ -257,7 +257,7 @@ public sealed class AppBehaviorConfig
 public sealed class AppConfig
 {
     /// <summary>配置结构版本，用于将来的迁移。</summary>
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 5;
 
     /// <summary>功能总开关（托盘和界面都能切）。</summary>
     public bool Enabled { get; set; } = true;
@@ -336,7 +336,21 @@ public sealed class AppConfig
             SchemaVersion = 4;
         }
 
-        SchemaVersion = Math.Max(4, SchemaVersion);
+        /* ── v5 迁移：按 δ=1/2/3 摊帧时像素台阶太明显（"刻度感"）──
+         *
+         * 帮助页把 δ 换算成像素（δ=1 → 0.5 px，δ=2 → 1.0 px，δ=3 → 1.5 px），
+         * 1/2/3 帧/格 的拆分下中段长时间是 +0.5 px、再来一发 +1.0 px，观感是一顿一顿。
+         * 4 帧/格 时每帧是 2.5 px 的整倍数，步长恒定，帮助页才读得出连续推进。
+         * **只把 ≤3 的抬到 4**（1 / 2 / 3 实际上会踩像素台阶），
+         * 4~8 一律保持用户原值 —— 用户自己调到 8 帧/格（0.25 px 的亚像素步长）
+         * 正是为了避开 0.5 px 的台阶，不能被无声覆盖。 */
+        if (SchemaVersion < 5)
+        {
+            if (Smooth.FramesPerNotch <= 3) Smooth.FramesPerNotch = 4;
+            SchemaVersion = 5;
+        }
+
+        SchemaVersion = Math.Max(5, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* ── 删掉 `smooth.wheelLines` 这个键 ──

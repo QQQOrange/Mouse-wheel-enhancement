@@ -53,6 +53,12 @@ public sealed class RuntimeSettings
     /// <summary>停止输入多久算"松手"。</summary>
     public double GlideDelayMs { get; init; }
 
+    /// <summary>
+    /// 倍率容量（配置里的倍率上限取整，至少 1）。动画器的两个"以单位计的边界"
+    /// 都按它放大，速度判定的取整余量上限也跟着它 —— 见 <see cref="UnitsPerFrameFor"/>。
+    /// </summary>
+    public int BoostScale { get; init; } = 1;
+
     public bool IgnoreCtrlAlt { get; init; }
     public bool IgnoreShift { get; init; }
     public bool InvertDirection { get; init; }
@@ -209,6 +215,7 @@ public sealed class RuntimeSettings
             MaxBacklogUnits = BacklogUnitsFor(c.Smooth.MaxBacklogNotches, boostScale),
             GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
+            BoostScale = boostScale,
             IgnoreCtrlAlt = c.Input.IgnoreCtrlAltWheel,
             IgnoreShift = c.Input.IgnoreShiftWheel,
             InvertDirection = c.Input.InvertDirection,

@@ -263,7 +263,7 @@ public sealed class WheelEngine : IDisposable
             var nowMs = Environment.TickCount64;
             var decision = _tracker.Sample(delta, nowMs,
                 s.BoostEnabled ? s.BoostView : NoBoostView,
-                s.InvertDirection, s.EnhancePrecisionInput);
+                s.InvertDirection, s.EnhancePrecisionInput, s.BoostScale);
 
             Interlocked.Increment(ref _events);
             Volatile.Write(ref _lastRate, decision.RatePerSec);

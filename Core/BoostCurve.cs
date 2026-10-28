@@ -143,6 +143,13 @@ public sealed class WheelVelocityTracker
     }
 
     /// <summary>
+    /// 取整余量的上限（单位）。跟着倍率容量走 —— 见 <see cref="Sample"/> 的
+    /// <c>boostScale</c> 参数。抽成静态方法是为了让自检能直接钉住。
+    /// </summary>
+    public static int ResidualLimitFor(int boostScale) =>
+        Native.WHEEL_DELTA * Math.Max(1, boostScale);
+
+    /// <summary>
     /// 处理一次滚轮事件。
     /// </summary>
     /// <param name="deltaUnits">原始 delta（一格 = 120，向上为正）。</param>
@@ -150,7 +157,13 @@ public sealed class WheelVelocityTracker
     /// <param name="cfg">倍率相关配置。</param>
     /// <param name="invert">是否反转方向（只影响输出符号）。</param>
     /// <param name="precisionInputAllowed">是否允许增强高精度输入（delta &lt; 120 的那种）。</param>
-    public BoostDecision Sample(int deltaUnits, long nowMs, BoostConfig cfg, bool invert, bool precisionInputAllowed)
+    /// <param name="boostScale">
+    /// 倍率容量（配置里的倍率上限取整）。**动画器的两个"以单位计的边界"都按它放大**，
+    /// 这里的取整余量上限也跟着它 —— 否则 5× 的余量被夹在 ±120，兑现倍率
+    /// 长期只到 4.3× 左右（v1.7.5 修）。
+    /// </param>
+    public BoostDecision Sample(int deltaUnits, long nowMs, BoostConfig cfg, bool invert,
+        bool precisionInputAllowed, int boostScale = 1)
     {
         if (deltaUnits == 0) return new BoostDecision(false, 1, _ratePerSec, 0);
 
@@ -221,13 +234,18 @@ public sealed class WheelVelocityTracker
             return new BoostDecision(false, 1, _ratePerSec, deltaUnits);
 
         /* ⑤ 取整带余量：1.37× 的倍率不该每次都四舍五入成同一个值。
-         *    余量累积到下一次，长期平均正好等于配置的倍率。 */
+         *    余量累积到下一次，长期平均正好等于配置的倍率。
+         *
+         *    余量上限跟着倍率容量走：5× 时一格的理想量是 600，余量夹在 ±120
+         *    会把"每次差 0.4 格、下一次补回"的节奏压成"每次都少一点"，
+         *    兑现倍率长期到不了配置值（v1.7.5 修）。 */
         var ideal = deltaUnits * mult + _residualUnits;
         var outUnits = (int)Math.Round(ideal, MidpointRounding.AwayFromZero);
         if (outUnits == 0) outUnits = sign;                    // 至少给一格方向，别让事件凭空消失
         if (Math.Abs(outUnits) < Native.WHEEL_DELTA && Math.Abs(deltaUnits) >= Native.WHEEL_DELTA)
             outUnits = sign * Native.WHEEL_DELTA;              // 至少原样一格，绝不"加速后反而变小"
-        _residualUnits = Math.Clamp(ideal - outUnits, -Native.WHEEL_DELTA, Native.WHEEL_DELTA);
+        var resLimit = ResidualLimitFor(boostScale);
+        _residualUnits = Math.Clamp(ideal - outUnits, -resLimit, resLimit);
 
         if (invert) outUnits = -outUnits;
         return new BoostDecision(true, mult, _ratePerSec, outUnits);

@@ -417,6 +417,12 @@ internal static class SelfTest
             Math.Abs(real.MaxBacklogUnits - 3000) < 1e-9, $"实际 {real.MaxBacklogUnits}");
         Check("真实配置单帧量 = 75（8 帧/格 × 5×）", real.UnitsPerFrame == 75,
             $"实际 {real.UnitsPerFrame}");
+        Check("真实配置的倍率容量 = 5", real.BoostScale == 5, real.BoostScale.ToString());
+        Check("取整余量上限跟着倍率容量（5× → 600）",
+            WheelVelocityTracker.ResidualLimitFor(5) == 600,
+            WheelVelocityTracker.ResidualLimitFor(5).ToString());
+        Check("关掉加速时余量上限回到 120", WheelVelocityTracker.ResidualLimitFor(1) == 120,
+            WheelVelocityTracker.ResidualLimitFor(1).ToString());
 
         /* 关掉加速：容量回到 1 倍，和从前的行为完全一致。 */
         var noBoost = AppConfig.Default();
@@ -652,13 +658,17 @@ internal static class SelfTest
             Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）单帧 ≤ 120 单位", maxFrame <= 120, $"{maxFrame} 单位");
         }
 
-        /* ⑦ 收尾不砸停：这一组是本轮修复的验收标准。
+        /* ⑦ 收尾不砸停 + 不拖：这一组是本轮修复的验收标准。
          *
          * 指标用"末 6 帧的平均速度"（单位/秒）而不是"最后一帧多大"：
          * 砸停的形态是"速度还有 1.3 格/秒，然后突然 0"，关键在**停下来之前的速率**。
          * 修复前实测 160~264 单位/秒（1.3~2.2 格/秒）；v1.7.1 起 38~51；
          * v1.7.4 落地段加宽（半格 + τ=90）后压到 30 以内。阈值 72 单位/秒
-         * （0.6 格/秒）留在"肉眼读作渐停"和"砸停"之间。 */
+         * （0.6 格/秒）留在"肉眼读作渐停"和"砸停"之间。
+         *
+         * 同时钉住"最后一帧不拖"和"落地段不长"：用户报的
+         * "每次滚完最后一下，真的有一种延迟"，形态是收尾的最后 1~2 单位拖到
+         * 80~94 ms 才发、走完 95% 之后还要再磨 180 ms。 */
         foreach (var (start, fps, glideMs) in new[]
                  {
                      (120.0, 60.0, 100), (120.0, 160.0, 100),
@@ -669,12 +679,25 @@ internal static class SelfTest
             var rate = TailRate(fr, 6);
             var t95 = TimeToPercent(fr, 0.95);
             var land = (fr.Count == 0 ? 0 : fr[^1].AtMs) - t95;
+            var maxGap = MaxFrameGap(fr);
 
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末 6 帧平均速度 ≤ 72 单位/秒（渐停而非砸停）",
                 rate <= 72, $"{rate:0} 单位/秒");
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：走完 95% 之后仍有 ≥ 40 ms 的落地段",
                 land >= 40, $"{land:0} ms");
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：落地段 ≤ 150 ms（收尾不拖）",
+                land <= 150, $"{land:0} ms");
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末帧间隔 ≤ 70 ms（最后一帧不拖）",
+                maxGap <= 70, $"{maxGap:0.#} ms");
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：总量守恒", sent == (int)start, $"{sent}");
+
+            /* 中段步长起伏：进度窗口 20%~80%。和 frametrace ④d 同口径。
+             * 时间窗（t95*0.4 ~ last*0.9）会把衰减尾巴扫进来，
+             * max/median 自然算到 5~6×，但那是指数衰减的自然形态，
+             * 不是用户报的"刻度感 / 一顿一顿"。 */
+            var stepiness = MidStepiness(fr);
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：中段步长起伏 ≤ 3.5×（不一顿一顿）",
+                stepiness <= 3.5, $"最大/中位 = {stepiness:0.00}");
         }
 
         // ⑧ 参数默认值与夹取
@@ -730,11 +753,29 @@ internal static class SelfTest
                 w = w * w * (3 - 2 * w);
                 tau = Tau + (glideTau - Tau) * w;
 
-                /* 落地段：手里不足 1/2 格时把 τ 抬到 LandingTauMs（只减速不加速）。 */
-                if (p < ScrollAnimator.LandingStartUnits)
+                /* 落地段：手里不足 LandingStartUnits 时把 τ 平滑**插值**到 LandingTauMs。
+                 * v1.7.5 起用纯插值（不再 Math.Max）—— LandingTauMs 比滑行 τ 小的时候
+                 * Math.Max 会让落地段失效。 */
+                var inLanding = p < ScrollAnimator.LandingStartUnits;
+                if (inLanding)
                 {
                     var k = 1.0 - p / ScrollAnimator.LandingStartUnits;
-                    tau = Math.Max(tau, tau + (ScrollAnimator.LandingTauMs - tau) * k);
+                    tau = tau + (ScrollAnimator.LandingTauMs - tau) * k;
+                }
+
+                /* 收尾上界：松手之后整段收尾不超过 MaxFinishMs（v1.7.5）。
+                 * 与 ScrollAnimator 主循环完全一致，否则这里测的就不是线上跑的那条路径。
+                 * 落地段期间不收紧 —— 软着陆由 LandingTauMs 单独管。 */
+                if (glideStart >= 0 && start > 1 && !inLanding)
+                {
+                    var spent = t - glideStart;
+                    if (spent > 0)
+                    {
+                        var remainMs = Math.Max(20.0, ScrollAnimator.MaxFinishMs - spent);
+                        var span = Math.Log(Math.Max(start / Math.Max(p, 1.0), 1.5));
+                        var capTau = remainMs / Math.Max(span, 0.2);
+                        if (capTau < tau) tau = Math.Max(6.0, capTau);
+                    }
                 }
             }
 
@@ -782,6 +823,16 @@ internal static class SelfTest
         return tail.Skip(1).Sum(f => Math.Abs(f.Units)) / (span / 1000.0);
     }
 
+    /// <summary>相邻两次发送之间的最大间隔（毫秒）—— 量"最后一帧拖不拖"。</summary>
+    private static double MaxFrameGap(List<SimFrame> fr)
+    {
+        if (fr.Count < 2) return 0;
+        var max = 0.0;
+        for (var i = 1; i < fr.Count; i++)
+            max = Math.Max(max, fr[i].AtMs - fr[i - 1].AtMs);
+        return max;
+    }
+
     /// <summary>走到总位移的 <paramref name="pct"/> 时用了多少毫秒。</summary>
     private static double TimeToPercent(List<SimFrame> fr, double pct)
     {
@@ -794,6 +845,28 @@ internal static class SelfTest
             if (acc >= total * pct) return f.AtMs;
         }
         return fr[^1].AtMs;
+    }
+
+    /// <summary>
+    /// 中段步长起伏：进度 20%~80% 的最大步长 / 中位步长。
+    /// 与 frametrace ④d 同口径 —— 时间窗会把衰减尾巴扫进来、测出假的"刻度感"。
+    /// </summary>
+    private static double MidStepiness(List<SimFrame> fr)
+    {
+        if (fr.Count < 3) return 1.0;
+        var total = fr.Sum(f => Math.Abs(f.Units));
+        if (total <= 0) return 1.0;
+        var acc = 0;
+        var mid = new List<int>();
+        foreach (var f in fr)
+        {
+            acc += Math.Abs(f.Units);
+            if (acc >= total * 0.20 && acc <= total * 0.80)
+                mid.Add(Math.Abs(f.Units));
+        }
+        if (mid.Count < 3) return 1.0;
+        mid.Sort();
+        return mid.Max() / Math.Max(1.0, mid[mid.Count / 2]);
     }
 
     /// <summary>末尾 <paramref name="n"/> 帧是否单调不增（允许 ±1 的舍入抖动）。</summary>
@@ -1032,7 +1105,7 @@ internal static class SelfTest
         legacy.Normalize();
         Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
         // v1 的配置会一路迁移到当前版本（v2 自排除 + v3 平滑范围 + v4 滑行语义）
-        Check("迁移后 schemaVersion 记为当前版本 4", legacy.SchemaVersion == 4, legacy.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为当前版本 5", legacy.SchemaVersion == 5, legacy.SchemaVersion.ToString());
 
         // 已经是 v2 之后，用户自己打开就不再被覆盖
         var kept = AppConfig.Default();
@@ -1051,7 +1124,7 @@ internal static class SelfTest
         scope2.Normalize();
         Check("v2 老配置的平滑范围被纠正为所有滚动", scope2.Smooth.Scope == SmoothScope.Always,
             scope2.Smooth.Scope.ToString());
-        Check("迁移后 schemaVersion 记为 4", scope2.SchemaVersion == 4, scope2.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为 5", scope2.SchemaVersion == 5, scope2.SchemaVersion.ToString());
 
         // v3 之后用户自己选回「仅加速时」不再被覆盖
         var keptScope = AppConfig.Default();
@@ -1069,7 +1142,7 @@ internal static class SelfTest
         oldGlide.Normalize();
         Check("v3 老配置的滑行时长换算成新默认值", oldGlide.Smooth.GlideMs == 300,
             oldGlide.Smooth.GlideMs.ToString());
-        Check("v4 迁移后 schemaVersion 记为 4", oldGlide.SchemaVersion == 4, oldGlide.SchemaVersion.ToString());
+        Check("v4 迁移后 schemaVersion 记为 5", oldGlide.SchemaVersion == 5, oldGlide.SchemaVersion.ToString());
 
         var glideOff = AppConfig.Default();
         glideOff.SchemaVersion = 3;
@@ -1077,6 +1150,41 @@ internal static class SelfTest
         glideOff.Normalize();
         Check("关掉滑行的老配置升级后仍然是关的", glideOff.Smooth.GlideMs == 0,
             glideOff.Smooth.GlideMs.ToString());
+
+        /* ── v4 → v5 的迁移：像素台阶（"刻度感"）──
+         * 帮助页把 δ 换算成像素时，1/2/3 帧/格 会踩 0.5 px 的像素台阶。
+         * 一次性把 ≤3 的旧值抬到 4；用户自己调到 4~8 的一律保持原值
+         * （用户靠 8 帧/格 的 0.25 px 亚像素步长来避开 0.5 px 台阶，不能覆盖）。 */
+        var oldFrames = AppConfig.Default();
+        oldFrames.SchemaVersion = 4;
+        oldFrames.Smooth.FramesPerNotch = 8;
+        oldFrames.Normalize();
+        Check("v4 老配置的 8 帧/格 不被改动", oldFrames.Smooth.FramesPerNotch == 8,
+            oldFrames.Smooth.FramesPerNotch.ToString());
+        Check("v5 迁移后 schemaVersion 记为 5", oldFrames.SchemaVersion == 5,
+            oldFrames.SchemaVersion.ToString());
+
+        var oldFrames6 = AppConfig.Default();
+        oldFrames6.SchemaVersion = 4;
+        oldFrames6.Smooth.FramesPerNotch = 6;
+        oldFrames6.Normalize();
+        Check("v4 老配置的 6 帧/格 不被改动", oldFrames6.Smooth.FramesPerNotch == 6,
+            oldFrames6.Smooth.FramesPerNotch.ToString());
+
+        var oldFrames3 = AppConfig.Default();
+        oldFrames3.SchemaVersion = 4;
+        oldFrames3.Smooth.FramesPerNotch = 3;
+        oldFrames3.Normalize();
+        Check("v4 老配置的 3 帧/格 被抬到 4（消掉像素台阶）",
+            oldFrames3.Smooth.FramesPerNotch == 4, oldFrames3.Smooth.FramesPerNotch.ToString());
+
+        // v5 之后用户自己选回 8 帧/格 不再被覆盖
+        var keptFrames = AppConfig.Default();
+        keptFrames.SchemaVersion = 5;
+        keptFrames.Smooth.FramesPerNotch = 8;
+        keptFrames.Normalize();
+        Check("v5 之后用户选回 8 帧/格 不再被覆盖", keptFrames.Smooth.FramesPerNotch == 8,
+            keptFrames.Smooth.FramesPerNotch.ToString());
     }
 
     /// <summary>
