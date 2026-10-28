@@ -33,8 +33,32 @@ internal static class FrameTrace
     /// <summary>一帧的记录。<paramref name="AtMs"/> 是相对"按下滚轮"那一刻的毫秒数。</summary>
     private readonly record struct Frame(int Units, double AtMs, double DtMs, double TauMs);
 
-    /// <summary>首帧允许的最大量。1 单位 = 1/120 格，8 单位 ≈ 0.067 格，肉眼是亚像素。</summary>
-    private const int MaxFirstFrameUnits = 8;
+    /// <summary>
+    /// 首个**发出去**的帧允许的最大量。
+    ///
+    /// <para>
+    /// 取整改成"零头累积"之后，第 1 个循环帧（dt≈0.2ms）通常什么都不发，
+    /// 真正第一次发送发生在第 2 帧（约 6ms），发的是曲线本身那一步（一格约 19%，
+    /// 也就是 20 出头）。所以这个上限从 8 放宽到 30（1/4 格）——
+    /// 它现在只兜"一次性甩出大半格"这种明显异常；陈旧 dt 那个老 bug 由
+    /// <see cref="MaxFirstDtMs"/> 单独钉住，那个判据更直接。
+    /// </para>
+    /// </summary>
+    private const int MaxFirstFrameUnits = 30;
+
+    /// <summary>首帧的 dt 上限（毫秒）。线程从长睡里醒来时，第一帧的 dt 不能是"睡了多久"。</summary>
+    private const double MaxFirstDtMs = 20.0;
+
+    /// <summary>
+    /// 末 6 个发帧的平均速度上限（单位/秒）。
+    ///
+    /// <para>
+    /// **这就是"结尾砸停"的度量。** 0.8 格/秒 ≈ 80 px/s，比它更慢的收尾人眼读作
+    /// "已经停住了"。修复前实测 160~264 单位/秒（1.3~2.2 格/秒）——
+    /// 内容还在以 1 格/秒以上的速度走，然后一帧之内归零，所以看起来是撞停。
+    /// </para>
+    /// </summary>
+    private const double MaxTailRateUnits = 96.0;
 
     public static int Run(string[] args)
     {
@@ -112,10 +136,16 @@ internal static class FrameTrace
 
         var fail = 0;
 
-        /* ① 首帧。这是整个开关存在的理由：旧代码这里会是几十个单位。 */
+        /* ① 首个发帧。这是整个开关存在的理由（旧代码一醒来就发 45 单位）。 */
         var first = Math.Abs(frames[0].Units);
-        fail += Check(sb, $"首帧只有 {first} 单位（≤ {MaxFirstFrameUnits}）", first <= MaxFirstFrameUnits,
-            $"首帧 {first} 单位，dt {frames[0].DtMs:0.##} ms");
+        fail += Check(sb, $"首个发帧 {first} 单位（≤ {MaxFirstFrameUnits}）", first <= MaxFirstFrameUnits,
+            $"首个发帧 {first} 单位，dt {frames[0].DtMs:0.##} ms");
+
+        /* ①b 更直接的那条：首帧的 dt 不能是"线程睡了多久"。
+         * 旧代码在等之前就记时间，睡几分钟后醒来 dt 被夹到 50ms，
+         * 于是开头先跳大半格 —— 断言 dt 本身就够了，不用依赖取整方式。 */
+        fail += Check(sb, $"首帧 dt {frames[0].DtMs:0.#} ms ≤ {MaxFirstDtMs:0} ms（不是陈旧 dt）",
+            frames[0].DtMs <= MaxFirstDtMs, $"{frames[0].DtMs:0.##} ms");
 
         /* ② 总量守恒：发出去的必须正好等于推入的，多一单位是"补一下"，少一单位是"没滚到位"。 */
         var sent = frames.Sum(f => f.Units);
@@ -141,11 +171,45 @@ internal static class FrameTrace
         fail += Check(sb, $"能停下来（{drainMs:0} ms 内发完）", drainMs > 0 && drainMs < 4000,
             $"{drainMs:0} ms 后仍在发");
 
+        /* ⑥ **收尾不砸停**：末 6 个发帧之间的平均速度。
+         *
+         * 注意必须用"相邻两次发送的时间差"算，不能用每帧的 dt —— dt 是循环的帧间隔
+         * （固定 6ms），而零头累积之后相邻两次发送可能隔 3 帧，肉眼看到的是后者。 */
+        var tail6 = frames.Skip(Math.Max(0, frames.Count - 6)).ToArray();
+        var tailSpan = tail6.Length > 1 ? tail6[^1].AtMs - tail6[0].AtMs : 0;
+        var tailRate = tailSpan > 0 ? tail6.Skip(1).Sum(f => Math.Abs(f.Units)) / (tailSpan / 1000.0) : 0;
+        fail += Check(sb,
+            $"末 6 帧平均速度 {tailRate:0} 单位/秒（≤ {MaxTailRateUnits:0}，渐停而非砸停）",
+            tailRate <= MaxTailRateUnits, $"{tailRate:0} 单位/秒");
+
         sb.AppendLine("  前 6 帧：" + Describe(frames.Take(6)));
         sb.AppendLine("  末 6 帧：" + Describe(frames.Skip(Math.Max(0, frames.Count - 6))));
-        sb.AppendLine($"  共 {frames.Count} 帧，用时 {drainMs:0} ms，最大单帧 {maxFrame} 单位");
+        sb.AppendLine($"  共 {frames.Count} 帧，用时 {drainMs:0} ms，最大单帧 {maxFrame} 单位，" +
+                      $"末段速度 {tailRate:0} 单位/秒");
         sb.AppendLine();
         return fail;
+    }
+
+    /// <summary>
+    /// 打印一小段帧序列。括号里是**距上一次发送**的间隔 ——
+    /// 这才是肉眼看到的节奏；每帧的 dt 恒等于刷新周期，看不出收尾有没有放松。
+    /// </summary>
+    private static string Describe(IEnumerable<Frame> frames)
+    {
+        var list = frames.ToList();
+        var prev = double.NaN;
+        return string.Join("  ", list.Select(f =>
+        {
+            if (double.IsNaN(prev))
+            {
+                prev = f.AtMs;
+                return $"{f.Units:+#;-#;0}(t {f.AtMs:0.#}ms)";
+            }
+
+            var gap = f.AtMs - prev;
+            prev = f.AtMs;
+            return $"{f.Units:+#;-#;0}(+{gap:0.#}ms)";
+        }));
     }
 
     /// <summary>真开一条动画线程，推入后收集出帧，直到发完或超时。</summary>
@@ -201,10 +265,6 @@ internal static class FrameTrace
 
         lock (gate) return new List<Frame>(frames);
     }
-
-    private static string Describe(IEnumerable<Frame> frames) =>
-        string.Join("  ", frames.Select(f =>
-            $"{f.Units:+#;-#;0}(dt {f.DtMs:0.#}ms)"));
 
     private static int Check(StringBuilder sb, string what, bool ok, string detail)
     {

@@ -35,8 +35,11 @@ namespace MouseWheelEnhancement.Core;
 ///   · **跟手期** τ = <see cref="RuntimeSettings.TauMs"/>（默认 45 ms）——
 ///     输入还在来，τ 小一点才跟得上手；
 ///   · **松手后** τ 由「滑行时长」反解：<c>τ = GlideMs / ln(积压 / 1)</c>，
-///     保证到 GlideMs 时只剩最后 1 个单位，自然停住；
-///   · 两个 τ 之间用 55 ms 的 smoothstep 过渡。**τ 不能一步跳变** ——
+///     保证到 GlideMs 时只剩最后 1 个单位，自然停住；下限是跟手 τ
+///     （滑行只能让收尾更慢，不能更快，见 <see cref="GlideTau"/>）；
+///   · **落地段**（手里不足 1/3 格时）τ 平滑抬到 <see cref="LandingTauMs"/>，
+///     让最后那几个像素慢慢落地，见下面"收尾为什么会砸停"；
+///   · 各段之间都用 smoothstep 过渡。**τ 不能一步跳变** ——
 ///     从 45 直接换成 110 会让出帧速率瞬间掉一半，手感就是"咔"一下。
 ///
 /// # 这里**没有**任何"时间到 → 把剩余量整块倒出去"的路径
@@ -45,8 +48,34 @@ namespace MouseWheelEnhancement.Core;
 /// （GlideMaxMs）一到，就 <c>return 全部积压</c>。那是"末尾一下刻度感"的根源 ——
 /// 指数曲线已经把速度降到 1~2 单位/帧了，突然来一发 6~30 单位，
 /// 而且**积压越大、惯性调得越长，倒出去的越多**，所以怎么调参数都消不掉。
-/// 这一版改成：到点不再倾泻，只让 τ 平滑接管；收尾只剩最后 1 个单位时一次收掉
-/// （1 单位 = 1/120 格，亚像素）。
+/// 现在到点不倾泻，只让 τ 平滑接管。
+///
+/// # 收尾为什么会"砸停"（两层原因，都要修）
+///
+/// 滚动量的最小单位是 1 单位（1/120 格，约 0.8 px），**没法再细分**。
+/// 所以"停"这件事只能发生在一个 1 单位的台阶之后，要做的是让**台阶之前**
+/// 那段时间足够长、速度足够低。
+///
+/// ```text
+/// ① 取整时把 0 抬成 1
+///    曲线算出来 0.4、0.2，被四舍五入成 1 → 速度被"抬"成恒定 1 单位/帧
+///    160 Hz 上那是 1.33 格/秒（~130 px/s），然后 pending 一空就静止 = 撞墙
+///
+/// ② τ 相对"最后几个单位"太短
+///    即使不抬（改成零头累积），τ=30 ms 的曲线在剩 5 单位时速度还有 100+ 单位/秒，
+///    最后 4 px 仍在 40 ms 内冲过去，然后归零 —— 还是撞墙
+/// ```
+///
+/// 修法各一半：
+///   · <see cref="Quantize"/>：小数零头跨帧累积，攒够 1 才发，间隔自然拉长；
+///   · 落地段：剩不到 1/3 格时把 τ 抬到 70 ms，最后 4 px 摊到 ~100 ms 里。
+///
+/// 实测（`--frametrace`，160 Hz、τ=30、滑行 100 ms、滚一格）：
+/// 末尾 6 次发送的间隔从「恒定 6 ms」变成「12 → 12 → 25 → 37 → 62 ms」，
+/// 末段速度从 160 单位/秒降到 33 单位/秒（0.27 格/秒）——
+/// 这个速度下再停，人眼读作"已经停住了"。
+///
+/// 见 DESIGN 第 34 节。
 ///
 /// # 单帧上限
 ///
@@ -75,6 +104,24 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>反解出来的滑行 τ 的上下限。</summary>
     private const double MinGlideTauMs = 12.0;
     private const double MaxGlideTauMs = 400.0;
+
+    /// <summary>
+    /// 落地段的目标 τ（毫秒）。松手后手里不足 <see cref="LandingStartUnits"/> 时，
+    /// 把 τ 平滑抬到这个值，让最后几个单位慢慢发完（见主循环里的注释）。
+    ///
+    /// <para>
+    /// 70 ms 的依据：末段速度 ≈ 剩余量 / τ。剩 2 单位时 2/0.07 ≈ 29 单位/秒
+    /// （0.24 格/秒），在"看起来已经停住"的区间里；同时一个单格滚动的总时长
+    /// 只从 ~140 ms 涨到 ~230 ms，还不至于拖手。
+    /// </para>
+    /// </summary>
+    internal const double LandingTauMs = 70.0;
+
+    /// <summary>
+    /// 从多少剩余量开始进入"落地段"（单位）。取 1/3 格：
+    /// 再早会把正常滚动的中段也拖慢，再晚就只剩两三帧可调。
+    /// </summary>
+    internal const int LandingStartUnits = Native.WHEEL_DELTA / 3;
 
     /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（默认 90 单位 = 3/4 格）。</summary>
     private const double MaxCatchUpFactor = 3.0;
@@ -157,6 +204,22 @@ internal sealed class ScrollAnimator : IDisposable
     private long _lastWholeMs;
 
     /// <summary>
+    /// 跨帧攒着的"零头"（单位 × 1000）。0 ≤ 值 &lt; 1000。
+    ///
+    /// <para>
+    /// 见类注释「为什么不能每帧至少发 1 单位」：曲线算出来这帧该发 0.4 单位时，
+    /// 不能四舍五入成 1（那会变成一个恒定的最低速度），而是把这 0.4 记下来，
+    /// 下帧接着攒，攒够 1 单位再发。于是 **两次发送之间的间隔会越拉越长**，
+    /// 视觉上才是"慢慢停住"而不是"匀速走一段然后撞墙"。
+    /// </para>
+    /// <para>
+    /// 用 long 存毫单位是为了能被钩子线程用 <c>Interlocked.Exchange</c> 原子清零
+    /// （换方向、清积压、切整格模式时都要清）。只有动画线程会读改写它。
+    /// </para>
+    /// </summary>
+    private long _carryMilli;
+
+    /// <summary>
     /// 一次投递最多几档。和 <see cref="ScrollSemantics.WholeNotchesFor"/> 的上限一致：
     /// 倍率上限 8×，留一倍余量防止异常值把注入撑爆。
     /// </summary>
@@ -196,6 +259,8 @@ internal sealed class ScrollAnimator : IDisposable
              * 在整格模式下它凑不满一格会永远卡住。 */
             Interlocked.Exchange(ref _pendingMilli, 0);
             Interlocked.Exchange(ref _glideStartTicks, 0);
+            /* 跨帧零头同理：它属于"按比例"那一套，换成整格语义之后没有意义。 */
+            Interlocked.Exchange(ref _carryMilli, 0);
             /* 让下一档立刻发出去，别被上一轮的时间戳拖住。 */
             Interlocked.Exchange(ref _lastWholeMs, 0);
         }
@@ -267,7 +332,12 @@ internal sealed class ScrollAnimator : IDisposable
          * 不丢的话，用户往回滚的那一瞬间会先继续往前冲一小段（积压还在往外发），
          * 手感就是"往回想滚却滚不动"。 */
         if (flushOnReverse && sign != 0 && Math.Sign(total) != sign)
+        {
             total = Interlocked.Exchange(ref _pendingMilli, (long)units * (long)Milli);
+            /* 零头是"上一个方向还没凑满一单位的那一点点"，换方向之后必须丢掉：
+             * 留着它会把反方向的第一步提前一点点，看起来像"往回滚还先往前抖一下"。 */
+            Interlocked.Exchange(ref _carryMilli, 0);
+        }
 
         /* 积压上限：**直接截断**，而不是记一条"到点就一次发完"的截止期。
          *
@@ -292,6 +362,7 @@ internal sealed class ScrollAnimator : IDisposable
     {
         Interlocked.Exchange(ref _pendingMilli, 0);
         Interlocked.Exchange(ref _glideStartTicks, 0);
+        Interlocked.Exchange(ref _carryMilli, 0);
     }
 
     /// <summary>
@@ -309,11 +380,17 @@ internal sealed class ScrollAnimator : IDisposable
     }
 
     /// <summary>
-    /// 一帧该发多少（纯函数，便于自检直接断言）。
+    /// 这一帧**该发多少**（单位，可以是小数）。纯函数，便于自检直接断言。
     ///
     /// <para>
     /// **这里没有"到期一次发完"的捷径。** 输出永远是同一条指数曲线的一小段，
-    /// 只是被单帧上限和收尾阈值夹了一下 —— 这样末尾才不会突然跳一下。
+    /// 只是被单帧上限夹了一下 —— 这样末尾才不会突然跳一下。
+    /// </para>
+    /// <para>
+    /// 注意返回的是**未取整**的小数：1 单位 = 1/120 格，曲线在尾段算出来的值
+    /// 常常是 0.2、0.4 这种。要不要发、什么时候发，交给 <see cref="Quantize"/> 决定。
+    /// 旧版本在这里就 <c>Math.Round</c> 并把 0 抬成 1，正是"结尾砸停"的根源
+    /// （见类注释）。
     /// </para>
     /// </summary>
     /// <param name="pendingUnits">还没发完的量（单位，1 格 = 120）。</param>
@@ -321,16 +398,20 @@ internal sealed class ScrollAnimator : IDisposable
     /// <param name="tauMs">本帧的时间常数：跟手期用配置值，松手后由滑行时长反解。</param>
     /// <param name="unitsPerFrame">一个标准帧量（120 / 每格拆分），用于算追赶上限。</param>
     /// <param name="smooth">关闭平滑时一次发完。</param>
-    public static int ComputeFrame(double pendingUnits, double dtMs, double tauMs,
+    public static double FrameAmount(double pendingUnits, double dtMs, double tauMs,
         int unitsPerFrame, bool smooth)
     {
         if (pendingUnits == 0) return 0;
-        if (!smooth) return RoundUnits(pendingUnits);
+        if (!smooth) return pendingUnits;
 
-        /* 只剩最后 1 个单位（1/120 格，不到 1 像素）→ 直接收掉。
-         * 指数曲线永远到不了 0，没有这条就会一直按 1 单位/帧 爬个不停；
-         * 而 1 个单位本身低于任何屏幕能表现的最小位移，收掉看不出接缝。 */
-        if (Math.Abs(pendingUnits) <= CloseUnits) return RoundUnits(pendingUnits);
+        /* ⚠ 这里**没有**"只剩 1 单位就整块返回"的捷径。
+         *
+         * 旧版有一条 `if (|pending| <= 1) return pending`，本意是"最后一点亚像素
+         * 直接收掉"。但它是**绕过曲线**的：前面几帧的间隔已经拉到 30~40 ms 了，
+         * 最后那一单位却在 6 ms 后立刻发出 —— 收尾的最后一下又是"1 单位/帧"的快步，
+         * 等于把刚建起来的减速曲线截断（实测末帧 +6.4 ms，前面是 +37 ms）。
+         * 现在最后 1 单位也走零头累积：它会等 ~70 ms 才发出去，然后自然归零。
+         * 收敛性仍然有保证：只要 pending > 0，每帧都按比例攒，必定在有限帧内凑满。 */
 
         var emit = pendingUnits * (1.0 - Math.Exp(-dtMs / Math.Max(MinTauMs, tauMs)));
 
@@ -341,7 +422,51 @@ internal sealed class ScrollAnimator : IDisposable
         if (Math.Abs(emit) > cap) emit = Math.Sign(pendingUnits) * cap;
 
         if (Math.Abs(emit) > Math.Abs(pendingUnits)) emit = pendingUnits;
-        return RoundUnits(emit);
+        return emit;
+    }
+
+    /// <summary>
+    /// 把小数金额换成"这一帧真正发出去的整数"，不足 1 单位的零头通过
+    /// <paramref name="carryUnits"/> 带到下一帧。
+    ///
+    /// <para>
+    /// 这是收尾平顺的关键。举例（τ=30 ms、160 Hz、剩 6 单位）：
+    /// </para>
+    /// <code>
+    /// 帧:  1     2     3     4     5     6     7     8
+    /// 曲线: 1.2 → 1.0 → 0.83→ 0.69→ 0.57→ 0.48→ 0.40→ 0.33
+    /// 旧版: 1     1     1     1     1     1     1     1     ← 恒定速度，然后停
+    /// 新版: 1     1     1     0     1     0     0     1     ← 间隔越拉越长
+    /// </code>
+    /// <para>
+    /// 旧版每帧至少发 1 单位，等于把"速度衰减到 0"改成了"速度恒定为 1 单位/帧"，
+    /// 然后 pending 一发完就静止 —— 用户看到的最后一段是匀速前进后突然刹住。
+    /// </para>
+    /// </summary>
+    /// <param name="wantUnits">这一帧的曲线金额（可在小数）。</param>
+    /// <param name="carryUnits">上一帧留下来的零头（0 ≤ |carry| &lt; 1）。</param>
+    /// <param name="nextCarryUnits">留给下一帧的零头。</param>
+    /// <returns>这一帧要发的整数单位；0 = 这一帧什么都不发。</returns>
+    public static int Quantize(double wantUnits, double carryUnits, out double nextCarryUnits)
+    {
+        /* 换方向时丢掉零头：它是上一个方向"欠"的那一点点，
+         * 反向的第一步不该被它提前（也免得正负相消、这一帧反而什么都没发）。
+         * 判据是"零头"和"这一帧的金额"方向是否一致，而不是和总和比 —— 总和可能被
+         * 零头拉回另一个符号，那样就漏掉了。 */
+        if (wantUnits != 0 && carryUnits != 0 && Math.Sign(wantUnits) != Math.Sign(carryUnits))
+            carryUnits = 0;
+
+        var total = wantUnits + carryUnits;
+        var mag = Math.Truncate(Math.Abs(total));
+
+        /* 零头必须**带符号**：往回滚时它是负的。
+         * 之前这里只存了绝对值，于是反向滚动每帧都因为"符号不一致"把零头丢掉，
+         * 曲线到 1 单位以下就永远凑不满 —— 积压再也发不完（--frametrace 抓到的
+         * "往回滚一格：差 4 单位 / 4 秒后仍在发"）。 */
+        nextCarryUnits = Math.Sign(total) * (Math.Abs(total) - mag);
+
+        if (mag < 1) return 0;
+        return total > 0 ? (int)mag : -(int)mag;
     }
 
     /// <summary>
@@ -352,20 +477,22 @@ internal sealed class ScrollAnimator : IDisposable
     /// 不会被截断，也就不会在结尾倒出一坨。积压越大，τ 越小（同样的时长里
     /// 走完更多的量），这正是"连甩之后不能飘半秒"想要的效果。
     /// </para>
+    /// <para>
+    /// <paramref name="minTauMs"/> 是**下限**，调用方传跟手期的 τ。
+    /// 滑行是"减速段"，它的 τ 绝不能比跟手期更小 —— 否则把滑行调短反而让
+    /// 收尾变得更快更硬（积压小的时候会算出比跟手 τ 还小的值，实测确实如此）。
+    /// 想要"一点都不拖"，正确做法是把滑行调成 0，而不是让它加速。
+    /// </para>
     /// </summary>
-    public static double GlideTau(double pendingUnits, double glideMs)
+    public static double GlideTau(double pendingUnits, double glideMs, double minTauMs = 0)
     {
         var span = Math.Log(Math.Max(Math.Abs(pendingUnits) / CloseUnits, 1.5));
-        return Math.Clamp(glideMs / Math.Max(span, 0.2), MinGlideTauMs, MaxGlideTauMs);
+        var floor = Math.Max(MinGlideTauMs, minTauMs);
+        return Math.Clamp(glideMs / Math.Max(span, 0.2), floor, MaxGlideTauMs);
     }
 
-    private static int RoundUnits(double units)
-    {
-        if (units == 0) return 0;
-        var v = (int)Math.Round(units, MidpointRounding.AwayFromZero);
-        if (v == 0) v = Math.Sign(units);
-        return v;
-    }
+    /* 旧版这里还有个 RoundUnits：把小数金额四舍五入、并把 0 抬成 1。
+     * 抬成 1 的那一行就是"结尾砸停"的根源（见类注释与 Quantize），已删除。 */
 
     private long MsToTicks(double ms) => (long)Math.Max(1, ms * Stopwatch.Frequency / 1000.0);
     private double TicksToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
@@ -409,6 +536,9 @@ internal sealed class ScrollAnimator : IDisposable
                      * 然后无限期等下一次输入 —— 一个核都不占。 */
                     ReleaseTimerPrecision();
                     Interlocked.Exchange(ref _glideStartTicks, 0);
+                    /* 顺手丢掉不到 1 单位的零头：留着也没东西可加了，
+                     * 意义只有 1/120 格（亚像素）。 */
+                    Interlocked.Exchange(ref _carryMilli, 0);
 
                     /* **等醒来的这一刻才算"上一帧"**。
                      *
@@ -454,13 +584,35 @@ internal sealed class ScrollAnimator : IDisposable
                         if (Interlocked.Read(ref _glideStartTicks) == 0)
                         {
                             Interlocked.Exchange(ref _glideStartTicks, now);
-                            _glideTauMs = GlideTau(pendingUnits, s.GlideMs);
+                            /* 下限传跟手 τ：滑行只能让收尾更慢，不能更快。
+                             * 积压小的时候反解出来的 τ 会比跟手 τ 还小，
+                             * 那样"把滑行调短"反而让结尾更快更硬 —— 与设置意图相反。 */
+                            _glideTauMs = GlideTau(pendingUnits, s.GlideMs, s.TauMs);
                         }
 
                         var w = Math.Clamp(
                             TicksToMs(now - Interlocked.Read(ref _glideStartTicks)) / GlideRampMs, 0, 1);
                         w = w * w * (3 - 2 * w);
                         tau = s.TauMs + (_glideTauMs - s.TauMs) * w;
+
+                        /* ── 落地段：手里已经不到 1/3 格时，把 τ 平滑抬到 LandingTauMs ──
+                         *
+                         * 这是"结尾砸停"的第二层修法（第一层是零头累积）。
+                         * 原因是量化的物理下限：最小可发单位就是 1 单位（约 0.8 px），
+                         * 而 τ=30ms 的曲线在剩 5 单位时速度还有 100~160 单位/秒 ——
+                         * 最后这 4 px 会在一两帧内冲过去，然后归零，所以看着像撞停。
+                         * 把 τ 抬到 70ms，这 4 px 摊到 ~100ms 里，落到 50 单位/秒左右
+                         * （0.4 格/秒）再结束，人眼读作"慢慢停住"。
+                         *
+                         * 只在**松手之后**生效：手还在滚的时候抬 τ 会变成拖影。
+                         * Math.Max 保证它只减速、不加速 —— 滑行 τ 本来比它大的时候
+                         * （比如惯性调到 400）不能被它拉回来。 */
+                        var left = Math.Abs(pendingUnits);
+                        if (left < LandingStartUnits)
+                        {
+                            var k = 1.0 - left / LandingStartUnits;
+                            tau = Math.Max(tau, tau + (LandingTauMs - tau) * k);
+                        }
                     }
                 }
 
@@ -477,7 +629,12 @@ internal sealed class ScrollAnimator : IDisposable
                 }
                 else
                 {
-                    units = ComputeFrame(pendingUnits, dtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+                    /* 曲线给"这一帧该发多少"（小数），零头跨帧累积 —— 见 Quantize。
+                     * 这一帧可能什么都不发（units == 0），那不代表卡住：
+                     * 下帧接着攒，两次发送的间隔会越来越长，收尾才是渐停而不是砸停。 */
+                    var want = FrameAmount(pendingUnits, dtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+                    units = Quantize(want, Interlocked.Read(ref _carryMilli) / Milli, out var carry);
+                    Interlocked.Exchange(ref _carryMilli, (long)Math.Round(carry * Milli));
                 }
 
                 if (units != 0)

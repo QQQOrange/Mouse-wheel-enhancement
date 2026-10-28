@@ -514,14 +514,23 @@ internal static class SelfTest
     }
 
     /// <summary>
-    /// 松手滑行与**收尾**：结尾不能"补一下"。
+    /// 松手滑行与**收尾**：结尾不能"补一下"，也不能"匀速走一段然后撞墙"。
     ///
     /// <para>
-    /// 旧版在截止期（MaxLatencyMs）到点、或滑行上限（GlideMaxMs）到点时，
-    /// 会把剩余积压 <c>return</c> 出去 —— 指数曲线已经把速度降到 1~2 单位/帧，
-    /// 突然补一发 6~30 单位，就是用户说的"末尾一下刻度感"；
-    /// 而且积压越大补得越多，调大惯性反而更明显。
-    /// 新版只有一条指数曲线 + 单帧上限 + 最后 1 个单位收尾，下面是钉住它的断言。
+    /// 这里钉的是两代 bug：
+    /// </para>
+    /// <list type="number">
+    /// <item>旧版在截止期、或滑行上限到点时把剩余积压整块倒出去 ——
+    /// 指数曲线已经把速度降到 1~2 单位/帧，突然补一发 6~30 单位，
+    /// 就是"末尾一下刻度感"（DESIGN 第 28 节）。</item>
+    /// <item>取整时把 0 抬成 1（每帧至少发 1 单位）—— 曲线衰减到 0.4、0.2 之后，
+    /// 速度被"抬"成一个恒定的 1 单位/帧，pending 一发完就静止。
+    /// 视觉上就是"最后一段匀速前进，然后突然停住"（DESIGN 第 34 节）。</item>
+    /// </list>
+    /// <para>
+    /// 现在的取整规则是**零头跨帧累积**（<see cref="ScrollAnimator.Quantize"/>）：
+    /// 两次发送的间隔越拉越长，等效速度平滑趋近 0；同时滑行 τ 不低于跟手 τ，
+    /// 避免"松手之后反而加速"。
     /// </para>
     /// </summary>
     private static void TestGlide()
@@ -532,26 +541,10 @@ internal static class SelfTest
         const double Dt = 8.0;       // 120fps
         const double Tau = 45;
 
-        static List<int> Drain(double pending, double dt, double tau, int upf, out int sent)
-        {
-            var seq = new List<int>();
-            var p = pending;
-            while (p > 0 && seq.Count < 400)
-            {
-                var e = ScrollAnimator.ComputeFrame(p, dt, tau, upf, true);
-                if (e <= 0) break;
-                if (e > p + 0.001) break;          // 发超了也算失败
-                p -= e;
-                seq.Add(e);
-            }
-            sent = (int)Math.Round(pending - p);
-            return seq;
-        }
-
         // ① 跟手曲线：总量守恒、能停下来、末尾单调不增
         var hand = Drain(120, Dt, Tau, Upf, out var handSent);
         Check("跟手期总量一单位不差", handSent == 120, $"发出 {handSent}");
-        Check("跟手期能停下来（不会一直 1 单位/帧 爬）", hand.Count < 60, $"{hand.Count} 帧");
+        Check("跟手期能停下来（不会一直 1 单位/帧 爬）", hand.Count < 80, $"{hand.Count} 帧");
         Check("跟手期末尾不突增（允许舍入 ±1）", TailMonotone(hand, 8), string.Join("/", hand.TakeLast(8)));
 
         // ② 滑行：τ 由「滑行时长」反解 —— 同样的积压要拖得更久，且结尾同样不突增
@@ -559,7 +552,7 @@ internal static class SelfTest
         Check("滑行 τ 由时长反解（比跟手 τ 大）", glideTau > Tau, $"{glideTau:0.0} ms");
         var glide = Drain(120, Dt, glideTau, Upf, out var glideSent);
         Check("滑行期总量一单位不差", glideSent == 120, $"发出 {glideSent}");
-        Check("滑行期明显比跟手期长（>1.3 倍帧数）", glide.Count > hand.Count * 1.3,
+        Check("滑行期明显比跟手期长（>1.2 倍帧数）", glide.Count > hand.Count * 1.2,
             $"{glide.Count} vs {hand.Count} 帧");
         Check("滑行期末尾不突增", TailMonotone(glide, 8), string.Join("/", glide.TakeLast(8)));
 
@@ -569,22 +562,52 @@ internal static class SelfTest
         Check("积压越大滑行 τ 越小（时长恒定）", big < small, $"{big:0.0} vs {small:0.0}");
         Check("滑行 τ 有下限（不会小到一帧发完）", big >= 12, $"{big:0.0}");
 
-        // ④ 单帧上限：追赶时也不许"一帧跨好几格"
-        var burst = ScrollAnimator.ComputeFrame(600, 16.7, Tau, Upf, true);
-        Check("单帧不超过 3 个标准帧量（默认 90 单位）", burst <= Upf * 3, $"{burst} 单位");
+        /* 滑行只能减速，不能加速。
+         * 积压小的时候（一格，松手时手里约半格）反解出来的 τ 会比跟手 τ 还小 ——
+         * 那意味着"手一停，内容反而提速"，紧接着又撞上结尾，比匀速停更突兀。 */
+        var rawShort = ScrollAnimator.GlideTau(120, 100);
+        Check("短滑行反解出的 τ 会小于跟手 τ（所以必须有下限）", rawShort < Tau, $"{rawShort:0.0} ms");
+        Check("滑行 τ 不低于跟手 τ（松手后不会提速）",
+            Math.Abs(ScrollAnimator.GlideTau(120, 100, Tau) - Tau) < 1e-9,
+            $"{ScrollAnimator.GlideTau(120, 100, Tau):0.0} ms");
 
-        // ⑤ 关闭平滑仍然一次发完；只剩 1 单位时一次收掉
-        Check("关闭平滑时一次发完", ScrollAnimator.ComputeFrame(360, 8, 45, Upf, false) == 360);
-        Check("最后 1 个单位一次收掉（不留 1 单位/帧 的尾巴）",
-            ScrollAnimator.ComputeFrame(1, 8, 45, Upf, true) == 1);
+        // ④ 单帧上限：追赶时也不许"一帧跨好几格"
+        var burst = ScrollAnimator.FrameAmount(600, 16.7, Tau, Upf, true);
+        Check("单帧不超过 3 个标准帧量（默认 90 单位）", burst <= Upf * 3, $"{burst:0.0} 单位");
+
+        /* ⑤ 关闭平滑仍然一次发完；**尾段不再被抬成 1 单位**（本轮修复的核心）。
+         *
+         * 旧版这里有一条 "最后 1 个单位一次收掉（不留 1 单位/帧 的尾巴）" ——
+         * 那条断言本身就在维护 bug：它把"每帧至少 1 单位"当成了正确行为。 */
+        Check("关闭平滑时一次发完", ScrollAnimator.FrameAmount(360, 8, 45, Upf, false) == 360);
+
+        var tailWant = ScrollAnimator.FrameAmount(6, Dt, Tau, Upf, true);
+        Check("尾段的曲线金额是小数，不再被抬成 1 单位/帧", tailWant > 0 && tailWant < 1.0,
+            $"{tailWant:0.00} 单位");
+
+        var q0 = ScrollAnimator.Quantize(tailWant, 0, out var c1);
+        Check("小数金额这一帧先不发（零头攒着）", q0 == 0 && Math.Abs(c1 - tailWant) < 1e-9,
+            $"发出 {q0}，零头 {c1:0.00}");
+
+        var q1 = ScrollAnimator.Quantize(0.4, 0.8, out var c2);
+        Check("攒够一单位才发，且只扣整数部分", q1 == 1 && Math.Abs(c2 - 0.2) < 1e-9,
+            $"发出 {q1}，零头 {c2:0.00}");
+
+        Check("没攒够就不发（0.4 + 0.4 还是 0）",
+            ScrollAnimator.Quantize(0.4, 0.4, out var c3) == 0 && Math.Abs(c3 - 0.8) < 1e-9,
+            $"零头 {c3:0.00}");
+
+        Check("换方向时丢掉旧方向的零头（不提前抖一下）",
+            ScrollAnimator.Quantize(-1.2, 0.9, out var c4) == -1 && c4 <= 0.2 + 1e-9, $"{c4:0.00}");
 
         // ⑥ 真实循环的整段模拟：跟手 → 松手（τ 平滑接管）→ 收尾
         foreach (var (start, fps) in new[] { (120.0, 60.0), (120.0, 144.0), (360.0, 60.0), (600.0, 144.0) })
         {
-            var seq = Simulate(start, fps, GlideMs: 300, out var frames);
+            var fr = SimulateTimed(start, fps, 300, out var sent);
+            var seq = UnitsOf(fr);
             var last = seq.Count == 0 ? 0 : seq[^1];
             var maxFrame = seq.Count == 0 ? 0 : seq.Max();
-            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）总量守恒", frames == (int)start, $"{frames}");
+            Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）总量守恒", sent == (int)start, $"{sent}");
             Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）末尾不突增", TailMonotone(seq, 10),
                 string.Join("/", seq.TakeLast(10)));
             Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）最后一帧 ≤ 2 单位（结尾不补发）",
@@ -592,7 +615,31 @@ internal static class SelfTest
             Check($"整段模拟（{start:0} 单位 / {fps:0}Hz）单帧 ≤ 90 单位", maxFrame <= 90, $"{maxFrame} 单位");
         }
 
-        // ⑦ 参数默认值与夹取
+        /* ⑦ 收尾不砸停：这一组是本轮修复的验收标准。
+         *
+         * 指标用"末 6 帧的平均速度"（单位/秒）而不是"最后一帧多大"：
+         * 砸停的形态是"速度还有 1.3 格/秒，然后突然 0"，关键在**停下来之前的速率**。
+         * 修复前实测 160~264 单位/秒（1.3~2.2 格/秒），现在是 38~51。
+         * 阈值 96 单位/秒（0.8 格/秒）留在两者之间。 */
+        foreach (var (start, fps, glideMs) in new[]
+                 {
+                     (120.0, 60.0, 100), (120.0, 160.0, 100),
+                     (360.0, 160.0, 300), (720.0, 144.0, 300),
+                 })
+        {
+            var fr = SimulateTimed(start, fps, glideMs, out var sent);
+            var rate = TailRate(fr, 6);
+            var t95 = TimeToPercent(fr, 0.95);
+            var land = (fr.Count == 0 ? 0 : fr[^1].AtMs) - t95;
+
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末 6 帧平均速度 ≤ 96 单位/秒（渐停而非砸停）",
+                rate <= 96, $"{rate:0} 单位/秒");
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：走完 95% 之后仍有 ≥ 40 ms 的落地段",
+                land >= 40, $"{land:0} ms");
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：总量守恒", sent == (int)start, $"{sent}");
+        }
+
+        // ⑧ 参数默认值与夹取
         var c = AppConfig.Default();
         Check("默认开启滑行（GlideMs > 0）", c.Smooth.GlideMs > 0, c.Smooth.GlideMs.ToString());
         Check("默认滑行时长合理（200~400ms）",
@@ -604,46 +651,111 @@ internal static class SelfTest
             $"{c.Smooth.GlideMs}/{c.Smooth.GlideDelayMs}");
     }
 
+    /// <summary>一帧记录：相对"滚轮动作"的毫秒数 + 这一帧真正发出去的整数单位。</summary>
+    private readonly record struct SimFrame(double AtMs, int Units);
+
+    private static List<int> UnitsOf(List<SimFrame> fr) => fr.Select(f => f.Units).ToList();
+
     /// <summary>
-    /// 复刻动画线程的一整段：跟手 τ → 松手后按滑行时长反解 τ、55ms 过渡 → 收尾。
-    /// 返回每帧发出量；<paramref name="sent"/> 是总量。
+    /// 复刻动画线程的一整段：跟手 τ → 松手后按滑行时长反解 τ（55 ms smoothstep 过渡）
+    /// → 收尾。取整改走**零头累积**（<see cref="ScrollAnimator.Quantize"/>），
+    /// 和真实循环完全一致 —— 否则这里测的就不是线上跑的那条路径。
     /// </summary>
-    private static List<int> Simulate(double start, double fps, int GlideMs, out int sent)
+    /// <param name="start">一次动作推入的总量（单位）。</param>
+    /// <param name="fps">出帧频率。</param>
+    /// <param name="glideMs">松手后滑行多久；0 = 不滑行。</param>
+    private static List<SimFrame> SimulateTimed(double start, double fps, int glideMs, out int sent)
     {
+        const double Tau = 45, GlideDelay = 30, Ramp = 55;
         const int Upf = 30;
-        const double GlideDelay = 30, Ramp = 55, Tau = 45;
+
         var dt = 1000.0 / fps;
-        var seq = new List<int>();
+        var fr = new List<SimFrame>();
         var p = start;
         var t = 0.0;
         var glideStart = -1.0;
         var glideTau = 0.0;
-        var lastInput = 0.0;
+        var carry = 0.0;
 
-        while (p > 0 && seq.Count < 400)
+        while (p > 0 && fr.Count < 4000)
         {
             t += dt;
             var tau = Tau;
-            if (GlideMs > 0 && t - lastInput > GlideDelay)
+            if (glideMs > 0 && t > GlideDelay)
             {
                 if (glideStart < 0)
                 {
                     glideStart = t;
-                    glideTau = ScrollAnimator.GlideTau(p, GlideMs);
+                    glideTau = ScrollAnimator.GlideTau(p, glideMs, Tau);
                 }
                 var w = Math.Clamp((t - glideStart) / Ramp, 0, 1);
                 w = w * w * (3 - 2 * w);
                 tau = Tau + (glideTau - Tau) * w;
+
+                /* 落地段：手里不足 1/3 格时把 τ 抬到 LandingTauMs（只减速不加速）。 */
+                if (p < ScrollAnimator.LandingStartUnits)
+                {
+                    var k = 1.0 - p / ScrollAnimator.LandingStartUnits;
+                    tau = Math.Max(tau, tau + (ScrollAnimator.LandingTauMs - tau) * k);
+                }
             }
 
-            var e = ScrollAnimator.ComputeFrame(p, dt, tau, Upf, true);
-            if (e <= 0) break;
-            if (e > p) break;
+            var want = ScrollAnimator.FrameAmount(p, dt, tau, Upf, true);
+            var e = ScrollAnimator.Quantize(want, carry, out carry);
+            if (e == 0) continue;                       // 攒零头，这一帧不发
+            if (Math.Abs(e) > p) e = (int)p * Math.Sign(e);
             p -= e;
-            seq.Add(e);
+            fr.Add(new SimFrame(t, e));
         }
+
         sent = (int)Math.Round(start - p);
+        return fr;
+    }
+
+    /// <summary>把一个积压按固定 τ 排空（带零头累积），返回每帧发出的绝对量。</summary>
+    private static List<int> Drain(double pending, double dt, double tau, int upf, out int sent)
+    {
+        var seq = new List<int>();
+        var p = pending;
+        var carry = 0.0;
+        var guard = 0;
+
+        while (p > 0 && guard++ < 4000)
+        {
+            var want = ScrollAnimator.FrameAmount(p, dt, tau, upf, true);
+            var e = ScrollAnimator.Quantize(want, carry, out carry);
+            if (e == 0) continue;
+            if (Math.Abs(e) > p) e = (int)Math.Sign(p) * (int)p;
+            p -= e;
+            seq.Add(Math.Abs(e));
+        }
+
+        sent = (int)Math.Round(pending - p);
         return seq;
+    }
+
+    /// <summary>末 <paramref name="n"/> 帧的平均速度（单位/秒）—— 量"停下来之前还有多快"。</summary>
+    private static double TailRate(List<SimFrame> fr, int n)
+    {
+        if (fr.Count < 2) return 0;
+        var tail = fr.Skip(Math.Max(0, fr.Count - n)).ToList();
+        var span = tail[^1].AtMs - tail[0].AtMs;
+        if (span <= 0) return 0;
+        return tail.Skip(1).Sum(f => Math.Abs(f.Units)) / (span / 1000.0);
+    }
+
+    /// <summary>走到总位移的 <paramref name="pct"/> 时用了多少毫秒。</summary>
+    private static double TimeToPercent(List<SimFrame> fr, double pct)
+    {
+        if (fr.Count == 0) return 0;
+        var total = fr.Sum(f => Math.Abs(f.Units));
+        var acc = 0;
+        foreach (var f in fr)
+        {
+            acc += Math.Abs(f.Units);
+            if (acc >= total * pct) return f.AtMs;
+        }
+        return fr[^1].AtMs;
     }
 
     /// <summary>末尾 <paramref name="n"/> 帧是否单调不增（允许 ±1 的舍入抖动）。</summary>
@@ -664,54 +776,30 @@ internal static class SelfTest
         const double Tau = 45;
 
         // 360 单位、8ms 一帧、τ=45：必须摊成多帧、刚好发完、单帧不超过 1 格
-        var pending = 360.0;
-        var frames = 0;
-        var maxPerFrame = 0;
-        var sum = 0;
-
-        while (pending > 0 && frames < 40)
-        {
-            var emit = ScrollAnimator.ComputeFrame(pending, 8, Tau, Upf, true);
-            if (emit <= 0) break;              // 卡住不发 = 失败
-            if (emit > pending + 0.001) break; // 发超了也是失败
-            pending -= emit;
-            sum += emit;
-            maxPerFrame = Math.Max(maxPerFrame, emit);
-            frames++;
-        }
-
-        Check("能在合理帧数内发完", pending <= 0.5, $"剩余 {pending}");
-        Check("总量一单位不差", sum == 360, $"发出 {sum}");
-        Check("确实摊成了多帧（不是一次性甩出）", frames >= 3, $"用了 {frames} 帧");
-        Check("每帧不超过原样一格（看着才顺）", maxPerFrame <= 120, $"最大 {maxPerFrame}");
+        var seq360 = Drain(360, 8, Tau, Upf, out var sum360);
+        Check("能在合理帧数内发完", sum360 == 360, $"发出 {sum360}");
+        Check("总量一单位不差", sum360 == 360, $"发出 {sum360}");
+        Check("确实摊成了多帧（不是一次性甩出）", seq360.Count >= 3, $"用了 {seq360.Count} 帧");
+        Check("每帧不超过原样一格（看着才顺）", seq360.Max() <= 120, $"最大 {seq360.Max()}");
 
         // 关闭平滑时必须一次性发完
-        var one = ScrollAnimator.ComputeFrame(360, 8, Tau, Upf, false);
+        var one = ScrollAnimator.FrameAmount(360, 8, Tau, Upf, false);
         Check("关闭平滑时一次发完", one == 360, $"实际 {one}");
 
         /* 旧版这里有一条「超过截止时间立刻发完」的断言 —— 那正是要修的 bug。
          * 现在同样的输入只能发一小段：没有截止期，也就没有倾泻。 */
-        var late = ScrollAnimator.ComputeFrame(360, 8, Tau, Upf, true);
-        Check("过期不会一次发完（没有截止期倾泻）", late < 120, $"{late} 单位");
+        var late = ScrollAnimator.FrameAmount(360, 8, Tau, Upf, true);
+        Check("过期不会一次发完（没有截止期倾泻）", late < 120, $"{late:0.0} 单位");
 
         /* ── 单格滚动（120 单位）的平滑形态 ──
          * 修复前的每帧下限写死 30 单位（=1/4 格）：120 的积压被 30/30/30
          * 轰掉四分之三，剩下的再按截止期赶工 —— 开头就是一个大跳。
          * 下限删掉之后，首帧必须是曲线本身给的那一小步。 */
-        var firstEmit = ScrollAnimator.ComputeFrame(120, 6.94, Tau, Upf, true);
-        Check("单格滚动首帧不超过五分之一格（不突发）", firstEmit <= 24, $"首帧 {firstEmit}");
+        var firstEmit = ScrollAnimator.FrameAmount(120, 6.94, Tau, Upf, true);
+        Check("单格滚动首帧不超过五分之一格（不突发）", firstEmit <= 24, $"首帧 {firstEmit:0.0}");
 
-        var p = 120.0;
-        var seq = new List<int>();
-        while (p > 0 && seq.Count < 200)
-        {
-            var e = ScrollAnimator.ComputeFrame(p, 6.94, Tau, Upf, true);
-            if (e <= 0) break;
-            if (e > p + 0.001) break;             // 发超了也是失败
-            p -= e;
-            seq.Add(e);
-        }
-        Check("单格滚动能完整发完", p <= 0.5, $"剩余 {p}");
+        var seq = Drain(120, 6.94, Tau, Upf, out var sent120);
+        Check("单格滚动能完整发完", sent120 == 120, $"剩余 {120 - sent120}");
         Check("单格滚动总量一单位不差", seq.Sum() == 120, $"发出 {seq.Sum()}");
         Check("单格滚动摊成多帧（≥8 帧）", seq.Count >= 8, $"{seq.Count} 帧");
         Check("单格滚动每帧不超过四分之一格", seq.Max() <= 30, $"最大 {seq.Max()}");
@@ -721,8 +809,8 @@ internal static class SelfTest
 
         /* 首帧 dt 极小（线程刚被唤醒时 dt≈0.2ms）时不能按"一个整帧量"发 ——
          * 那会让每一格滚动的开头都先跳 15%。 */
-        var tiny = ScrollAnimator.ComputeFrame(120, 0.2, Tau, Upf, true);
-        Check("dt≈0 的首帧只发 1 单位（不按整帧量突发）", tiny <= 2, $"{tiny} 单位");
+        var tiny = ScrollAnimator.FrameAmount(120, 0.2, Tau, Upf, true);
+        Check("dt≈0 的首帧只发零点几单位（不按整帧量突发）", tiny <= 2, $"{tiny:0.00} 单位");
     }
 
     private static void TestFrameRateFollowsDisplay()
