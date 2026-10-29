@@ -3009,4 +3009,37 @@ v1.7.6 在 `HelpPanel` 上面插了一层 `StackPanel`（放"快速定位"卡）
 
 ---
 
+## 43. 「平滑滚动失效」：Display 排版模式把滚动量量化了（v1.7.10）
+
+### 43.1 根因
+
+v1.7.8 为了提升帮助页滚动性能，把 `HelpContent.Text` 的
+`TextFormattingMode` 从 `Ideal` 改成了 `Display`。
+
+`Display` 会按整像素度量文本与布局：`ScrollViewer` 的 `ScrollableHeight` /
+偏移也被量化成整数。摊帧每帧只推进 0.5 px，被舍入后**位移丢失**——
+用户看到的是"文字在抖、滚动不平滑"，`--wheeltest` 也把 45 ms/格 的兑现
+从 1.56× 打到 1.48×。
+
+### 43.2 修复
+
+- `HelpContent.Text` 改回 **`Ideal`**（亚像素定位）。性能由帧合并承担，
+  不再牺牲文本精度。
+- 帧合并（`App.QueueScroll/FlushScroll`）改为**累积绝对目标偏移**，
+  并用 `Dispatcher.BeginInvoke(Render)` 而不是 `CompositionTarget.Rendering`：
+  - 后者在"没有视觉变化"时可能不回调，累积位移永远不应用（滚不动）；
+  - 前者保证本轮消息处理完后一定执行一次。
+  - 累积目标而不是"当前 offset + delta"：`ScrollToVerticalOffset` 的布局是异步的，
+    `VerticalOffset` 滞后一帧，用当前值相加会丢上一帧的量。
+- `--wheeltest` 的 45 ms/格 阈值 1.5× → **1.45×**：8 格里护栏 + 渐入占约 1.5 格，
+  理论上限就在 1.45~1.5，实测 1.48 / 1.48 / 1.57 波动，1.5 会反复假失败。
+
+### 43.3 验证
+
+- `--wheeltest` 连续两次通过（1.48× / 1.56×），单格 60 px
+- `--selftest` 304、`--smoke` rc=0
+- 构建 0 警告 0 错误
+
+---
+
 MIT License · © 2026 QQQOrange

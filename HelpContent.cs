@@ -569,10 +569,13 @@ internal static class HelpContent
             // 布局和滚动时不用逐行重新算基线。
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
         };
-        /* 帮助页是**要滚动的长文本**：Display 模式按像素网格对齐，
-         * 渲染/测量都比 Ideal（精确排版）快得多。Ideal 在几百个 TextBlock
-         * 一起滚动时会明显掉帧 —— 这正是"滚动不流畅"的主因。 */
-        tb.SetValue(TextOptions.TextFormattingModeProperty, TextFormattingMode.Display);
+        /* 用 Ideal（亚像素定位），不要 Display。
+         *
+         * Display 虽然渲染更快，但滚动时文本会被量化到整像素：
+         * 每帧 0.5 px 的位移变成"这帧不动、下帧跳 1 px"，观感是文字在抖 ——
+         * 用户读作"平滑滚动失效"。滚动性能现在由 App.FlushScroll 的帧合并承担，
+         * 不需要再用牺牲文本精度去换。 */
+        tb.SetValue(TextOptions.TextFormattingModeProperty, TextFormattingMode.Ideal);
         return tb;
     }
 

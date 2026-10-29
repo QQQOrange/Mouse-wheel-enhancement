@@ -170,40 +170,57 @@ public partial class App : System.Windows.Application
     private EventWaitHandle? _activateEvent;
 
     /* ── 本程序窗口滚动的"帧合并" ──
-     * 注入是 160 帧/秒，但 WPF 只在渲染帧真正画一次。把同一帧内的多次位移
-     * 累加起来、到渲染帧一次应用，Arrange 次数就从"注入帧率"降到"渲染帧率"。 */
+     * 注入是 160 帧/秒，WPF 只在渲染帧画一次；每来一个 delta 就 ScrollToVerticalOffset
+     * 会白做一轮 Arrange。把同一渲染帧内的位移合并成一次应用。
+     *
+     * ⚠ 累积的必须是**绝对目标偏移**，不能是"每次读 sv.VerticalOffset 再加 delta"：
+     * ScrollToVerticalOffset 的布局是异步的，VerticalOffset 会滞后一帧，
+     * 用"当前值 + delta"在连续调用时会丢掉上一帧的量
+     * （实测兑现倍率从 1.6× 掉到 1.48×，用户读作"平滑/加速失效"）。 */
     private ScrollViewer? _pendingScrollViewer;
-    private double _pendingScrollDelta;
+    private double _pendingScrollTarget;
+    private bool _pendingScrollValid;
     private bool _scrollFlushHooked;
 
     private void QueueScroll(ScrollViewer sv, double delta)
     {
         if (delta == 0) return;
 
-        _pendingScrollViewer = sv;
-        _pendingScrollDelta += delta;
+        if (!ReferenceEquals(sv, _pendingScrollViewer))
+        {
+            // 换滚动容器：以它此刻的 offset 为基准重新累积
+            _pendingScrollViewer = sv;
+            _pendingScrollTarget = sv.VerticalOffset;
+            _pendingScrollValid = true;
+        }
+
+        _pendingScrollTarget += delta;
 
         if (_scrollFlushHooked) return;
         _scrollFlushHooked = true;
-        System.Windows.Media.CompositionTarget.Rendering += FlushScroll;
+
+        /* 用 BeginInvoke(Render) 而不是 CompositionTarget.Rendering：
+         * 后者只在"确实要出帧"时回调，窗口没有其它视觉变化时不一定来 ——
+         * 一旦不来，累积的位移就永远不应用（表现就是"滚不动 / 平滑失效"）。
+         * BeginInvoke 保证本轮消息处理完后一定执行一次。 */
+        Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(FlushScroll));
     }
 
-    private void FlushScroll(object? sender, EventArgs e)
+    private void FlushScroll()
     {
-        System.Windows.Media.CompositionTarget.Rendering -= FlushScroll;
         _scrollFlushHooked = false;
 
         var sv = _pendingScrollViewer;
-        var delta = _pendingScrollDelta;
-        _pendingScrollViewer = null;
-        _pendingScrollDelta = 0;
+        if (sv == null || !_pendingScrollValid) return;
 
-        if (sv == null || delta == 0) return;
-        // 窗口已经藏起来了：这一帧的尾巴丢掉，别留着下次打开时跳一下
+        var target = _pendingScrollTarget;
+        _pendingScrollViewer = null;
+        _pendingScrollValid = false;
+
         if (!sv.IsVisible) return;
 
         var max = Math.Max(0, sv.ScrollableHeight);
-        sv.ScrollToVerticalOffset(Math.Clamp(sv.VerticalOffset + delta, 0, max));
+        sv.ScrollToVerticalOffset(Math.Clamp(target, 0, max));
     }
 
     /// <summary>
