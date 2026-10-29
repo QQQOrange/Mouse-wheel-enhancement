@@ -509,7 +509,14 @@ public partial class App : System.Windows.Application
 
             var hwnd = _hotkeySource.Handle;
             if (!Native.RegisterHotKey(hwnd, HotkeyToggleId, Native.MOD_CONTROL | Native.MOD_ALT, 0x57))
-                Log.Warn("全局热键 Ctrl+Alt+W 注册失败（可能被其它程序占用）");
+            {
+                // 被占了就多带一个 Shift —— Ctrl+Alt+W 常被输入法/截图工具占用
+                if (Native.RegisterHotKey(hwnd, HotkeyToggleId,
+                        Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_SHIFT, 0x57))
+                    Log.Info("Ctrl+Alt+W 被占用，改用 Ctrl+Alt+Shift+W 开关增强");
+                else
+                    Log.Warn("全局热键 Ctrl+Alt+W / Ctrl+Alt+Shift+W 都注册失败");
+            }
             if (!Native.RegisterHotKey(hwnd, HotkeySettingsId, Native.MOD_CONTROL | Native.MOD_ALT, 0x53))
                 Log.Warn("全局热键 Ctrl+Alt+S 注册失败（可能被其它程序占用）");
         }

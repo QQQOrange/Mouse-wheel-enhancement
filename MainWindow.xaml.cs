@@ -47,7 +47,9 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        var bootSw = Stopwatch.StartNew();
         InitializeComponent();
+        var initMs = bootSw.ElapsedMilliseconds;
 
         AppsList.ItemsSource = _rows;
 
@@ -108,6 +110,8 @@ public partial class MainWindow : Window
             ApplyTitleBar(Theme.IsLightNow);
             ApplyWindowCorner();
         };
+
+        Log.Info($"主窗口构造完成：XAML {initMs} ms / 总计 {bootSw.ElapsedMilliseconds} ms");
     }
 
     /// <summary>取画刷（带缓存）。</summary>
@@ -395,7 +399,9 @@ public partial class MainWindow : Window
 
         var rate = e.LastRatePerSec;
         StatRate.Text = rate > 0.05 ? $"{rate:0.0} 格/秒" : "—";
-        RateBar.Value = Math.Min(40.0, Math.Max(0.0, rate));
+        var barValue = Math.Min(40.0, Math.Max(0.0, rate));
+        // 只在真的变了才动 ProgressBar：400 ms 一次的无效 Value 赋值也会触发重绘
+        if (Math.Abs(RateBar.Value - barValue) > 0.05) RateBar.Value = barValue;
 
         var on = Services.Config.Enabled;
         _loading = true;
@@ -403,13 +409,14 @@ public partial class MainWindow : Window
         _loading = false;
 
         StatusText.Text = !on ? "已暂停" : running ? "已启用" : "钩子异常";
-        StatusDot.Fill = (Brush)FindResource(!on ? "TextMuted" : running ? "SuccessBrush" : "DangerBrush");
+        StatusDot.Fill = B(!on ? "TextMuted" : running ? "SuccessBrush" : "DangerBrush");
         HookHint.Text = !on
             ? "总开关关闭 · 完全走系统默认"
             : running
                 ? $"钩子正常 · 已接管 {e.BoostedCount} 次"
                 : "钩子未启动，滚动不受影响";
-        StatusToday.Text = $"本次已接管 {e.BoostedCount} 次 · 放行 {e.PassedCount} 次";
+        var today = $"本次已接管 {e.BoostedCount} 次 · 放行 {e.PassedCount} 次";
+        if (StatusToday.Text != today) StatusToday.Text = today;
 
         FooterRight.Text = Services.IsElevated
             ? $"v{Services.Version} · 管理员"
@@ -657,15 +664,44 @@ public partial class MainWindow : Window
     {
         if (_helpRendered || HelpPanel == null) return;
         _helpRendered = true;
+        var sw = Stopwatch.StartNew();
         HelpContent.Render(HelpPanel);
+        Log.Info($"帮助页渲染完成：{sw.ElapsedMilliseconds} ms / {HelpPanel.Children.Count} 张卡片");
     }
 
-    /// <summary>帮助页搜索：按关键词过滤卡片（标题或正文命中即留下）。</summary>
+    private DispatcherTimer? _helpFilterTimer;
+
+    /// <summary>
+    /// 帮助页搜索：按关键词过滤卡片（标题或正文命中即留下）。
+    ///
+    /// <para>
+    /// 输入时**防抖 180 ms**：中文 IME 每敲一个字符都会触发 TextChanged，
+    /// 而每次过滤都要递归遍历整棵帮助页（几百个 TextBlock）—— 不防抖的话
+    /// 连续打字会明显发涩。
+    /// </para>
+    /// </summary>
     private void HelpSearch_Changed(object sender, TextChangedEventArgs e)
     {
-        EnsureHelpRendered();
-        var q = HelpSearchBox.Text.Trim();
+        if (!_helpRendered) return;   // 还没渲染过就没东西可过滤（也避免反向触发渲染）
 
+        if (_helpFilterTimer == null)
+        {
+            _helpFilterTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(180),
+            };
+            _helpFilterTimer.Tick += (_, _) => ApplyHelpFilter();
+        }
+
+        _helpFilterTimer.Stop();
+        _helpFilterTimer.Start();
+    }
+
+    private void ApplyHelpFilter()
+    {
+        _helpFilterTimer?.Stop();
+
+        var q = HelpSearchBox.Text.Trim();
         foreach (UIElement child in HelpPanel.Children)
         {
             if (child is not FrameworkElement fe) continue;
@@ -681,8 +717,12 @@ public partial class MainWindow : Window
         EnsureHelpRendered();
         if (sender is not Button b || b.Tag is not string key) return;
 
-        // 先复位过滤，保证目标卡片是可见的
-        if (HelpSearchBox.Text.Length > 0) HelpSearchBox.Text = "";
+        // 先复位过滤，保证目标卡片是可见的（不等防抖，立即生效）
+        if (HelpSearchBox.Text.Length > 0)
+        {
+            HelpSearchBox.Text = "";
+            ApplyHelpFilter();
+        }
 
         foreach (UIElement child in HelpPanel.Children)
         {

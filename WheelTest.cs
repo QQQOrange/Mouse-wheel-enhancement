@@ -59,10 +59,13 @@ internal static class WheelTest
             w.UpdateLayout();
             Pump(300);
 
-            var sv = w.HelpPanel?.Parent as ScrollViewer;
+            /* 帮助页的滚动容器。v1.7.6 在 HelpPanel 上面插了一层 StackPanel
+             * （放了「快速定位」卡片），所以不能再写 `HelpPanel.Parent as ScrollViewer` ——
+             * 直接用它自己的名字，层级再变也不会断。 */
+            var sv = w.HelpScroll;
             if (sv == null)
             {
-                sb.AppendLine("失败：帮助页的 HelpPanel 父级不是 ScrollViewer");
+                sb.AppendLine("失败：帮助页里找不到滚动容器");
                 return 2;
             }
 

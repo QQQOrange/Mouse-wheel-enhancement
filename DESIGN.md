@@ -2857,4 +2857,55 @@ DoubleClick）被去重窗口忽略，内部仍然只走一遍打开流程。
 
 ---
 
+## 40. 「用起来有点卡」的排查与修复（v1.7.7）
+
+### 40.1 先量，不猜
+
+加了常驻计时日志（`主窗口构造完成` / `帮助页渲染完成`），实测：
+
+| 项目 | 耗时 |
+|---|---|
+| 首次窗口构造（XAML 134 ms） | 192 ms |
+| 重建窗口 | 35 ms |
+| 帮助页渲染（8 张卡片） | 11 ms |
+| 空闲 CPU（托盘 + 窗口，8 秒） | 0.59% |
+| `--wheeltest` 单格位移 | 60 px（3 行 × 20 px）正确 |
+
+结论：静态开销和滚动链路都正常，问题在**交互路径上的同步阻塞**。
+
+### 40.2 修掉的三处阻塞
+
+1. **托盘单击在 WndProc 里同步建窗口**：v1.7.6 去掉 400 ms 延迟后，
+   `RequestShow` 直接同步调 `ShowWindow`（`new MainWindow` / `Show` / `Activate` /
+   Topmost 翻转两次），整段占住消息泵 —— 体感"点托盘卡一下"。
+   改成 `Dispatcher.BeginInvoke(Input)`：点击立刻返回，窗口下一拍出现。
+2. **每 400 ms 的刷新里有无效赋值**：`RateBar.Value`、`StatusToday.Text`
+   即使内容没变也赋值（ProgressBar 会重绘）。改成"变了才写"；
+   `StatusDot.Fill` 的 `FindResource` 改用带缓存的 `B()`。
+3. **帮助页搜索每个字符都遍历整棵树**：中文 IME 一次输入会触发多次
+   `TextChanged`，每次递归遍历几百个 TextBlock。加 180 ms 防抖，
+   且未渲染时直接返回（不再反向触发渲染）。
+
+### 40.3 顺手修掉的一个诊断 bug（v1.7.6 引入）
+
+`WheelTest` 原来用 `HelpPanel.Parent as ScrollViewer` 拿滚动容器。
+v1.7.6 在 `HelpPanel` 上面插了一层 `StackPanel`（放"快速定位"卡），
+父级变成 `StackPanel`，`--wheeltest` 直接返回 2。
+改用 `w.HelpScroll`，层级再变也不会断。
+
+### 40.4 其它
+
+- `Ctrl+Alt+W` 在本机被别的程序占用（日志有 WARN）：注册失败时自动退到
+  `Ctrl+Alt+Shift+W`，并记一条 INFO 说明实际生效的组合。
+- 常驻诊断：`主窗口构造完成 / 帮助页渲染完成` 两条计时日志保留，
+  以后再遇到"卡"可以直接对比这两个数。
+
+### 40.5 验证
+
+- `--selftest` 304 全过；`--frametrace` 四场景全过；`--smoke` 七页布局通过
+- `--wheeltest` **通过**（单格 60 px）
+- `--measure --show` 正常；构建 0 警告 0 错误
+
+---
+
 MIT License · © 2026 QQQOrange

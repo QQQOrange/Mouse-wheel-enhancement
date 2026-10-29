@@ -82,7 +82,7 @@
                         <TextBlock x:Name="HookHint" Style="{StaticResource Caption}" FontSize="11" Margin="0,4,0,0"
                                    Text="滚轮钩子正常" />
                         <TextBlock x:Name="StatusToday" Style="{StaticResource Caption}" FontSize="11" Margin="0,3,0,0"
-                                   Text="本次已接管 0 次" />
+                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Text="本次已接管 0 次" />
                     </StackPanel>
                 </Border>
             </Grid>

@@ -109,6 +109,24 @@ internal sealed class TrayController : IDisposable
         if (now - Interlocked.Read(ref _lastShowTicks) < 300) return;
         Interlocked.Exchange(ref _lastShowTicks, now);
 
+        /* ⚠ 不在 NotifyIcon 的原生 WndProc 里同步建窗口。
+         *
+         * 这里是主线程（WPF 与 WinForms 共用）。同步走 ShowWindow 会做
+         * "new MainWindow / Show / Activate / Topmost 翻转两次"，
+         * 期间整个消息泵被占住 —— 用户看到的就是"点托盘卡一下"。
+         * 丢到 Dispatcher 的 Input 优先级里执行：点击立刻返回，窗口下一拍出现。 */
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher != null && !dispatcher.HasShutdownStarted)
+        {
+            dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input,
+                new Action(() =>
+                {
+                    try { Services.ShowWindow(); }
+                    catch (Exception ex) { Log.Warn("托盘打开窗口失败：" + ex.Message); }
+                }));
+            return;
+        }
+
         try { Services.ShowWindow(); }
         catch (Exception ex) { Log.Warn("托盘打开窗口失败：" + ex.Message); }
     }
