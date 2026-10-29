@@ -1022,29 +1022,38 @@
             <!-- ─────────── 帮助 ─────────── -->
             <!-- 内容由 HelpContent.Render() 生成：二十多个参数 × 五行说明，写死在 XAML 里会难以维护 -->
             <TabItem Header="帮助">
-                <ScrollViewer x:Name="HelpScroll" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="24,18,24,26">
-                        <Border Style="{StaticResource Card}">
-                            <StackPanel>
-                                <TextBlock Text="快速定位" Style="{StaticResource H2}" Margin="0,0,0,8" />
-                                <TextBox x:Name="HelpSearchBox" Style="{StaticResource DarkTextBox}"
-                                         TextChanged="HelpSearch_Changed"
-                                         ToolTip="输入参数名或关键词，只留下包含它的说明" />
-                                <WrapPanel Margin="0,10,0,0">
-                                    <Button Content="加速" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
-                                            Click="HelpJump_Click" Tag="加速" />
-                                    <Button Content="平滑滚动" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
-                                            Click="HelpJump_Click" Tag="平滑滚动" />
-                                    <Button Content="应用名单" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
-                                            Click="HelpJump_Click" Tag="应用名单" />
-                                    <Button Content="常见问题" Style="{StaticResource GhostButton}"
-                                            Click="HelpJump_Click" Tag="常见问题" />
-                                </WrapPanel>
-                            </StackPanel>
-                        </Border>
-                        <StackPanel x:Name="HelpPanel" />
-                    </StackPanel>
-                </ScrollViewer>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 固定在顶部：不随内容滚动。
+                         搜索框（TextBox）和按钮如果跟在滚动区里，每次滚动都要参与重绘，
+                         是"帮助页滚起来发涩"的来源之一。 -->
+                    <Border Grid.Row="0" Style="{StaticResource Card}" Margin="24,18,24,0">
+                        <StackPanel>
+                            <TextBlock Text="快速定位" Style="{StaticResource H2}" Margin="0,0,0,8" />
+                            <TextBox x:Name="HelpSearchBox" Style="{StaticResource DarkTextBox}"
+                                     TextChanged="HelpSearch_Changed"
+                                     ToolTip="输入参数名或关键词，只留下包含它的说明" />
+                            <WrapPanel Margin="0,10,0,0">
+                                <Button Content="加速" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                        Click="HelpJump_Click" Tag="加速" />
+                                <Button Content="平滑滚动" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                        Click="HelpJump_Click" Tag="平滑滚动" />
+                                <Button Content="应用名单" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                        Click="HelpJump_Click" Tag="应用名单" />
+                                <Button Content="常见问题" Style="{StaticResource GhostButton}"
+                                        Click="HelpJump_Click" Tag="常见问题" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="1" x:Name="HelpScroll" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="HelpPanel" Margin="24,10,24,26" />
+                    </ScrollViewer>
+                </Grid>
             </TabItem>
 
             <!-- ─────────── 关于 ─────────── -->

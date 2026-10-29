@@ -113,9 +113,12 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        sv.ScrollToVerticalOffset(planned.Value);
+        /* 不直接应用：同一渲染帧内可能来好几个 delta（160 Hz 注入），
+         * 每来一个就 ScrollToVerticalOffset 会白做一轮 Arrange（帮助页有上千个
+         * TextBlock，一轮 Arrange 不便宜）。攒到下一个渲染帧再一次性应用 ——
+         * 实际 Arrange 次数自动降到"渲染帧率"，而不是"注入帧率"。 */
+        QueueScroll(sv, planned.Value - before);
         e.Handled = true;
-
         if (WheelDiagOn)
             WheelDiagLog.Enqueue($"px={px:0.##} lines={lines} delta={e.Delta} " +
                                  $"offset {before:0.##}→{planned.Value:0.##} " +
@@ -165,6 +168,43 @@ public partial class App : System.Windows.Application
 
     private Mutex? _mutex;
     private EventWaitHandle? _activateEvent;
+
+    /* ── 本程序窗口滚动的"帧合并" ──
+     * 注入是 160 帧/秒，但 WPF 只在渲染帧真正画一次。把同一帧内的多次位移
+     * 累加起来、到渲染帧一次应用，Arrange 次数就从"注入帧率"降到"渲染帧率"。 */
+    private ScrollViewer? _pendingScrollViewer;
+    private double _pendingScrollDelta;
+    private bool _scrollFlushHooked;
+
+    private void QueueScroll(ScrollViewer sv, double delta)
+    {
+        if (delta == 0) return;
+
+        _pendingScrollViewer = sv;
+        _pendingScrollDelta += delta;
+
+        if (_scrollFlushHooked) return;
+        _scrollFlushHooked = true;
+        System.Windows.Media.CompositionTarget.Rendering += FlushScroll;
+    }
+
+    private void FlushScroll(object? sender, EventArgs e)
+    {
+        System.Windows.Media.CompositionTarget.Rendering -= FlushScroll;
+        _scrollFlushHooked = false;
+
+        var sv = _pendingScrollViewer;
+        var delta = _pendingScrollDelta;
+        _pendingScrollViewer = null;
+        _pendingScrollDelta = 0;
+
+        if (sv == null || delta == 0) return;
+        // 窗口已经藏起来了：这一帧的尾巴丢掉，别留着下次打开时跳一下
+        if (!sv.IsVisible) return;
+
+        var max = Math.Max(0, sv.ScrollableHeight);
+        sv.ScrollToVerticalOffset(Math.Clamp(sv.VerticalOffset + delta, 0, max));
+    }
 
     /// <summary>
     /// 本次启动已经尝试过提权（命令行带 <see cref="Core.AdminStart.ElevateAttemptArg"/>）。

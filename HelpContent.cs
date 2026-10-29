@@ -565,8 +565,14 @@ internal static class HelpContent
             Margin = new Thickness(0, top, 0, bottom),
             TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
             LineHeight = size * 1.62,
+            // 固定行高（而不是默认的 MaxHeight 策略）：每行高度一致，
+            // 布局和滚动时不用逐行重新算基线。
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
         };
-        tb.SetValue(TextOptions.TextFormattingModeProperty, TextFormattingMode.Ideal);
+        /* 帮助页是**要滚动的长文本**：Display 模式按像素网格对齐，
+         * 渲染/测量都比 Ideal（精确排版）快得多。Ideal 在几百个 TextBlock
+         * 一起滚动时会明显掉帧 —— 这正是"滚动不流畅"的主因。 */
+        tb.SetValue(TextOptions.TextFormattingModeProperty, TextFormattingMode.Display);
         return tb;
     }
 

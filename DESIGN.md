@@ -2908,4 +2908,39 @@ v1.7.6 在 `HelpPanel` 上面插了一层 `StackPanel`（放"快速定位"卡）
 
 ---
 
+## 41. 滚动不流畅：文本排版模式 + 帧合并（v1.7.8）
+
+### 41.1 症状与定位
+
+用户反馈「主要是滚动时候感觉有些不流畅」。先排除已知项：
+
+- `--frametrace`：四场景帧间隔 6.25 ms 级别、步长起伏 ≤2.2×，动画器没问题
+- `--wheeltest`：单格 60 px（3 行 × 20 px），位移正确
+- `InputInjector`：复用 ThreadStatic 缓冲区、一次 `SendInput`，注入侧没有多余开销
+
+问题集中在**本程序自己的窗口**（帮助页文本最密集）。
+
+### 41.2 三个原因
+
+1. **帮助页全部文本用 `TextFormattingMode.Ideal`**（精确排版）。
+   几百个 `TextBlock` 一起滚动时，Ideal 的测量/渲染明显更贵。
+   → 改成 `Display`（按像素网格对齐），并给每行加
+   `LineStackingStrategy = BlockLineHeight`（固定行高，不用逐行算基线）。
+2. **搜索框和跳转按钮夹在滚动区里**：`TextBox` 每次滚动都要参与重绘。
+   → 帮助页改成两行 Grid：顶部固定「快速定位」卡，下面才是 ScrollViewer。
+3. **注入 160 帧/秒，每帧都 `ScrollToVerticalOffset`**：
+   WPF 只在渲染帧真正画一次，多余的 Arrange 全白做 —— 帮助页上千个元素时，
+   Arrange 本身就成了瓶颈。
+   → 同一渲染帧内的位移先累加，`CompositionTarget.Rendering` 时一次应用。
+   Arrange 次数从"注入帧率"降到"渲染帧率"，且渲染跟不上时会自动降频，
+   不会再出现"越滚越卡"的堆积。
+
+### 41.3 验证
+
+- `--selftest` 304 / `--frametrace` 四场景 / `--smoke` 七页 / `--wheeltest` 全部通过
+- `--wheeltest` 单格仍是 60 px（帧合并没有丢位移）
+- 构建 0 警告 0 错误
+
+---
+
 MIT License · © 2026 QQQOrange
