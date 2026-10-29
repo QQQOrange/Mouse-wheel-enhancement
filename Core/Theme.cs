@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -104,35 +105,55 @@ public static class Theme
     /// DynamicResource，白白重绘一次。
     /// </para>
     /// </summary>
+    /// <summary>调色板在 MergedDictionaries 里的位置。第一次找一次，之后直接按索引换。</summary>
+    private static int _paletteIndex = -1;
+
     private static bool ApplyPalette(bool light)
     {
         var app = Application.Current;
         if (app == null) return false;
 
         var merged = app.Resources.MergedDictionaries;
-        var want = light ? "Themes/Palette.Light.xaml" : "Themes/Palette.Dark.xaml";
+        var name = light ? "Palette.Light.xaml" : "Palette.Dark.xaml";
 
-        for (var i = 0; i < merged.Count; i++)
+        /* 位置缓存：正常只有一份调色板、位置固定。每次遍历 + 字符串匹配没必要，
+         * 而且"按 Contains(Palette.) 找"在多份字典时不够稳。缓存后顺便校验
+         * 一次索引有效性（越界、或那个位置已经不是调色板了就重找）。 */
+        if (_paletteIndex < 0 || _paletteIndex >= merged.Count || !IsPalette(merged[_paletteIndex]))
         {
-            var d = merged[i];
-            var src = d.Source?.OriginalString ?? "";
-            if (!src.Contains("Palette.", StringComparison.OrdinalIgnoreCase)) continue;
+            _paletteIndex = -1;
+            for (var i = 0; i < merged.Count; i++)
+            {
+                if (IsPalette(merged[i])) { _paletteIndex = i; break; }
+            }
+        }
 
-            // 已经是想要的那份：不动
-            if (src.EndsWith(light ? "Palette.Light.xaml" : "Palette.Dark.xaml",
-                             StringComparison.OrdinalIgnoreCase))
-                return false;
+        if (_paletteIndex >= 0)
+        {
+            var cur = merged[_paletteIndex].Source?.OriginalString ?? "";
+            // 已经是想要的那份：不动（换字典会让整棵视觉树重新解析 DynamicResource）
+            if (cur.EndsWith(name, StringComparison.OrdinalIgnoreCase)) return false;
 
-            merged[i] = new ResourceDictionary { Source = new Uri(want, UriKind.Relative) };
+            merged[_paletteIndex] = new ResourceDictionary
+            {
+                Source = new Uri("Themes/" + name, UriKind.Relative),
+            };
             Log.Info($"主题切换：{(light ? "浅色" : "深色")}");
             return true;
         }
 
         // 没找到调色板（正常不会发生，App.xaml 一定合并了一份）→ 插到最前面
-        merged.Insert(0, new ResourceDictionary { Source = new Uri(want, UriKind.Relative) });
+        merged.Insert(0, new ResourceDictionary
+        {
+            Source = new Uri("Themes/" + name, UriKind.Relative),
+        });
+        _paletteIndex = 0;
         Log.Info($"主题切换：{(light ? "浅色" : "深色")}（插入调色板）");
         return true;
     }
+
+    private static bool IsPalette(ResourceDictionary d)
+        => (d.Source?.OriginalString ?? "").Contains("Palette.", StringComparison.OrdinalIgnoreCase);
 
     /* ══════════════ 跟随系统：监听 ══════════════ */
 
@@ -149,33 +170,42 @@ public static class Theme
     {
         _mode = Normalize(mode);
 
+        /* 轮询**始终**开着，作为保底。
+         *
+         * 消息监听在部分环境里并不可靠（见下面 Start 里的说明），
+         * 而"系统切了主题却不变"是用户能直接感知的缺陷，不能赌。
+         * 3 秒读一个 HKCU 下的 DWORD，代价可以忽略；强制浅/深色时
+         * Recheck 第一行就返回，实际开销只有一次字符串比较。 */
+        StartPolling();
+
         if (_watcher != null) return;
 
         try
         {
-            /* 建一个**消息专用窗口**（父窗口 = HWND_MESSAGE）只为了收广播消息。
+            /* 建一个**顶层**的隐藏窗口收广播。
              *
-             * 为什么不用 Microsoft.Win32.SystemEvents.UserPreferenceChanged：
-             * 它在 .NET 上要靠一个隐藏窗口 + 消息泵，行为随进程状态而变，
-             * 而且会为**所有**设置变化（字体、鼠标速度、声音）都回调一次，噪音很大。
-             * 这里自己收 WM_SETTINGCHANGE / WM_THEMECHANGED，只认这两条，
-             * 什么时候来、来几条，都在自己手里。 */
+             * ⚠ 这里绝对不能设 ParentWindow = HWND_MESSAGE（-3）。
+             * WM_SETTINGCHANGE 是 SendMessage(HWND_BROADCAST) 广播给**顶层窗口**的，
+             * message-only 窗口按设计就收不到 —— 之前正是这么写的，
+             * 于是"系统切主题"这条路径永远不触发，只能靠轮询兜底，
+             * 而轮询又只在创建失败时才启动，两者都失效。
+             *
+             * 0×0、WindowStyle=0（无 WS_VISIBLE）的顶层窗口不可见、不进任务栏，
+             * 但只要它还是顶层窗口，就能收到广播。 */
             var p = new HwndSourceParameters("MWE.ThemeWatcher")
             {
                 Width = 0,
                 Height = 0,
                 WindowStyle = 0,
-                ParentWindow = new IntPtr(-3), // HWND_MESSAGE
             };
             _watcher = new HwndSource(p);
             _watcher.AddHook(WndProc);
-            Log.Info("主题监听已启动（跟随系统）");
+            Log.Info("主题监听已启动（顶层隐藏窗口 + 3 秒轮询兜底）");
         }
         catch (Exception ex)
         {
-            // 收不到消息就退回轮询。宁可每 4 秒读一次注册表，也不能让主题不跟手。
-            Log.Warn("主题监听创建失败，改用轮询：" + ex.Message);
-            StartPolling();
+            // 收不到消息就只靠轮询。宁可每 3 秒读一次注册表，也不能让主题不跟手。
+            Log.Warn("主题监听创建失败，仅靠 3 秒轮询：" + ex.Message);
         }
     }
 
@@ -186,11 +216,25 @@ public static class Theme
         Apply(_mode);
     }
 
+    private const int WM_SETTINGCHANGE = 0x001A;
+    private const int WM_THEMECHANGED = 0x031A;
+
     private static IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        // WM_SETTINGCHANGE = 0x001A（系统设置变了，主题切换也走这条，lParam="ImmersiveColorSet"）
-        // WM_THEMECHANGED  = 0x031A（主题本身换了）
-        if (msg == 0x001A || msg == 0x031A) ScheduleRecheck();
+        if (msg == WM_THEMECHANGED)
+        {
+            ScheduleRecheck();
+        }
+        else if (msg == WM_SETTINGCHANGE)
+        {
+            /* lParam 是"变了什么"的字符串。主题切换时是 "ImmersiveColorSet"。
+             * 只认它（以及 lParam=0 的"没说具体是什么"），避免改分辨率 / 字体 /
+             * 鼠标速度也把这里叫醒 —— 虽然 Recheck 里有"没变就不动"的闸，
+             * 但少一次无谓的注册表读取总是好的。 */
+            var what = lParam == IntPtr.Zero ? null : Marshal.PtrToStringUni(lParam);
+            if (what == null || what.Equals("ImmersiveColorSet", StringComparison.OrdinalIgnoreCase))
+                ScheduleRecheck();
+        }
         return IntPtr.Zero;
     }
 
@@ -242,7 +286,7 @@ public static class Theme
         if (_poll != null) return;
         _poll = new DispatcherTimer(DispatcherPriority.Background)
         {
-            Interval = TimeSpan.FromSeconds(4),
+            Interval = TimeSpan.FromSeconds(3),
         };
         _poll.Tick += (_, _) => Recheck();
         _poll.Start();

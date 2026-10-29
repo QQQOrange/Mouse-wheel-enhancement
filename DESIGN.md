@@ -2943,4 +2943,70 @@ v1.7.6 在 `HelpPanel` 上面插了一层 `StackPanel`（放"快速定位"卡）
 
 ---
 
+## 42. 跟随系统主题：根因、修复、架构与 UI 精修（v1.7.9）
+
+### 42.1 缺陷清单与根因
+
+| # | 现象 | 根因 |
+|---|---|---|
+| 1 | **系统切了浅/深色，程序不跟** | `Theme.Start` 用 `ParentWindow = HWND_MESSAGE(-3)` 建监听窗口。message-only 窗口**收不到广播** `WM_SETTINGCHANGE`；而轮询只在"创建失败"时才启动 —— 监听窗口创建成功但听不见，两条路一起断。 |
+| 2 | 改分辨率/字体也触发一次主题检查 | `WndProc` 对任何 `WM_SETTINGCHANGE` 都 recheck，没看 lParam（`"ImmersiveColorSet"`）。 |
+| 3 | **手动覆盖后「回不到跟随」** | 标题栏按钮只在 浅↔深 两态循环，进不了"跟随系统"；只能去概览页找。 |
+| 4 | `ApplyPalette` 每次遍历字典 + 字符串匹配 | 没缓存调色板位置；`Contains("Palette.")` 在多份字典时不够稳。 |
+| 5 | 键盘 Tab 完全看不到焦点 | 所有交互控件 `FocusVisualStyle="{x:Null}"`。 |
+| 6 | `SwitchSmall` 是坏样式 | 38×21 里放 18px Knob + Margin 3 会溢出，且从未被引用。 |
+| 7 | 说明文字对比度不足（WCAG） | 浅色 `#8A93A8`、深色 `#727D91` 在各自底色上约 3.3~4.0:1。 |
+
+### 42.2 修复
+
+1. **监听窗口改顶层 + 轮询始终启动**（`Core/Theme.cs`）
+   - 去掉 `ParentWindow = new IntPtr(-3)`
+   - `Start()` 第一件事就是 `StartPolling()`（3 秒）；强制浅/深色时 `Recheck` 第一行返回，开销仅一次字符串比较
+2. `WndProc` 只看 `WM_THEMECHANGED` 和 lParam 为 `"ImmersiveColorSet"`（或 0）的 `WM_SETTINGCHANGE`
+3. 标题栏按钮改**三态循环**（跟随 → 浅 → 深 → 跟随），图标用 Fluent 的 `E706/E708/E793`，ToolTip 说明下一次点击
+4. `ApplyPalette` 缓存 `_paletteIndex` 并做有效性校验
+5. 新增 `FocusRing` 样式，10 处 `FocusVisualStyle` 从 `{x:Null}` 换成它
+6. 删除 `SwitchSmall`
+7. `TextMuted`：浅色 `#6F7889`、深色 `#8C96A8`
+
+### 42.3 架构评估
+
+**现状**：`static Theme` + `Changed` 事件 + 替换 `Application.Resources.MergedDictionaries` 里的一份调色板；
+样式全部 `DynamicResource` 指向调色板 Key；UI 侧（`MainWindow`）手动处理画刷缓存、曲线重绘、帮助页重建。
+
+**优点**：零依赖、切换即时、不需要重建窗口；两份调色板只有颜色、样式一份，避免"改一处漏一处"。
+
+**问题**：
+- 静态状态不可注入 → 只能测纯函数（`ResolveIsLight`），监听/切换链路没有单测
+- 系统检测硬编码在 `SystemIsLight()`，无法替换为其它来源
+- "代码画的 UI"（曲线、帮助页）靠窗口手动重建，新增这类 UI 容易漏
+- 主题模式用字符串（`system/light/dark`），靠 `Normalize` 兜底
+
+**建议（按收益排序）**：
+1. 抽 `IThemeService`（`Mode` / `Effective` / `IsSystemLight()` / `Changed`），`Theme` 作默认实现 —— 测试可注入假系统
+2. `ThemeMode` 用枚举，JSON 序列化时映射字符串（配置可读性不变）
+3. UI 侧引入 `IThemeAware { void OnThemeChanged(); }`，由 MainWindow 统一登记/遍历，替代散布的手工刷新
+4. 调色板改为"语义令牌表 + 生成器"（一份常量生成两份 xaml），从根上消除 Key 漂移（现有自检已守，但仍是手写）
+5. 若将来要过渡动画：不能靠换字典（瞬时），需要预建两套 Brush 并对关键色做 `ColorAnimation`
+
+**不采纳的**：把主题做成 `ThemeManager` 实例 + DI 容器 —— 本程序只有一个窗口、一个 App，装配成本大于收益；静态类 + 接口抽出来已经够测。
+
+### 42.4 UI 精修
+
+- **键盘焦点环**：统一 2px 强调色圆角描边（仅键盘导航显示）
+- **开关 Knob 滑动**：160 ms `CubicEase` 位移，替代"左右对齐瞬间跳"
+- **侧栏选中指示条**：左侧 3×16 强调色小竖条（深色下"选中"与"悬停"背景太接近）
+- **说明文字对比度**：`TextMuted` 两套主题都调深/调亮
+- **删死样式** `SwitchSmall`
+
+### 42.5 验证
+
+- **真实系统切换**：把 `HKCU\...\Personalize\AppsUseLightTheme` 从 0 翻到 1，
+  5.9 秒内日志出现 `系统主题变化 → 浅色`（轮询 3 秒周期内），注册表随即恢复原值
+- `--selftest` 304 全过
+- `--smoke` 连续两次 rc=0（含"主题热切换 → 浅色侧栏 #F1F4FA / 深色 #141821"断言）
+- 构建 0 警告 0 错误
+
+---
+
 MIT License · © 2026 QQQOrange

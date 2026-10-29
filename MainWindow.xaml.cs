@@ -622,20 +622,23 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 标题栏的深浅色按钮：一次点击直接切到"另一种"，并把它记成显式选择。
+    /// 标题栏的深浅色按钮：**三态循环** —— 跟随系统 → 固定浅色 → 固定深色 → 跟随系统。
     ///
     /// <para>
-    /// 只做浅↔深两态切换，不把"跟随系统"塞进这个循环 ——
-    /// 三态循环点起来没人能预期下一次是什么。"跟随系统"仍然在「概览 → 外观」里选。
+    /// 以前只做浅↔深两态：点一下就变成"固定"，而"恢复跟随系统"只能去
+    /// 概览 → 外观里找 —— 用户点了标题栏按钮之后就"回不去跟随"了。
+    /// 现在三态闭环，图标和 ToolTip 都跟着当前状态走，下一次点会发生什么一目了然。
     /// </para>
     /// </summary>
     private void ThemeBtn_Click(object sender, RoutedEventArgs e)
     {
-        var wantLight = !Theme.IsLightNow;
-        var mode = wantLight ? Theme.Light : Theme.Dark;
+        var cur = Theme.Normalize(Services.Config.Appearance.Theme);
+        var next = cur == Theme.System ? Theme.Light
+                 : cur == Theme.Light ? Theme.Dark
+                 : Theme.System;
 
-        Services.Config.Appearance.Theme = mode;
-        Theme.SetMode(mode);
+        Services.Config.Appearance.Theme = next;
+        Theme.SetMode(next);
         UpdateThemeHints();
         Commit(refreshDerived: false);
 
@@ -644,7 +647,23 @@ public partial class MainWindow : Window
         // 直接换字符串会触发 WPF 去重挂正在显示的 Popup，
         // 那是"根 Visual 不能具有父级"最容易冒头的时机。
         PopupCleanup.CloseCurrentToolTip();
-        ThemeBtn.ToolTip = $"当前{(wantLight ? "浅色" : "深色")} · 点击切换";
+        RefreshThemeButton();
+    }
+
+    /// <summary>标题栏主题按钮的图标与提示，跟着当前模式走。</summary>
+    private void RefreshThemeButton()
+    {
+        if (ThemeBtn == null || ThemeGlyph == null) return;
+
+        var mode = Theme.Normalize(Services.Config.Appearance.Theme);
+        var (glyph, tip) = mode switch
+        {
+            Theme.Light => ("\uE706", "固定浅色 · 点击切到固定深色（再点一次回到跟随系统）"),
+            Theme.Dark => ("\uE708", "固定深色 · 点击回到跟随系统"),
+            _ => ("\uE793", $"跟随系统（现在是{(Theme.IsLightNow ? "浅色" : "深色")}）· 点击切到固定浅色"),
+        };
+        ThemeGlyph.Text = glyph;
+        ThemeBtn.ToolTip = tip;
     }
 
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
@@ -1267,6 +1286,8 @@ public partial class MainWindow : Window
         ThemeNow.Text = mode == Theme.System
             ? $"跟随系统 · 现在是{(Theme.SystemIsLight() ? "浅色" : "深色")}"
             : $"固定{(Theme.IsLightNow ? "浅色" : "深色")}，系统换了也不跟";
+
+        RefreshThemeButton();
     }
 
     private void AutoFps_Changed(object sender, RoutedEventArgs e)

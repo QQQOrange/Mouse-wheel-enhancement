@@ -66,32 +66,43 @@ def upload(name, path):
 
 
 # ── 发布说明 ──
-BODY = """## 滚动更顺：文本排版模式 + 帧合并
+BODY = """## 跟随系统主题修好了：根因是监听窗口收不到广播
 
-### 症状
+### 主要修复
 
-反馈「主要是滚动时候感觉有些不流畅」。
+**「系统切了浅/深色，程序不跟」**
 
-### 定位
+监听窗口原来是 `HWND_MESSAGE`（message-only），而 `WM_SETTINGCHANGE` 是广播给
+**顶层窗口**的 —— message-only 窗口按设计收不到。轮询又只在"创建失败"时才启动，
+两条路一起断。
 
-先排除已知项：`--frametrace` 四场景帧间隔 6.25 ms 级、步长起伏 ≤2.2×；
-`--wheeltest` 单格 60 px 正确；`InputInjector` 只有一次 `SendInput`。
-问题集中在本程序自己的窗口（帮助页文本最密集）。
+- 监听窗口改成**顶层隐藏窗口**
+- **3 秒轮询始终开启**兜底（强制浅/深色时立刻返回，几乎零开销）
+- 只认 `WM_THEMECHANGED` 和 lParam 为 `"ImmersiveColorSet"` 的 `WM_SETTINGCHANGE`
 
-### 三个原因与修法
+**「手动覆盖后回不到跟随」**
 
-1. **帮助页全部文本用 `TextFormattingMode.Ideal`**（精确排版）——几百个 TextBlock
-   一起滚动时测量/渲染明显更贵。改成 `Display` + `LineStackingStrategy=BlockLineHeight`。
-2. **搜索框和跳转按钮夹在滚动区里**，每次滚动都要参与重绘。改成顶部固定卡，
-   滚动区只剩内容本身。
-3. **注入 160 帧/秒、每帧都 `ScrollToVerticalOffset`**，而 WPF 只在渲染帧真正画一次——
-   多余的 Arrange 全白做。改成同一渲染帧内累加、`CompositionTarget.Rendering`
-   一次应用：Arrange 次数降到渲染帧率，渲染跟不上时自动降频，不会再"越滚越卡"。
+标题栏按钮从"浅↔深"两态改成**三态循环**：跟随 → 浅 → 深 → 跟随。
+图标和 ToolTip 都跟着状态走。
+
+### 其它修复
+
+- `ApplyPalette` 缓存调色板位置，不再每次遍历字典 + 字符串匹配
+- 键盘焦点可见（10 处 `FocusVisualStyle` 从 null 换成统一焦点环）
+- 删除从未被引用、尺寸也错的 `SwitchSmall`
+- `TextMuted` 两套主题对比度都提到 WCAG AA 附近
+
+### UI 精修
+
+- 开关 Knob 160 ms 滑动（不再瞬间跳）
+- 侧栏选中项加左侧强调色小竖条
+- 说明文字在深/浅色下都更清楚
 
 ### 验证
 
-- `--selftest` 304 / `--frametrace` 四场景 / `--smoke` 七页 / `--wheeltest` 全部通过
-- `--wheeltest` 单格仍是 60 px（帧合并没有丢位移）
+- **真实系统切换实测**：改 `AppsUseLightTheme` 后 **5.9 秒内**自动切到浅色
+  （日志 `系统主题变化 → 浅色`），注册表随即恢复
+- `--selftest` 304 全过；`--smoke` 连续两次 rc=0
 - 构建 0 警告 0 错误
 
 ## 下载
@@ -103,7 +114,7 @@ BODY = """## 滚动更顺：文本排版模式 + 帧合并
 REL = api("POST", "/repos/%s/releases" % REPO, {
     "tag_name": TAG,
     "target_commitish": "main",
-    "name": "%s — 滚动更顺" % TAG,
+    "name": "%s — 跟随系统主题修复" % TAG,
     "body": BODY,
     "draft": False,
     "prerelease": False,

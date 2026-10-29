@@ -76,6 +76,11 @@ public sealed class WheelEngine : IDisposable
         var s = RuntimeSettings.From(cfg);
         Volatile.Write(ref _settings, s);
         _animator.UpdateSettings(s);
+
+        // 只在"本窗口暂停增强"开着时留一行：这是排查"为什么自己窗口不加速"的关键状态，
+        // 而且它只在用户主动打开那个开关时出现，不会刷屏。
+        if (s.SkipSelf)
+            Log.Info($"引擎配置：本窗口暂停增强已开启（OwnExe={s.OwnExe}）");
     }
 
     public bool Start()

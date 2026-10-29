@@ -121,7 +121,7 @@
                             Background="{DynamicResource BorderBrushSoft}" />
                     <Button x:Name="ThemeBtn" Style="{StaticResource IconButton}"
                             Click="ThemeBtn_Click" ToolTip="切换深浅色">
-                        <TextBlock Text="&#xE793;" Style="{StaticResource IconGlyph}" />
+                        <TextBlock x:Name="ThemeGlyph" Text="&#xE793;" Style="{StaticResource IconGlyph}" />
                     </Button>
                     <Button Style="{StaticResource IconButton}"
                             Click="Minimize_Click" ToolTip="最小化">

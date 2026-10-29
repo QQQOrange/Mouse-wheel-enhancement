@@ -37,7 +37,7 @@
     <!-- 文字三级 -->
     <SolidColorBrush x:Key="TextPrimary" Color="#171B26" />
     <SolidColorBrush x:Key="TextSecondary" Color="#58627A" />
-    <SolidColorBrush x:Key="TextMuted" Color="#8A93A8" />
+    <SolidColorBrush x:Key="TextMuted" Color="#6F7889" />
 
     <!-- 强调色 -->
     <SolidColorBrush x:Key="AccentBrush" Color="#2F6BF0" />

@@ -1702,7 +1702,9 @@ public partial class App : System.Windows.Application
             {
                 cfg.Behavior.PauseWhileSettingsOpen = true;
                 Services.Engine.Apply(cfg);
-                Thread.Sleep(120);
+                // 120 ms 在高负载时偶尔不够：注入会抢在 Volatile.Write 生效前跑完，
+                // 表现为"暂停开关没起作用"的假失败。250 ms 留足余量。
+                Thread.Sleep(250);
 
                 var beforeOff = Services.Engine.BoostedCount;
                 for (var i = 0; i < 10; i++) InputInjector.SendWheelWith(Native.WHEEL_DELTA, ForeignSignature);
