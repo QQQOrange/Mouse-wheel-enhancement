@@ -34,6 +34,9 @@ public partial class App : System.Windows.Application
     /// <summary>打开上面的留痕。默认关 —— 正常滚动时每帧都会过这里，不能白记。</summary>
     internal static bool WheelDiagOn;
 
+    /// <summary>全局热键的隐藏消息窗口（0×0 的 HwndSource）。null = 没注册成功。</summary>
+    private static System.Windows.Interop.HwndSource? _hotkeySource;
+
     /// <summary>
     /// 页面按像素滚动的入口（挂在 App.xaml 里那条隐式 ScrollViewer 样式上）。
     ///
@@ -467,10 +470,85 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // 全局热键：Ctrl+Alt+W 开关增强，Ctrl+Alt+S 打开设置。失败只记日志，不影响主流程。
+        RegisterGlobalHotkeys();
+
         var startMinimized = e.Args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
         if (!startMinimized) ShowMainWindow();
 
         if (Services.Config.Update.AutoCheck) _ = AutoCheckAsync();
+    }
+
+    /* ══════════════ 全局热键 ══════════════ */
+
+    private const int HotkeyToggleId = 0x4D57;
+    private const int HotkeySettingsId = 0x4D58;
+
+    /// <summary>
+    /// 注册两个系统级热键：<c>Ctrl+Alt+W</c> 开关增强、<c>Ctrl+Alt+S</c> 打开设置。
+    ///
+    /// <para>
+    /// 用一个 0×0 的隐藏 <see cref="System.Windows.Interop.HwndSource"/> 收 <c>WM_HOTKEY</c>。
+    /// 注册失败（被别的程序占用）只记一条日志 —— 热键是锦上添花，不该影响主流程。
+    /// </para>
+    /// </summary>
+    private static void RegisterGlobalHotkeys()
+    {
+        try
+        {
+            if (_hotkeySource != null) return;
+
+            var p = new System.Windows.Interop.HwndSourceParameters("MWE-Hotkeys")
+            {
+                Width = 0,
+                Height = 0,
+                WindowStyle = 0,
+            };
+            _hotkeySource = new System.Windows.Interop.HwndSource(p);
+            _hotkeySource.AddHook(HotkeyWndProc);
+
+            var hwnd = _hotkeySource.Handle;
+            if (!Native.RegisterHotKey(hwnd, HotkeyToggleId, Native.MOD_CONTROL | Native.MOD_ALT, 0x57))
+                Log.Warn("全局热键 Ctrl+Alt+W 注册失败（可能被其它程序占用）");
+            if (!Native.RegisterHotKey(hwnd, HotkeySettingsId, Native.MOD_CONTROL | Native.MOD_ALT, 0x53))
+                Log.Warn("全局热键 Ctrl+Alt+S 注册失败（可能被其它程序占用）");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("注册全局热键失败：" + ex.Message);
+        }
+    }
+
+    private static IntPtr HotkeyWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != Native.WM_HOTKEY) return IntPtr.Zero;
+
+        switch (wParam.ToInt32())
+        {
+            case HotkeyToggleId:
+                Services.ToggleEnabled();
+                handled = true;
+                break;
+            case HotkeySettingsId:
+                Services.ShowWindow();
+                handled = true;
+                break;
+        }
+        return IntPtr.Zero;
+    }
+
+    private static void UnregisterGlobalHotkeys()
+    {
+        try
+        {
+            if (_hotkeySource == null) return;
+            Native.UnregisterHotKey(_hotkeySource.Handle, HotkeyToggleId);
+            Native.UnregisterHotKey(_hotkeySource.Handle, HotkeySettingsId);
+            _hotkeySource.RemoveHook(HotkeyWndProc);
+            _hotkeySource.Dispose();
+            _hotkeySource = null;
+        }
+        catch { /* 退出阶段不纠缠 */ }
     }
 
     /// <summary>
@@ -1958,6 +2036,7 @@ public partial class App : System.Windows.Application
     /// <summary>真正的退出入口（托盘菜单、安装完更新重启都用它）。</summary>
     public static void ExitApp(int exitCode = 0)
     {
+        UnregisterGlobalHotkeys();
         Services.Shutdown();
         if (Current is App app)
         {

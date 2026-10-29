@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -44,15 +45,21 @@ internal sealed class TrayController : IDisposable
         _appItem = new ToolStripMenuItem("", null, (_, _) => ToggleCurrentApp());
         _updateItem = new ToolStripMenuItem("检查更新…", null, async (_, _) => await CheckUpdateAsync());
         var settings = new ToolStripMenuItem("打开设置…", null, (_, _) => Services.ShowWindow());
+        var boostPage = new ToolStripMenuItem("加速设置…", null, (_, _) => Services.ShowWindow(1));
+        var smoothPage = new ToolStripMenuItem("平滑设置…", null, (_, _) => Services.ShowWindow(2));
+        var openData = new ToolStripMenuItem("打开数据目录", null, (_, _) => OpenDataDir());
         var exit = new ToolStripMenuItem("退出", null, (_, _) => App.ExitApp());
 
         menu.Items.AddRange(new ToolStripItem[]
         {
             _enableItem,
-            new ToolStripSeparator(),
-            settings,
             _appItem,
             new ToolStripSeparator(),
+            settings,
+            boostPage,
+            smoothPage,
+            new ToolStripSeparator(),
+            openData,
             _updateItem,
             new ToolStripSeparator(),
             exit,
@@ -79,41 +86,48 @@ internal sealed class TrayController : IDisposable
         _icon.MouseClick += (_, e) =>
         {
             if (e.Button != MouseButtons.Left) return;
-            ScheduleShow();
+            RequestShow();
         };
-        _icon.DoubleClick += (_, _) =>
-        {
-            _pendingShowCts?.Cancel();
-            _pendingShowCts = null;
-            Services.ShowWindow();
-        };
+        _icon.DoubleClick += (_, _) => RequestShow();
 
         Services.StateChanged += RefreshVisual;
     }
 
     /// <summary>
-    /// 单击托盘后延迟一点再真的打开窗口。
+    /// 单击/双击托盘后打开窗口 —— **第一次立即执行，300 ms 内的重复调用忽略**。
     ///
     /// <para>
-    /// 这 400ms 是用来"等双击"的：双击的第二次按下会在这个窗口期内到达，
-    /// 那时就把这次单击取消，只让双击处理一次。
-    /// 于是无论用户点一下还是点两下，内部都**只走一遍**打开流程。
+    /// 旧写法是"单击先等 400 ms 看有没有双击"，代价是每次从托盘打开都要愣 400 ms，
+    /// 用户体感是"点了没反应"。现在改成第一次立即显示；双击产生的第二次 Click /
+    /// DoubleClick 落在去重窗口里被忽略，于是内部仍然只走一遍打开流程 ——
+    /// 既没有延迟，也不会重复触发。
     /// </para>
     /// </summary>
-    private void ScheduleShow()
+    private void RequestShow()
     {
-        _pendingShowCts?.Cancel();
-        var cts = new CancellationTokenSource();
-        _pendingShowCts = cts;
-        _ = Task.Delay(400, cts.Token).ContinueWith(t =>
-        {
-            if (t.IsCanceled) return;
-            try { Services.ShowWindow(); }
-            catch (Exception ex) { Log.Warn("托盘打开窗口失败：" + ex.Message); }
-        }, TaskScheduler.Default);
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastShowTicks) < 300) return;
+        Interlocked.Exchange(ref _lastShowTicks, now);
+
+        try { Services.ShowWindow(); }
+        catch (Exception ex) { Log.Warn("托盘打开窗口失败：" + ex.Message); }
     }
 
-    private CancellationTokenSource? _pendingShowCts;
+    private long _lastShowTicks;
+
+    /// <summary>在资源管理器里打开数据目录（配置与日志都在这里，排查时常用）。</summary>
+    private static void OpenDataDir()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.DataDir);
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AppPaths.DataDir}\"")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex) { Log.Warn("打开数据目录失败：" + ex.Message); }
+    }
 
     private static string Tooltip()
     {
@@ -347,10 +361,6 @@ internal sealed class TrayController : IDisposable
     public void Dispose()
     {
         Services.StateChanged -= RefreshVisual;
-
-        try { _pendingShowCts?.Cancel(); } catch { }
-        try { _pendingShowCts?.Dispose(); } catch { }
-        _pendingShowCts = null;
 
         try { _icon.Visible = false; } catch { }
         try { _icon.ContextMenuStrip = null; } catch { }

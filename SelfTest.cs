@@ -1061,6 +1061,30 @@ internal static class SelfTest
         c.Appearance.Theme = "Nonsense";
         c.Normalize();
         Check("非法主题被收敛成 system", c.Appearance.Theme == Theme.System, c.Appearance.Theme);
+
+        // ⑤ 窗口位置记忆（v1.7.6）：正常值原样保留，非法值收敛
+        var place = AppConfig.Default();
+        place.Appearance.WindowWidth = 1440;
+        place.Appearance.WindowHeight = 900;
+        place.Appearance.WindowLeft = -120;
+        place.Appearance.WindowTop = 60;
+        place.Appearance.LastTab = 3;
+        place.Normalize();
+        Check("窗口大小/位置原样保留",
+            place.Appearance.WindowWidth == 1440 && place.Appearance.WindowHeight == 900
+            && place.Appearance.WindowLeft == -120 && place.Appearance.WindowTop == 60,
+            $"{place.Appearance.WindowWidth}×{place.Appearance.WindowHeight} @ {place.Appearance.WindowLeft},{place.Appearance.WindowTop}");
+        Check("上次页签保留", place.Appearance.LastTab == 3, place.Appearance.LastTab.ToString());
+
+        var badPlace = AppConfig.Default();
+        badPlace.Appearance.WindowWidth = -5;
+        badPlace.Appearance.WindowHeight = double.NaN;
+        badPlace.Appearance.LastTab = 99;
+        badPlace.Normalize();
+        Check("非法窗口尺寸被收敛到 0",
+            badPlace.Appearance.WindowWidth == 0 && badPlace.Appearance.WindowHeight == 0,
+            $"{badPlace.Appearance.WindowWidth}×{badPlace.Appearance.WindowHeight}");
+        Check("越界页签被收敛到 6", badPlace.Appearance.LastTab == 6, badPlace.Appearance.LastTab.ToString());
     }
 
     /// <summary>

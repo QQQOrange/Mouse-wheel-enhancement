@@ -14,6 +14,12 @@ internal static class Native
     public const int WH_MOUSE_LL = 14;
     public const int WM_MOUSEWHEEL = 0x020A;
     public const int WM_QUIT = 0x0012;
+    public const int WM_HOTKEY = 0x0312;
+
+    public const uint MOD_ALT = 0x0001;
+    public const uint MOD_CONTROL = 0x0002;
+    public const uint MOD_SHIFT = 0x0004;
+    public const uint MOD_WIN = 0x0008;
 
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
     public const uint INPUT_MOUSE = 0;
@@ -276,6 +282,17 @@ internal static class Native
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    /* ══════════════ 全局热键 ══════════════ */
+
+    /// <summary>注册系统级热键（<c>fsModifiers</c> 用上面的 MOD_* 组合）。</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr OpenProcess(uint dwDesiredAccess,

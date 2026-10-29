@@ -2,7 +2,7 @@
 
 > 普通滚动一个字都不改，只在**快速拨动滚轮**时按可调倍率加速；可选平滑推进；可按应用启用/禁用。
 
-Windows 桌面小工具 · **就一个 exe，0.47 MB** · 无驱动 · 无后台服务 · 数据就在软件自己的文件夹里
+Windows 桌面小工具 · **就一个 exe，0.58 MB** · 无驱动 · 无后台服务 · 数据就在软件自己的文件夹里
 
 - 中文名：**鼠标滚轮增强**
 - 英文名：**Mouse wheel enhancement**
@@ -50,7 +50,7 @@ Windows 桌面小工具 · **就一个 exe，0.47 MB** · 无驱动 · 无后台
 - [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0)
 
 > 为什么需要运行时：v1.0.0 曾把整个 .NET 打进 exe，结果 66.65 MB ——
-> 而这个程序自己的代码只有 210 KB。改成框架依赖后发布包 **0.46 MB**（缩小 99.3%）。
+> 而这个程序自己的代码只有 210 KB。改成框架依赖后发布包 **0.57 MB**（缩小 99.1%）。
 >
 > **没装 .NET 10 会怎样**：包里的 `MouseWheelEnhancement.exe` 是个 25 KB 的启动器
 > （.NET Framework 4.8 写的，Win10/11 自带），它会先检查运行时；缺了就直接弹一个中文窗口，
@@ -70,11 +70,11 @@ dotnet build -c Release
 一条命令完成「发布 + 装到本机 + 自检 + 算 SHA256」：
 
 ```
-tools\publish.ps1                  # 框架依赖，两个文件共约 0.46 MB（默认）
+tools\publish.ps1                  # 框架依赖，两个文件共约 0.58 MB（默认）
 tools\publish.ps1 -SelfContained   # 自包含，约 67 MB（目标机器没装 .NET 时用）
 ```
 
-产物就是**一个 exe**（约 0.47 MB）：
+产物就是**一个 exe**（约 0.58 MB）：
 
 ```
 MouseWheelEnhancement.exe          双击它就完事
@@ -116,7 +116,7 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ## 自检
 
 ```bash
-# 272 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、主题、
+# 304 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、主题、
 # 自我增强、版本比较、令牌清洗、名单匹配、配置读写
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全部通过
 
@@ -168,7 +168,7 @@ MouseWheelEnhancement.App.exe --taskcheck
 
 | | v1.0.0 | v1.2.0 |
 |---|---:|---:|
-| 发布包 | 66.65 MB | **0.46 MB**（启动器 37 KB + 主程序 0.43 MB） |
+| 发布包 | 66.65 MB | **0.58 MB**（启动器壳约 39 KB + 主程序约 0.54 MB） |
 | 托盘常驻工作集 | 70 MB | 77 MB |
 | 打开设置后关闭（退回托盘） | 197 MB 一直占着 | **53 MB**（销毁窗口 + 主动归还） |
 

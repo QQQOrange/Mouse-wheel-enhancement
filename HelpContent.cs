@@ -107,7 +107,7 @@ internal static class HelpContent
                     "更细腻，但单步太小，极少数老程序会直接忽略这一小步（表现是「滚不动」）。",
                     "更接近原生，平滑感变弱。选 2 是折中。",
                     "选 4 时，一格滚动会分成 30 / 30 / 30 / 30 四次发出，所以画面是推进而不是跳动。",
-                    "保持 4。真遇到某个程序滚不动，先把它调到 2，还不行就把平滑整个关掉。"),
+                    "保持 4 就好；想要更细腻可以试 6 或 8（8 帧/格时单步 0.25 px，颗粒更小）。真遇到某个程序滚不动，先把它调到 2，还不行就把平滑整个关掉。"),
 
                 new("惯性长度", "45 ms",
                     "停手之后「尾巴」有多长。数学上是个指数衰减的时间常数，你只要理解成「还会滑多久」。",
@@ -124,7 +124,7 @@ internal static class HelpContent
                     "更干脆。调到 0 就是关闭：松手立刻停住 —— 这是老版本的手感，滚的时候顺，一停就「咔」一下。",
                     "300 毫秒大约是「松手之后还滑小半格」。这里不会「到点把剩下的量一次倒出去」——" +
                     "那样会在结尾突然跳一下；程序是按当时的积压反解出一条衰减曲线，让最后一点量正好在这一刻走完，所以停住是滑进去的。" +
-                    "另外：剩下不到 1/3 格时，收尾总会按 70 ms 的时间常数落地（就算这一项设得很短也会），" +
+                    "另外：剩下不到 1/10 格（12 单位）时，收尾会把时间常数平滑插到 35 ms 再停（就算这一项设得很短也会），" +
                     "所以把它调小只会让前面更快，不会变成硬停 —— 要硬停请设 0。",
                     "先用 300。觉得「停得太拖」就降到 150；觉得「还是有点段落感」就加到 400。"),
 
@@ -316,12 +316,16 @@ internal static class HelpContent
     };
 
     /// <summary>几套现成的参数组合：大多数人其实只是想要一个「方案」，不想逐个调。</summary>
-    private static IReadOnlyList<(string Name, string Desc)> Presets() => new List<(string, string)>
+    /// <summary>一组「开箱即用」的参数组合。Name/Desc 给人看，后五个字段是真正写进配置的值。</summary>
+    internal sealed record Preset(string Name, string Desc, double Mult, double Threshold,
+        double Sat, bool Smooth, double Tau);
+
+    private static IReadOnlyList<Preset> Presets() => new List<Preset>
     {
-        ("看长文档 / 代码为主", "倍率 4×　触发阈值 10　满速点 40　平滑：所有滚动　惯性 45 ms"),
-        ("日常网页浏览", "倍率 3×　触发阈值 12　满速点 40　平滑：所有滚动　惯性 45 ms"),
-        ("最保守（怕误触）", "倍率 2×　触发阈值 16　满速点 45　平滑：关"),
-        ("想更「滑」一点", "倍率 3×　触发阈值 10　满速点 35　平滑：所有滚动　惯性 60 ms"),
+        new("看长文档 / 代码为主", "倍率 4×　触发阈值 10　满速点 40　平滑：所有滚动　惯性 45 ms", 4, 10, 40, true, 45),
+        new("日常网页浏览", "倍率 3×　触发阈值 12　满速点 40　平滑：所有滚动　惯性 45 ms", 3, 12, 40, true, 45),
+        new("最保守（怕误触）", "倍率 2×　触发阈值 16　满速点 45　平滑：关", 2, 16, 45, false, 45),
+        new("想更「滑」一点", "倍率 3×　触发阈值 10　满速点 35　平滑：所有滚动　惯性 60 ms", 3, 10, 35, true, 60),
     };
 
     /* ══════════════ 渲染 ══════════════ */
@@ -477,24 +481,59 @@ internal static class HelpContent
         p.Children.Add(Text("大多数人其实只是想要一个「方案」。照着一行改完就行，不用理解每一项。",
             12, FontWeights.Normal, "TextSecondary", top: 6, bottom: 12, wrap: true));
 
-        foreach (var (name, desc) in Presets())
+        foreach (var preset in Presets())
         {
             var g = new Grid { Margin = new Thickness(0, 0, 0, 8) };
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            var n = Text(name, 12, FontWeights.SemiBold, "TextPrimary", wrap: true);
+            var n = Text(preset.Name, 12, FontWeights.SemiBold, "TextPrimary", wrap: true);
             n.VerticalAlignment = VerticalAlignment.Top;
             g.Children.Add(n);
 
-            var d = Text(desc, 12, FontWeights.Normal, "TextSecondary", wrap: true);
+            var d = Text(preset.Desc, 12, FontWeights.Normal, "TextSecondary", wrap: true);
             Grid.SetColumn(d, 1);
             g.Children.Add(d);
+
+            var apply = new Button
+            {
+                Content = "应用",
+                Style = Application.Current?.TryFindResource("GhostButton") as Style,
+                Margin = new Thickness(10, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Tag = preset,
+            };
+            apply.Click += (_, _) => ApplyPreset(preset);
+            Grid.SetColumn(apply, 2);
+            g.Children.Add(apply);
 
             p.Children.Add(g);
         }
 
         return p;
+    }
+
+    /// <summary>把一组预设参数写进配置并立即生效（Normalize 夹好范围，Touch 触发引擎重载）。</summary>
+    private static void ApplyPreset(Preset preset)
+    {
+        try
+        {
+            var c = Services.Config;
+            c.Boost.Enabled = true;
+            c.Boost.MaxMultiplier = preset.Mult;
+            c.Boost.FastThresholdPerSec = preset.Threshold;
+            c.Boost.SaturationPerSec = preset.Sat;
+            c.Smooth.Enabled = preset.Smooth;
+            if (preset.Smooth) c.Smooth.TailTauMs = preset.Tau;
+            c.Normalize();
+            Services.Store.Touch();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("应用预设失败：" + ex.Message, Services.AppTitle,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     /* ══════════════ 小工具 ══════════════ */

@@ -196,6 +196,28 @@ public sealed class AppearanceConfig
     /// </para>
     /// </summary>
     public string Theme { get; set; } = MouseWheelEnhancement.Core.Theme.System;
+
+    /// <summary>
+    /// 上次关闭时的窗口大小与位置。0 表示"没记录过"，按默认 1120×830 居中。
+    /// <para>
+    /// 存进配置而不是只存在进程内存：关闭到托盘会把窗口真正销毁（见
+    /// <c>MainWindow.OnClosing</c>），下次从托盘打开是新建的窗口 —— 不落盘就每次
+    /// 都回到默认尺寸，用户拉过的窗口白拉了。
+    /// </para>
+    /// </summary>
+    public double WindowWidth { get; set; } = 0;
+
+    public double WindowHeight { get; set; } = 0;
+
+    public double WindowLeft { get; set; } = 0;
+
+    public double WindowTop { get; set; } = 0;
+
+    /// <summary>上次关闭时是否最大化。</summary>
+    public bool WindowMaximized { get; set; } = false;
+
+    /// <summary>上次停留的页签（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
+    public int LastTab { get; set; } = 0;
 }
 
 public sealed class AppBehaviorConfig
@@ -352,6 +374,14 @@ public sealed class AppConfig
 
         SchemaVersion = Math.Max(5, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
+
+        /* 窗口大小/位置：0 表示"没记录"（首次启动），按默认居中。
+         * 上限放到 10000 是为了多屏/超宽屏；NaN、负数由 Clamp 收到下限。 */
+        Appearance.WindowWidth = Clamp(Appearance.WindowWidth, 0, 10000);
+        Appearance.WindowHeight = Clamp(Appearance.WindowHeight, 0, 10000);
+        Appearance.WindowLeft = Clamp(Appearance.WindowLeft, -30000, 30000);
+        Appearance.WindowTop = Clamp(Appearance.WindowTop, -30000, 30000);
+        Appearance.LastTab = (int)Clamp(Appearance.LastTab, 0, 6);
 
         /* ── 删掉 `smooth.wheelLines` 这个键 ──
          *

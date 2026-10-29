@@ -12,8 +12,8 @@
     <!-- 启动器占用 MouseWheelEnhancement.exe，主程序是 .App.exe -->
     <AssemblyName>MouseWheelEnhancement.App</AssemblyName>
     <RootNamespace>MouseWheelEnhancement</RootNamespace>
-    <Version>1.7.5</Version>
-    <FileVersion>1.7.5.0</FileVersion>
+    <Version>1.7.6</Version>
+    <FileVersion>1.7.6.0</FileVersion>
     <Product>鼠标滚轮增强</Product>
     <AssemblyTitle>鼠标滚轮增强</AssemblyTitle>
     <Company>QQQOrange</Company>

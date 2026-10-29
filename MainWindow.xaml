@@ -81,6 +81,8 @@
                         </StackPanel>
                         <TextBlock x:Name="HookHint" Style="{StaticResource Caption}" FontSize="11" Margin="0,4,0,0"
                                    Text="滚轮钩子正常" />
+                        <TextBlock x:Name="StatusToday" Style="{StaticResource Caption}" FontSize="11" Margin="0,3,0,0"
+                                   Text="本次已接管 0 次" />
                     </StackPanel>
                 </Border>
             </Grid>
@@ -104,7 +106,7 @@
                 <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="24,0,0,0" VerticalAlignment="Center">
                     <TextBlock x:Name="PageTitle" Text="概览" Style="{StaticResource PageTitle}" />
                     <Border Style="{StaticResource Badge}" Margin="10,0,0,0">
-                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="v1.5.5" />
+                        <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="—" />
                     </Border>
                 </StackPanel>
 
@@ -179,6 +181,8 @@
                                         <TextBlock Text="当前滚动速度" Style="{StaticResource Caption}" />
                                         <TextBlock x:Name="StatRate" Text="—" Style="{StaticResource Mono}"
                                                    FontWeight="SemiBold" Margin="0,4,0,0" />
+                                        <ProgressBar x:Name="RateBar" Style="{StaticResource DarkProgress}"
+                                                     Minimum="0" Maximum="40" Value="0" Height="3" Margin="0,6,0,0" />
                                     </StackPanel>
                                 </Grid>
                             </StackPanel>
@@ -346,6 +350,23 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="24,18,24,26">
 
+                        <!-- 试滚区：调参时不必来回切到帮助页去试手感 -->
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="在这里试滚" Style="{StaticResource H2}" Margin="0,0,0,6" />
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="把光标移到下面这个框里，慢慢拨一格、再快速连甩几下 —— 当前参数的效果立刻就能摸到（这里同样会被增强）。" />
+                                <Border Height="120" Margin="0,10,0,0" Background="{DynamicResource CardBg2}"
+                                        CornerRadius="10" Padding="12">
+                                    <ScrollViewer x:Name="PreviewScroll" VerticalScrollBarVisibility="Auto">
+                                        <TextBlock TextWrapping="Wrap" FontSize="12.5"
+                                                   Foreground="{DynamicResource TextSecondary}" LineHeight="20"
+                                                   Text="第 1 行 · 慢慢拨：应该和没装它时一样，一格就是一段距离。&#x0a;第 2 行 · 快速连拨：页面会明显加快，而且是一小步一小步推进，不是一下跳过去。&#x0a;第 3 行 · 松手：内容会顺着方向再滑一点然后慢慢停住，而不是「咔」一下。&#x0a;第 4 行 · 收尾：最后几个像素是渐停的，不会有「已经停了又补一下」的感觉。&#x0a;第 5 行 · 这一行只是把内容撑长，方便你多滚几下感受节奏。&#x0a;第 6 行 · 再试一次：把倍率上限调到 5×，同样的手速应该明显更远。&#x0a;第 7 行 · 对比方法：关掉总开关再滚同一下，差别就是增强本身。&#x0a;第 8 行 · 到这里已经够长了，往上滚回去也一样。" />
+                                    </ScrollViewer>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
@@ -401,6 +422,12 @@
                                         Minimum="2" Maximum="25" SmallChange="1" LargeChange="1"
                                         TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="Threshold_Changed" />
+                                <Grid Margin="0,3,9,0">
+                                    <TextBlock Text="2 · 几乎不触发" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Left" />
+                                    <TextBlock Text="25 · 很猛才加速" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Right" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -423,6 +450,12 @@
                                         Minimum="12" Maximum="120" SmallChange="1" LargeChange="5"
                                         TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="Sat_Changed" />
+                                <Grid Margin="0,3,9,0">
+                                    <TextBlock Text="12 · 很早就满速" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Left" />
+                                    <TextBlock Text="120 · 要甩得很快" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Right" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -445,6 +478,12 @@
                                         Minimum="1" Maximum="8" SmallChange="1" LargeChange="1"
                                         TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="MaxMult_Changed" />
+                                <Grid Margin="0,3,9,0">
+                                    <TextBlock Text="1× · 不加速" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Left" />
+                                    <TextBlock Text="8× · 一甩到底" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Right" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -684,6 +723,12 @@
                                         Minimum="5" Maximum="120" SmallChange="5" LargeChange="5"
                                         TickFrequency="5" IsSnapToTickEnabled="True"
                                         ValueChanged="Tau_Changed" />
+                                <Grid Margin="0,3,9,0">
+                                    <TextBlock Text="5 ms · 干脆" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Left" />
+                                    <TextBlock Text="120 ms · 很绵" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Right" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -706,6 +751,12 @@
                                         Minimum="0" Maximum="400" SmallChange="10" LargeChange="20"
                                         TickFrequency="10" IsSnapToTickEnabled="True"
                                         ValueChanged="Glide_Changed" />
+                                <Grid Margin="0,3,9,0">
+                                    <TextBlock Text="0 · 关闭滑行" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Left" />
+                                    <TextBlock Text="400 ms · 飘得较远" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Right" />
+                                </Grid>
                                 <!-- 两项参数打架时给一句人话：光开滑行没用，跟手期得有量留下 -->
                                 <TextBlock x:Name="GlideHint" Style="{StaticResource Caption}" Margin="0,8,0,0"
                                            TextWrapping="Wrap" Visibility="Collapsed"
@@ -732,6 +783,12 @@
                                         Minimum="1" Maximum="20" SmallChange="1" LargeChange="2"
                                         TickFrequency="1" IsSnapToTickEnabled="True"
                                         ValueChanged="Backlog_Changed" />
+                                <Grid Margin="0,3,9,0">
+                                    <TextBlock Text="1 格 · 最跟手" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Left" />
+                                    <TextBlock Text="20 格 · 最能攒" Style="{StaticResource Caption}" FontSize="10.5"
+                                               HorizontalAlignment="Right" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -815,8 +872,14 @@
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
-                                <TextBlock x:Name="AppsEmpty" Style="{StaticResource Caption}" Visibility="Collapsed"
-                                           Text="名单是空的。" />
+                                <Border x:Name="AppsEmpty" Visibility="Collapsed" Margin="0,6,0,0"
+                                        Background="{DynamicResource CardBg2}" CornerRadius="10" Padding="16,14">
+                                    <StackPanel>
+                                        <TextBlock Text="名单是空的" FontWeight="SemiBold" FontSize="12.5" />
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
+                                                   Text="点上面的「从运行中的应用选择」，或右键托盘图标一键把当前程序加进来。" />
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
                         </Border>
 
@@ -959,8 +1022,28 @@
             <!-- ─────────── 帮助 ─────────── -->
             <!-- 内容由 HelpContent.Render() 生成：二十多个参数 × 五行说明，写死在 XAML 里会难以维护 -->
             <TabItem Header="帮助">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="HelpPanel" Margin="24,18,24,26" />
+                <ScrollViewer x:Name="HelpScroll" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="24,18,24,26">
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="快速定位" Style="{StaticResource H2}" Margin="0,0,0,8" />
+                                <TextBox x:Name="HelpSearchBox" Style="{StaticResource DarkTextBox}"
+                                         TextChanged="HelpSearch_Changed"
+                                         ToolTip="输入参数名或关键词，只留下包含它的说明" />
+                                <WrapPanel Margin="0,10,0,0">
+                                    <Button Content="加速" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                            Click="HelpJump_Click" Tag="加速" />
+                                    <Button Content="平滑滚动" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                            Click="HelpJump_Click" Tag="平滑滚动" />
+                                    <Button Content="应用名单" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                            Click="HelpJump_Click" Tag="应用名单" />
+                                    <Button Content="常见问题" Style="{StaticResource GhostButton}"
+                                            Click="HelpJump_Click" Tag="常见问题" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+                        <StackPanel x:Name="HelpPanel" />
+                    </StackPanel>
                 </ScrollViewer>
             </TabItem>
 

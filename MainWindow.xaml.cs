@@ -70,6 +70,7 @@ public partial class MainWindow : Window
         RefreshApps();
         RefreshTokenUi();
         RedrawCurve();
+        RestoreWindowPlacement();
 
         if (Services.Store.LoadWarning != null) UpdateStatus.Text = Services.Store.LoadWarning;
         if (Services.PendingUpdate is { Newer: true } pending) ShowUpdateInfo(pending, fromAutoCheck: true);
@@ -394,6 +395,7 @@ public partial class MainWindow : Window
 
         var rate = e.LastRatePerSec;
         StatRate.Text = rate > 0.05 ? $"{rate:0.0} 格/秒" : "—";
+        RateBar.Value = Math.Min(40.0, Math.Max(0.0, rate));
 
         var on = Services.Config.Enabled;
         _loading = true;
@@ -407,6 +409,7 @@ public partial class MainWindow : Window
             : running
                 ? $"钩子正常 · 已接管 {e.BoostedCount} 次"
                 : "钩子未启动，滚动不受影响";
+        StatusToday.Text = $"本次已接管 {e.BoostedCount} 次 · 放行 {e.PassedCount} 次";
 
         FooterRight.Text = Services.IsElevated
             ? $"v{Services.Version} · 管理员"
@@ -655,6 +658,53 @@ public partial class MainWindow : Window
         if (_helpRendered || HelpPanel == null) return;
         _helpRendered = true;
         HelpContent.Render(HelpPanel);
+    }
+
+    /// <summary>帮助页搜索：按关键词过滤卡片（标题或正文命中即留下）。</summary>
+    private void HelpSearch_Changed(object sender, TextChangedEventArgs e)
+    {
+        EnsureHelpRendered();
+        var q = HelpSearchBox.Text.Trim();
+
+        foreach (UIElement child in HelpPanel.Children)
+        {
+            if (child is not FrameworkElement fe) continue;
+            fe.Visibility = q.Length == 0 || ContainsText(fe, q)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>帮助页「跳转到某组」：清掉搜索过滤后，把第一张命中的卡片滚进视野。</summary>
+    private void HelpJump_Click(object sender, RoutedEventArgs e)
+    {
+        EnsureHelpRendered();
+        if (sender is not Button b || b.Tag is not string key) return;
+
+        // 先复位过滤，保证目标卡片是可见的
+        if (HelpSearchBox.Text.Length > 0) HelpSearchBox.Text = "";
+
+        foreach (UIElement child in HelpPanel.Children)
+        {
+            if (child is FrameworkElement fe && ContainsText(fe, key))
+            {
+                fe.BringIntoView();
+                return;
+            }
+        }
+    }
+
+    /// <summary>逻辑树里找有没有 TextBlock 的文本包含关键词（不需要布局完成）。</summary>
+    private static bool ContainsText(DependencyObject root, string q)
+    {
+        if (root is TextBlock tb && tb.Text.Contains(q, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        foreach (var child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is DependencyObject d && ContainsText(d, q)) return true;
+        }
+        return false;
     }
 
     private void Master_Toggled(object sender, RoutedEventArgs e)
@@ -1729,10 +1779,90 @@ public partial class MainWindow : Window
             MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    /* ══════════════ 窗口位置记忆 ══════════════ */
+
+    /// <summary>
+    /// 恢复上次的窗口大小/位置/最大化状态，以及停留的页签。
+    ///
+    /// <para>
+    /// 只在"记录过且还落在虚拟屏内"时才恢复：换了显示器、拔了副屏、
+    /// 或者分辨率变小之后，旧坐标可能完全在屏幕外 —— 那种情况下宁可回默认居中，
+    /// 也不要让窗口"打开了但看不见"。
+    /// </para>
+    /// </summary>
+    private void RestoreWindowPlacement()
+    {
+        var a = Services.Config.Appearance;
+
+        if (a.WindowWidth >= MinWidth && a.WindowHeight >= MinHeight
+            && a.WindowWidth <= 10000 && a.WindowHeight <= 10000)
+        {
+            var vl = SystemParameters.VirtualScreenLeft;
+            var vt = SystemParameters.VirtualScreenTop;
+            var vr = vl + SystemParameters.VirtualScreenWidth;
+            var vb = vt + SystemParameters.VirtualScreenHeight;
+
+            // 至少留 120×80 在虚拟屏内，才算"看得见"
+            var visible = a.WindowLeft + a.WindowWidth > vl + 120
+                       && a.WindowLeft < vr - 120
+                       && a.WindowTop + 80 > vt
+                       && a.WindowTop < vb - 80;
+
+            if (visible)
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Width = a.WindowWidth;
+                Height = a.WindowHeight;
+                Left = a.WindowLeft;
+                Top = a.WindowTop;
+            }
+        }
+
+        if (a.WindowMaximized) WindowState = WindowState.Maximized;
+
+        if (a.LastTab >= 0 && a.LastTab < Nav.Items.Count) SelectTab(a.LastTab);
+    }
+
+    /// <summary>关闭前记下窗口大小/位置/最大化与当前页签（随后由 OnClosing 的 SaveNow 落盘）。</summary>
+    private void SaveWindowPlacement()
+    {
+        try
+        {
+            var a = Services.Config.Appearance;
+
+            /* 最大化时 Left/Top/Width/Height 是最大化后的值，要恢复的是 RestoreBounds
+             * （还原尺寸）。正常状态直接用当前值。 */
+            var bounds = WindowState == WindowState.Normal
+                ? new Rect(Left, Top,
+                    ActualWidth > 0 ? ActualWidth : Width,
+                    ActualHeight > 0 ? ActualHeight : Height)
+                : RestoreBounds;
+
+            if (bounds.Width >= MinWidth && bounds.Height >= MinHeight
+                && !double.IsNaN(bounds.Left) && !double.IsNaN(bounds.Top)
+                && !double.IsInfinity(bounds.Left) && !double.IsInfinity(bounds.Top))
+            {
+                a.WindowWidth = bounds.Width;
+                a.WindowHeight = bounds.Height;
+                a.WindowLeft = bounds.Left;
+                a.WindowTop = bounds.Top;
+            }
+
+            a.WindowMaximized = WindowState == WindowState.Maximized;
+            a.LastTab = Math.Max(0, Nav.SelectedIndex);
+        }
+        catch (Exception ex)
+        {
+            // 位置记忆只是体验优化，失败不该影响关闭
+            Log.Warn("保存窗口位置失败：" + ex.Message);
+        }
+    }
+
     /* ══════════════ 关闭 ══════════════ */
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        SaveWindowPlacement();
         Services.Store.SaveNow();
 
         /* 窗口要没了，先把弹层都收掉。
