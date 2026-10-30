@@ -3093,4 +3093,43 @@ v1.7.8 为了提升帮助页滚动性能，把 `HelpContent.Text` 的
 
 ---
 
+## 45. 关闭窗口卡几秒：弹层清理的 O(n²) 遍历（v1.7.12）
+
+### 45.1 定位
+
+在 `OnClosing` / `Services.Shutdown` 各段加了计时，实测：
+
+| 环节 | 耗时 |
+|---|---|
+| 保存窗口位置 | 0 ms |
+| 保存配置 | 10~22 ms |
+| **关闭弹层（`CloseOpenPopups`）** | **4494 ms** |
+| 钩子线程退出 | 0 ms |
+| 退出各段 | 1~42 ms |
+
+**4.5 秒全在 `PopupCleanup.CloseAllIn`。**
+
+### 45.2 根因
+
+`CloseAllIn` 同时做「可视树递归」和「逻辑树递归」，**两者都递归调用自身**。
+逻辑树与可视树大量重叠，一个节点会被反复访问很多轮 —— 帮助页上千个元素时
+退化成 **O(n²)**。而 `OnClosing` 每次关闭都要跑一遍，所以"点关闭卡几秒"。
+
+同一个函数还被 `CloseCurrentToolTip()` 用（点标题栏主题按钮时），
+那里也会跟着卡，只是不容易被注意到。
+
+### 45.3 修复
+
+- `CloseAllIn` 加 `HashSet<DependencyObject>(ReferenceEqualityComparer.Instance)` 去重，
+  每个节点只进一次，复杂度回到 **O(n)**
+- 修复后：**4494 ms → 14 ms**（快约 320 倍），关闭总耗时 < 30 ms
+
+### 45.4 验证
+
+- `--measure --show` 日志：`关闭·关闭弹层：14 ms`
+- `--selftest` 304、`--smoke` rc=0、`--wheeltest` 通过
+- 手动：点 × / Alt+F4 应立即响应（收托盘或退出）
+
+---
+
 MIT License · © 2026 QQQOrange

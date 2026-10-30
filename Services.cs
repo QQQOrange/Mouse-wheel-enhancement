@@ -208,13 +208,23 @@ internal static class Services
 
     public static void Shutdown()
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        void Mark(string label) => Log.Info($"退出·{label}：{sw.ElapsedMilliseconds} ms");
+
         try { Engine?.Dispose(); } catch { }
+        Mark("引擎");
+
         try { Store?.SaveNow(); } catch { }
+        Mark("保存配置");
         try { Store?.Dispose(); } catch { }
         try { Tray?.Dispose(); } catch { }
+        Mark("托盘");
         try { RefreshRateMonitor.Stop(); } catch { }
         try { Theme.Stop(); } catch { }
+        Mark("监听/主题");
+
         Log.Info("==== 退出 ====");
         Log.Flush();
+        Mark("刷日志");
     }
 }

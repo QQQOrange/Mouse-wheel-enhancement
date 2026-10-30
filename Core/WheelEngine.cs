@@ -135,8 +135,10 @@ public sealed class WheelEngine : IDisposable
          * PostThreadMessage 有个前提：目标线程必须已经建立了消息队列，
          * 而队列往往要等它调用 GetMessage 才创建 —— 早一毫秒投递会被丢掉，
          * 返回值也可能告诉我们没投进去。所以这里不能只看 Join 结果就当没事。 */
+        var joinSw = System.Diagnostics.Stopwatch.StartNew();
         var exited = true;
         try { exited = _thread?.Join(2000) ?? true; } catch { }
+        Log.Info($"钩子线程退出：{joinSw.ElapsedMilliseconds} ms，已退出={exited}");
 
         if (exited)
         {

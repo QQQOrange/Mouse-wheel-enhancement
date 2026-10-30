@@ -1989,8 +1989,14 @@ public partial class MainWindow : Window
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        void Mark(string label) => Log.Info($"关闭·{label}：{sw.ElapsedMilliseconds} ms");
+
         SaveWindowPlacement();
+        Mark("保存窗口位置");
+
         Services.Store.SaveNow();
+        Mark("保存配置");
 
         /* 窗口要没了，先把弹层都收掉。
          *
@@ -2004,6 +2010,7 @@ public partial class MainWindow : Window
          * （异常通道见 App.OnWinFormsThreadException 的说明），
          * 以前的结果是：用户看到框架默认弹窗，日志里一片空白。 */
         CloseOpenPopups();
+        Mark("关闭弹层");
 
         if (_allowClose) return; // 真正销毁这条路径，放手让 WPF 关
 

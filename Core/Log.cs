@@ -101,7 +101,9 @@ public static class Log
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (Queue.Count > 0 && sw.ElapsedMilliseconds < timeoutMs)
             Thread.Sleep(5);
+        var waited = sw.ElapsedMilliseconds;
         Thread.Sleep(20); // 让最后一条真正落盘
+        if (waited > 30) Info($"日志刷盘等待 {waited} ms（队列未清空）");
     }
 
 }
