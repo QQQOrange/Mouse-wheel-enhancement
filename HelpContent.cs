@@ -334,7 +334,9 @@ internal static class HelpContent
     {
         host.Children.Clear();
 
-        host.Children.Add(Card(Intro()));
+        var intro = Card(Intro());
+        intro.Tag = "简介";
+        host.Children.Add(intro);
 
         foreach (var section in Sections())
         {
@@ -345,11 +347,22 @@ internal static class HelpContent
                     top: 6, bottom: 12, wrap: true));
 
             foreach (var p in section.Items) panel.Children.Add(ParamBlock(p));
-            host.Children.Add(Card(panel));
+
+            /* Tag 是「快速定位」的**锚点**。
+             * 不能靠"正文包含关键词"来跳：简介卡里就有"关掉平滑滚动"这样的句子，
+             * 按包含匹配会永远命中第一张卡 —— 用户看到的就是"点了没反应"。 */
+            var card = Card(panel);
+            card.Tag = section.Title;
+            host.Children.Add(card);
         }
 
-        host.Children.Add(Card(BuildFaq()));
-        host.Children.Add(Card(BuildPresets()));
+        var faq = Card(BuildFaq());
+        faq.Tag = "常见问题";
+        host.Children.Add(faq);
+
+        var presets = Card(BuildPresets());
+        presets.Tag = "预设";
+        host.Children.Add(presets);
     }
 
     private static FrameworkElement Intro()

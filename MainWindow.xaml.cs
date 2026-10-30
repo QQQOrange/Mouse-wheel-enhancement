@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using MouseWheelEnhancement.Core;
@@ -400,8 +401,16 @@ public partial class MainWindow : Window
         var rate = e.LastRatePerSec;
         StatRate.Text = rate > 0.05 ? $"{rate:0.0} 格/秒" : "—";
         var barValue = Math.Min(40.0, Math.Max(0.0, rate));
-        // 只在真的变了才动 ProgressBar：400 ms 一次的无效 Value 赋值也会触发重绘
-        if (Math.Abs(RateBar.Value - barValue) > 0.05) RateBar.Value = barValue;
+        // 值变化时用 260ms 补间，进度条不会每 400ms 硬跳一下
+        if (Math.Abs(_rateBarTarget - barValue) > 0.3)
+        {
+            _rateBarTarget = barValue;
+            RateBar.BeginAnimation(ProgressBar.ValueProperty,
+                new DoubleAnimation(barValue, TimeSpan.FromMilliseconds(260))
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                });
+        }
 
         var on = Services.Config.Enabled;
         _loading = true;
@@ -619,6 +628,33 @@ public partial class MainWindow : Window
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
         if (Nav.SelectedIndex == 1) InvalidateCurve();
+
+        AnimateTabIn();
+    }
+
+    /// <summary>
+    /// 切页时让新内容轻轻淡入并上移 6px —— 比"啪"一下整页换掉自然。
+    ///
+    /// <para>
+    /// 只用 Opacity + TranslateTransform 两个合成层属性，不触发布局，
+    /// 160~190 ms 也不会拖慢操作；构造/恢复页签（窗口还没显示）时不播。
+    /// </para>
+    /// </summary>
+    private void AnimateTabIn()
+    {
+        if (!IsLoaded) return;
+        if (Nav.SelectedContent is not FrameworkElement content) return;
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        content.Opacity = 0;
+
+        var shift = new TranslateTransform(0, 6);
+        content.RenderTransform = shift;
+
+        content.BeginAnimation(OpacityProperty,
+            new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(165)) { EasingFunction = ease });
+        shift.BeginAnimation(TranslateTransform.YProperty,
+            new DoubleAnimation(6, 0, TimeSpan.FromMilliseconds(190)) { EasingFunction = ease });
     }
 
     /// <summary>
@@ -685,10 +721,16 @@ public partial class MainWindow : Window
         _helpRendered = true;
         var sw = Stopwatch.StartNew();
         HelpContent.Render(HelpPanel);
-        Log.Info($"帮助页渲染完成：{sw.ElapsedMilliseconds} ms / {HelpPanel.Children.Count} 张卡片");
+        var anchors = HelpPanel.Children.OfType<FrameworkElement>()
+            .Select(c => c.Tag as string).Where(t => !string.IsNullOrEmpty(t));
+        Log.Info($"帮助页渲染完成：{sw.ElapsedMilliseconds} ms / {HelpPanel.Children.Count} 张卡片 / " +
+                 $"锚点={string.Join("/", anchors)}");
     }
 
     private DispatcherTimer? _helpFilterTimer;
+
+    /// <summary>速度条当前的目标值（动画补间用，避免每 400ms 读动画中间值）。</summary>
+    private double _rateBarTarget;
 
     /// <summary>
     /// 帮助页搜索：按关键词过滤卡片（标题或正文命中即留下）。
@@ -730,7 +772,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>帮助页「跳转到某组」：清掉搜索过滤后，把第一张命中的卡片滚进视野。</summary>
+    /// <summary>帮助页「跳转到某组」：按卡片锚点精确匹配，滚到该卡顶部。</summary>
     private void HelpJump_Click(object sender, RoutedEventArgs e)
     {
         EnsureHelpRendered();
@@ -743,13 +785,37 @@ public partial class MainWindow : Window
             ApplyHelpFilter();
         }
 
+        /* 按**卡片锚点**精确匹配。
+         * 之前用"正文包含关键词"：简介卡里就有"关掉平滑滚动"这句话，
+         * 于是无论点哪个按钮都会命中第一张卡、等于跳到顶部 —— 这就是
+         * "点了不跳转"的根因。 */
         foreach (UIElement child in HelpPanel.Children)
         {
-            if (child is FrameworkElement fe && ContainsText(fe, key))
+            if (child is FrameworkElement fe && fe.Tag is string tag &&
+                string.Equals(tag, key, StringComparison.Ordinal))
             {
-                fe.BringIntoView();
+                ScrollHelpTo(fe);
                 return;
             }
+        }
+    }
+
+    /// <summary>把某张卡片滚到可视区顶部（留 12px 余量，不贴边）。</summary>
+    private void ScrollHelpTo(FrameworkElement target)
+    {
+        try
+        {
+            // 用绝对偏移而不是 BringIntoView：后者只保证"进入视野"，
+            // 卡片很高时可能只露出底部一点点，看起来像没跳到位。
+            var pos = target.TransformToAncestor(HelpScroll).Transform(new Point(0, 0));
+            var offset = HelpScroll.VerticalOffset + pos.Y - 12;
+            var max = Math.Max(0, HelpScroll.ScrollableHeight);
+            HelpScroll.ScrollToVerticalOffset(Math.Clamp(offset, 0, max));
+        }
+        catch
+        {
+            // 还没布局完（拿不到相对位置）就退回 BringIntoView
+            target.BringIntoView();
         }
     }
 

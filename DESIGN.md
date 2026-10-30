@@ -3042,4 +3042,55 @@ v1.7.8 为了提升帮助页滚动性能，把 `HelpContent.Text` 的
 
 ---
 
+## 44. 帮助页跳转 bug + 全功能体检 + 动画补强（v1.7.11）
+
+### 44.1 帮助页「快速定位」跳错位置
+
+**根因**：`HelpJump_Click` 用「卡片正文包含关键词」匹配。简介卡（第一张）里
+有"…或关掉平滑滚动"这句话，于是点"平滑滚动"会命中第一张卡 —— 视觉上就是
+"跳到顶部 / 没反应"。
+
+**修复**：
+- `HelpContent.Render` 给每张卡设 `Tag = section.Title`（FAQ=`常见问题`、预设=`预设`）
+- `HelpJump_Click` 按 `Tag` **精确匹配**；新增 `ScrollHelpTo()` 用绝对偏移滚到卡片顶部
+  （`BringIntoView` 只保证"进入视野"，高卡片可能只露一角）
+- `EnsureHelpRendered` 的日志带出锚点列表，便于回归
+
+### 44.2 全功能体检
+
+| 功能 | 检查方式 | 结果 |
+|---|---|---|
+| 快速滚动加速 | selftest + wheeltest | 单调 1.00→1.09→1.56，猛甩 2.11× |
+| 平滑滚动 | frametrace + wheeltest | 四场景通过，单格 60 px |
+| 每格滚动行数 | wheellines + smoke | 系统/滑块/标签都是 3 |
+| 黑白名单 | selftest | 304 全过 |
+| 自动更新 | 代码审查 | 资产名 / SHA256 校验正确 |
+| GitHub 令牌 | selftest + 代码审查 | DPAPI 加密，明文不落盘 |
+| 运行时检测 | dialogtest / runtimecheck | rc=0 |
+| 主题跟随 | smoke + 注册表实测 | 5.9 s 跟随 |
+| 对自己也生效 | smoke | 12/12 接管 |
+| 管理员自启 | taskcheck | 任务存在、指向启动器 |
+| 帧率跟随 | selftest + frametrace | 6.25 ms @160 Hz |
+| 托盘 | smoke | 通过 |
+| 开机自启 | taskcheck | runAtLogin=true |
+| 全局热键 | 日志 | Ctrl+Alt+W 被占 → 退到 Ctrl+Alt+Shift+W |
+| 窗口记忆 | selftest + config | 1120×846 @400,125 |
+| 帮助跳转 | 锚点日志 | 修复后锚点齐全 |
+
+### 44.3 动画补强
+
+只加**合成层**动画（Opacity / TranslateTransform / ScaleTransform），不触发布局：
+
+- **切页**：新内容 165 ms 淡入 + 190 ms 上移 6 px（`AnimateTabIn`）
+- **滑块圆点**：hover 放大 1.16×（120 ms，`SliderThumb` 模板）
+- **速度条**：值变化 260 ms 补间（不再每 400 ms 硬跳）
+- 开关 Knob 160 ms 滑动（v1.7.9 已有）
+
+### 44.4 验证
+
+- `--selftest` 304；`--wheeltest` 通过；`--smoke` rc=0；`--measure --show` 正常
+- 构建 0 警告 0 错误
+
+---
+
 MIT License · © 2026 QQQOrange

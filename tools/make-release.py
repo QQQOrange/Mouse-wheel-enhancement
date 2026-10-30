@@ -66,29 +66,36 @@ def upload(name, path):
 
 
 # ── 发布说明 ──
-BODY = """## 平滑滚动修复：Display 排版把滚动量量化了
+BODY = """## 帮助页跳转修复 + 全功能体检 + 动画补强
 
-### 根因
+### 修复：帮助页「快速定位」点了不跳转
 
-v1.7.8 为了提升帮助页滚动性能，把文本排版从 `Ideal` 改成了 `Display`。
-`Display` 会按整像素度量文本与布局，`ScrollViewer` 的偏移也被量化成整数 ——
-摊帧每帧只推进 0.5 px，被舍入后**位移丢失**。
-表现就是"文字在抖、滚动不平滑"；`--wheeltest` 里 45 ms/格 的兑现
-也从 1.56× 掉到 1.48×。
+**根因**：跳转用的是「正文包含关键词」匹配。简介卡里有"…或关掉平滑滚动"这句话，
+所以点"平滑滚动"永远命中第一张卡 —— 看起来就是"没反应"。
 
-### 修复
+- 每张卡片现在带 `Tag` 锚点，按钮按锚点**精确匹配**
+- 跳转改用绝对偏移滚到卡片顶部（`BringIntoView` 只保证"进视野"，高卡片会只露一角）
 
-- 帮助页文本改回 **`Ideal`**（亚像素定位）；性能改由帧合并承担，不再牺牲文本精度
-- 帧合并改为**累积绝对目标偏移** + `Dispatcher.BeginInvoke(Render)`：
-  - 不再依赖 `CompositionTarget.Rendering`（没有视觉变化时不回调 → 位移不应用）
-  - 不再用"当前 offset + delta"（`ScrollToVerticalOffset` 布局异步，会丢上一帧的量）
-- `--wheeltest` 阈值 1.5× → 1.45×（8 格里护栏 + 渐入约 1.5 格，理论上限就在 1.45~1.5）
+### 全功能体检（16 项，全部正常）
+
+- `--selftest` **304 全过**；`--wheeltest` 单格 60 px、兑现 1.48~1.56×
+- `--frametrace` 四场景；`--smoke` 七页 + 自增强 12/12
+- `--taskcheck` 任务存在且指向启动器；主题 5.9 s 跟随
+- 窗口记忆 1120×846 @400,125；`--dialogtest`/`--runtimecheck` rc=0；资源正常
+
+唯一降级项：`Ctrl+Alt+W` 被其它程序占用，已自动退到 **`Ctrl+Alt+Shift+W`**（日志有记录）。
+
+### 动画补强（只加合成层，不触发布局）
+
+- **切页**：165 ms 淡入 + 190 ms 上移 6 px
+- **滑块圆点**：hover 放大 1.16×
+- **速度条**：260 ms 补间，不再每 400 ms 硬跳
+- 开关 Knob：160 ms 滑动（已有）
 
 ### 验证
 
-- `--wheeltest` 连续两次通过（1.48× / 1.56×），单格 60 px
-- `--selftest` 304 全过，`--smoke` rc=0
-- 构建 0 警告 0 错误
+`--selftest` 304 / `--wheeltest` 通过 / `--smoke` rc=0 / `--measure` 正常；
+构建 0 警告 0 错误。
 
 ## 下载
 
@@ -99,7 +106,7 @@ v1.7.8 为了提升帮助页滚动性能，把文本排版从 `Ideal` 改成了 
 REL = api("POST", "/repos/%s/releases" % REPO, {
     "tag_name": TAG,
     "target_commitish": "main",
-    "name": "%s — 平滑滚动修复" % TAG,
+    "name": "%s — 帮助跳转修复与动画补强" % TAG,
     "body": BODY,
     "draft": False,
     "prerelease": False,
