@@ -116,9 +116,14 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ## 自检
 
 ```bash
-# 304 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、主题、
-# 自我增强、版本比较、令牌清洗、名单匹配、配置读写
+# 336 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、主题、
+# 自我增强、版本比较、令牌清洗、名单匹配、配置读写、按应用覆盖派生、窗口记忆、schema 迁移
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全部通过
+
+# 功能链路检查：把「逻辑对、接线可能错」的地方跑一遍（自己 new 引擎、装一次钩子再拆掉，
+# 用临时目录做配置，不碰你的真实设置）。覆盖：按应用覆盖在钩子里真的命中 / 钩子轮换通道 /
+# 配置导入（旧 schema + 未知字段 + 暂停态）/ 诊断包 / 倍率浮层
+MouseWheelEnhancement.App.exe --featurecheck   # 退出码 0 = 全部通过，报告在数据目录 featurecheck.txt
 
 # 启动器：检查运行时 / 构造「缺少运行时」窗口（不弹给用户，只验证控件与布局）
 MouseWheelEnhancement.exe --runtimecheck

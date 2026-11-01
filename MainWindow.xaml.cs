@@ -1575,36 +1575,9 @@ public partial class MainWindow : Window
         {
             Services.Store.SaveNow();
 
-            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            var dir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            if (!Directory.Exists(dir)) dir = AppPaths.DataDir;
-            var path = IOPath.Combine(dir, $"鼠标滚轮增强-诊断-{stamp}.zip");
-
-            using (var zip = ZipFile.Open(path, ZipArchiveMode.Create))
-            {
-                if (File.Exists(Services.Store.ConfigPath))
-                    zip.CreateEntryFromFile(Services.Store.ConfigPath, "config.json");
-
-                if (File.Exists(Log.FilePath))
-                    zip.CreateEntryFromFile(Log.FilePath, "logs/app.log");
-
-                var entry = zip.CreateEntry("system.txt");
-                using var w = new StreamWriter(entry.Open(), new UTF8Encoding(false));
-                var dpi = VisualTreeHelper.GetDpi(this);
-                w.WriteLine($"版本        : v{Services.Version}");
-                w.WriteLine($"导出时间    : {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-                w.WriteLine($"系统        : {Environment.OSVersion}");
-                w.WriteLine($"运行时      : .NET {Environment.Version} / 64位={Environment.Is64BitProcess}");
-                w.WriteLine($"管理员权限  : {Services.IsElevated}");
-                w.WriteLine($"数据目录    : {AppPaths.DataDir}");
-                w.WriteLine($"配置路径    : {Services.Store.ConfigPath}");
-                w.WriteLine($"窗口 DPI    : {dpi.DpiScaleX:0.##}x / {dpi.DpiScaleY:0.##}x");
-                w.WriteLine($"虚拟桌面    : {SystemParameters.VirtualScreenWidth:0}×{SystemParameters.VirtualScreenHeight:0}");
-                w.WriteLine($"帧间隔      : {RefreshRateMonitor.FrameIntervalMs:0.##} ms（自动跟随={Services.Config.Smooth.AutoFps}）");
-                w.WriteLine($"钩子        : running={Services.Engine.IsRunning} thread={Services.Engine.HookThreadAlive} 轮换={Services.Engine.Rotations}");
-                w.WriteLine($"目标应用    : {Services.Engine.LastTarget.Exe}（{Services.Engine.LastTarget.Class}）");
-                w.WriteLine($"上下限提示  : 上面这行如果是空，说明还没滚动过");
-            }
+            var path = DiagPack.DefaultPath();
+            var dpi = VisualTreeHelper.GetDpi(this);
+            DiagPack.Build(path, dpi.DpiScaleX, dpi.DpiScaleY);
 
             Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
             SetFooterHint($"诊断包已导出：{IOPath.GetFileName(path)}");
@@ -2314,6 +2287,14 @@ public partial class MainWindow : Window
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         void Mark(string label) => Log.Info($"关闭·{label}：{sw.ElapsedMilliseconds} ms");
+
+        /* 定时器会把自己挂在 Dispatcher 的计时器表上 —— 只要它还开着，
+         * 这个窗口就**收不掉**（关闭到托盘是靠销毁窗口来还内存的）。
+         * 6 秒的底部提示、180ms 的搜索防抖都顺手停掉。 */
+        _footerHintTimer?.Stop();
+        _footerHintTimer = null;
+        _helpFilterTimer?.Stop();
+        _helpFilterTimer = null;
 
         SaveWindowPlacement();
         Mark("保存窗口位置");

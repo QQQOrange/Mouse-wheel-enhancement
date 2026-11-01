@@ -269,6 +269,20 @@ public partial class App : System.Windows.Application
         }
 
         // 诊断模式：计划任务（「以管理员身份开机启动」）状态检查
+        /* 功能链路检查：验证 v1.8.x 那些"逻辑对、接线可能错"的地方。
+         *
+         * 放在抢单实例互斥体**之前**：它自己 new 引擎、自己装一次钩子再拆掉，
+         * 不建托盘、不碰用户真实配置，所以即使已经有一个实例在跑也能单独跑。
+         * 这一点是故意的 —— 排查"覆盖在真实实例里到底生效没有"时，
+         * 恰恰替不掉正在运行的那个实例。 */
+        if (e.Args.Any(a => a.Equals("--featurecheck", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = FeatureCheck.Run(e.Args);
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
         if (e.Args.Any(a => a.Equals("--taskcheck", StringComparison.OrdinalIgnoreCase)))
         {
             var code = TaskCheckCli(e.Args);

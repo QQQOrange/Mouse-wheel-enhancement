@@ -3478,6 +3478,53 @@ else if (_animator.PendingUnits != 0) _animator.Clear();
 `--selftest` **336 项**（+3）；`--wheeltest` 通过（单格 60 px、45 ms/格 兑现 1.57×）；
 `--smoke` / `--measure --show` / `--frametrace` 全 rc=0，期间日志 **0 条 WARN/ERROR**；构建 0 警告 0 错误。
 
+## 52. v1.8.4：把「接线」也纳入验证（`--featurecheck`）
+
+### 52.1 为什么光有 `--selftest` 不够
+
+`--selftest` 全是**纯函数**断言：曲线算得对、快照派生得对、归一化得对。
+但下面这些问题它一条都抓不到，因为它们的错法不在算法，在**接线**：
+
+| 症状 | 纯逻辑是否正常 | 真实后果 |
+|---|---|---|
+| 覆盖的 key 用 `ToLower` 归一化了，钩子却拿原始大小写去查 | 正常 | 覆盖静默失效，用户以为设了 |
+| 看门狗投 `WM_APP+0x4D` 到钩子线程，但线程忙/句柄失效 | 正常 | 轮换永远不发生，静默摘钩后不再自愈 |
+| 导入的配置带旧 schema + 未知字段 + `enabled:false` | 正常 | 启动崩溃 / 设置被带歪 |
+| 干净安装（没 config、没日志）时导出诊断包 | 正常 | 点一下就抛异常 |
+
+所以新增 `--featurecheck`：**自己 new 引擎、自己装一次钩子再拆掉、用临时目录做配置**，
+不建托盘、不碰用户真实数据；已有实例在跑时也能跑（这正是排查"真实实例里到底生效没有"需要的）。
+
+### 52.2 五项检查
+
+1. **按应用覆盖**：`Apply` 之后用 `Engine.SettingsFor("Code.EXE")` 反查钩子那一侧的结果 ——
+   故意用大小写不同的名字，验证归一化 + `OrdinalIgnoreCase` 真的接上了；
+   再验"没设覆盖回落全局"和"空 exe 不炸"。
+2. **钩子轮换通道**：`Start()` → `RequestHookRotation()` → 等 2 秒内 `Rotations` +1 且仍存活 → `Stop()` 后线程退出。
+   这是看门狗唯一的自愈手段，之前**从没被执行过**。
+3. **配置导入**：一份 `schemaVersion:4` + 未知字段 + `enabled:false` 的 JSON，
+   验"暂停态被抹平 / 版本被推高 / 已知字段保留 / 未知字段不污染回写"。
+4. **诊断包**：在**没有 Services、没有 config、没有日志**的状态下生成 zip，
+   验文件存在、条目可读、`system.txt` 带版本与 DPI。
+5. **倍率浮层**：`Flash` 两次仍可见（验 v1.8.1 修过的代次竞态）、关闭后不可见。
+
+装钩子期间把 `Enabled` 置 false —— 这个进程可能和用户正在用的实例并存，不能顺手改人家的滚动。
+
+### 52.3 顺带修掉的两处
+
+- **`DiagPack` 从窗口代码里拆出来**：原来写在按钮事件里，自检永远碰不到；
+  拆成静态类后 UI 与命令行走同一份实现（也就才能被 ④ 验证）。
+- **重复导出会抛**：文件名时间戳只到秒，同一秒连点两次会撞名，而 `ZipFile.Open(Create)`
+  遇到已存在文件直接 `IOException`。现在先删再建。
+- **关闭时停掉 DispatcherTimer**：`_footerHintTimer` / `_helpFilterTimer` 会把窗口挂在
+  Dispatcher 的计时器表上，6 秒内这个窗口**收不掉** —— 而"关闭到托盘"正是靠销毁窗口还内存的。
+
+### 52.4 验证
+
+`--featurecheck` 24 项全过（覆盖 5 / 轮换 4 / 配置 6 / 诊断包 5 / 浮层 3 + 结论）；
+`--selftest` 336 项全过；`--wheeltest` 单格 60 px、45 ms/格 1.56×；
+`--smoke` / `--measure --show` / `--frametrace` 全 rc=0，期间日志 0 条 WARN/ERROR。
+
 ---
 
 MIT License · © 2026 QQQOrange

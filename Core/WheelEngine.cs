@@ -265,6 +265,23 @@ public sealed class WheelEngine : IDisposable
         catch { /* 线程刚好退出，交给看门狗下一轮重启 */ }
     }
 
+    /// <summary>
+    /// 诊断口：给定 exe（大小写不敏感），返回钩子**实际会用**的那一份设置。
+    ///
+    /// <para>
+    /// 存在的意义是把"按应用覆盖"从"纯逻辑有断言"提升到"运行时链路有断言"：
+    /// 自检只能验证 <see cref="RuntimeSettings.From"/> 算得对，
+    /// 验证不了 <see cref="Apply"/> 之后钩子那一侧真的查得到、查得对（大小写、归一化、
+    /// 覆盖没命中时回落全局）。<c>--featurecheck</c> 用这个口子验。
+    /// </para>
+    /// </summary>
+    public RuntimeSettings SettingsFor(string exe)
+    {
+        var s = Volatile.Read(ref _settings);
+        if (!string.IsNullOrEmpty(exe) && s.PerApp.TryGetValue(exe, out var perApp)) return perApp;
+        return s;
+    }
+
     /// <summary>只在钩子线程里调用：先拆旧的再装新的，中间不留两个钩子并存。</summary>
     private void RotateHook()
     {
