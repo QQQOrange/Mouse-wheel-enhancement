@@ -3435,6 +3435,49 @@ Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右。用**独立的**速
 `--wheeltest` / `--smoke` / `--measure --show` / `--frametrace` 全 rc=0；
 期间日志 0 条 WARN/ERROR。
 
+## 51. v1.8.3：交付前最后一轮自审（4 处修复）
+
+### 51.1 整格积压被拆成小 delta 后被 Qt 丢掉
+
+`WheelEngine` 在"整格应用里没加速 → 原样放行"那一支原来写的是：
+
+```csharp
+if (_animator.WholeNotch) _animator.WholeNotch = false;
+else if (_animator.PendingUnits != 0) _animator.Clear();
+```
+
+`else if` 意味着**只要模式是整格就不清积压**，但同时把模式切回了按比例。
+于是还排着队的整格（120 的整数倍）会被 `FrameUnits` 拆成 15/30 这种小 delta ——
+而 Qt 的 `angleDelta/120` 是整数除法，**全部变成 0 档**。
+表现：快速甩几下再轻拨一下，那一小段滚动凭空消失。
+
+修法：**只要还有积压就保持整格模式**，让它按 120 一格一格排空；排空之后才把模式交回按比例。
+两种模式共用同一个 `_pendingMilli` 队列，所以这只是"用哪种粒度排空"的差别。
+
+### 51.2 底部状态被提示文字永久占掉
+
+`SetFooterHint` 直接改 `FooterRight.Text` 就不管了，而 `RefreshStats` 每 400 ms 会把那行刷回版本号 ——
+于是"诊断包已导出"要么看不见（被刷掉），要么（改完后）永久停在提示上。
+现在：显示期间 `_footerHintOn` 挡住 `RefreshStats`，6 秒后自动还原成 `vX.Y.Z · 管理员`。
+
+### 51.3 覆盖上限低于全局下限时曲线会反向
+
+`MultiplierFor` = `Min + (Max - Min) * e`。若全局 `MinMultiplier = 2.5`（手改或导入配置才可能）
+而某应用的覆盖上限是 2，曲线就变成**越甩越慢**，而且容量按 2 算、再被夹一次。
+
+`WithOverride` 里把 `MinMultiplier` 压到不超过 `MaxMultiplier`，并在 `--selftest` 加两条断言
+（下限 ≤ 上限、曲线仍单调不降）。默认 min=1，界面不暴露，但配置文件是可手改、可导入的，不能只靠默认值成立。
+
+### 51.4 看门狗重启失败会每 5 秒硬来一次
+
+钩子装不上时（杀软拦截等），`WatchdogTick` 每 5 秒调一次 `Restart()`，
+每次都可能 `Join(2000)`，日志也会刷满。加 30 秒退避，失败时记一条"30 秒后重试"。
+
+### 51.5 验证
+
+`--selftest` **336 项**（+3）；`--wheeltest` 通过（单格 60 px、45 ms/格 兑现 1.57×）；
+`--smoke` / `--measure --show` / `--frametrace` 全 rc=0，期间日志 **0 条 WARN/ERROR**；构建 0 警告 0 错误。
+
 ---
 
 MIT License · © 2026 QQQOrange

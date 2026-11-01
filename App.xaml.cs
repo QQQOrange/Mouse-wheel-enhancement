@@ -2106,6 +2106,9 @@ public partial class App : System.Windows.Application
     private static OsdWindow? _osd;
     private static System.Threading.Timer? _watchdog;
 
+    /// <summary>上一次看门狗重启钩子的时刻（TickCount64）。失败要退避，不能每轮硬重启。</summary>
+    private static long _lastHookRestartMs;
+
     private void StartRuntimeAssist()
     {
         try
@@ -2185,14 +2188,20 @@ public partial class App : System.Windows.Application
                 return;
             }
 
+            var now = Environment.TickCount64;
+
             if (!engine.HookThreadAlive || !engine.IsRunning)
             {
+                /* 退避 30 秒。装钩子失败（比如被杀软挡着）时，每 5 秒一次 Restart
+                 * 会连着跑 `Join(2000)`，日志也会刷满 —— 反而更难排查。 */
+                if (now - Interlocked.Read(ref _lastHookRestartMs) < 30_000) return;
+                Interlocked.Exchange(ref _lastHookRestartMs, now);
+
                 Log.Warn("看门狗：钩子线程已不在，正在重启钩子");
-                engine.Restart();
+                if (!engine.Restart()) Log.Warn("看门狗：重启钩子失败，30 秒后重试");
                 return;
             }
 
-            var now = Environment.TickCount64;
             var idle = now - engine.LastEventTicks;
             var age = now - engine.HookBornTicks;
 

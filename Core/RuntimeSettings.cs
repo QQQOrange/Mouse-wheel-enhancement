@@ -328,7 +328,11 @@ public sealed record RuntimeSettings
                 {
                     FastThresholdPerSec = s.BoostView.FastThresholdPerSec,
                     SaturationPerSec = s.BoostView.SaturationPerSec,
-                    MinMultiplier = s.BoostView.MinMultiplier,
+                    /* 慢速端倍率不能高于上限：`MultiplierFor` 是
+                     * `Min + (Max - Min) * e`，Min > Max 时曲线会**反过来往下走**
+                     * （越甩越慢），而且容量是按 Max 算的，反算又被夹一次。
+                     * 配置文件可以手改、也能整份导入，这条不能只靠默认值成立。 */
+                    MinMultiplier = Math.Min(s.BoostView.MinMultiplier, mult),
                     MaxMultiplier = mult,
                     Enabled = s.BoostView.Enabled,
                     FlushOnReverse = s.BoostView.FlushOnReverse,

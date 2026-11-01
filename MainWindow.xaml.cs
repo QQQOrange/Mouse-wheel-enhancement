@@ -435,9 +435,9 @@ public partial class MainWindow : Window
         var today = $"本次已接管 {e.BoostedCount} 次 · 放行 {e.PassedCount} 次";
         if (StatusToday.Text != today) StatusToday.Text = today;
 
-        FooterRight.Text = Services.IsElevated
-            ? $"v{Services.Version} · 管理员"
-            : $"v{Services.Version} · 普通权限";
+        /* 有临时提示正在显示时不要覆盖：RefreshStats 每 400ms 跑一次，
+         * 否则"诊断包已导出"会被立刻刷回版本号，用户根本看不见。 */
+        if (!_footerHintOn) FooterRight.Text = FooterInfo();
     }
 
     private void OnServicesStateChanged()
@@ -736,6 +736,11 @@ public partial class MainWindow : Window
     }
 
     private DispatcherTimer? _helpFilterTimer;
+
+    /// <summary>底部提示是否正在占用那行小字（占用期间 RefreshStats 不覆盖）。</summary>
+    private bool _footerHintOn;
+
+    private DispatcherTimer? _footerHintTimer;
 
     /// <summary>速度条当前的目标值（动画补间用，避免每 400ms 读动画中间值）。</summary>
     private double _rateBarTarget;
@@ -1682,10 +1687,35 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>底部右侧那行小字临时换成一句提示（导出/导入完成后用）。</summary>
+    /// <summary>底部右侧那行小字的正式内容（版本 + 权限）。</summary>
+    private static string FooterInfo() => Services.IsElevated
+        ? $"v{Services.Version} · 管理员"
+        : $"v{Services.Version} · 普通权限";
+
+    /// <summary>
+    /// 底部右侧那行小字临时换成一句提示，6 秒后自动还原。
+    ///
+    /// <para>
+    /// 以前是直接改文字就不管了 —— 于是导一次诊断包，底部就会永久停在
+    /// "诊断包已导出：xxx.zip"，版本号和权限提示再也看不到。
+    /// </para>
+    /// </summary>
     private void SetFooterHint(string text)
     {
-        if (FooterRight != null) FooterRight.Text = text;
+        if (FooterRight == null) return;
+
+        _footerHintOn = true;
+        FooterRight.Text = text;
+
+        _footerHintTimer?.Stop();
+        _footerHintTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+        _footerHintTimer.Tick += (_, _) =>
+        {
+            _footerHintTimer?.Stop();
+            _footerHintOn = false;
+            if (FooterRight != null) FooterRight.Text = FooterInfo();
+        };
+        _footerHintTimer.Start();
     }
 
     /// <summary>

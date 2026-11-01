@@ -527,8 +527,15 @@ public sealed class WheelEngine : IDisposable
                  *    在这类框架里它本来就是一档，放大成 120 只会滚得更远。 */
                 if (!decision.Boosted || Math.Abs(delta) < Native.WHEEL_DELTA)
                 {
-                    if (_animator.WholeNotch) _animator.WholeNotch = false;
-                    else if (_animator.PendingUnits != 0) _animator.Clear();
+                    /* 这一下原样放行。留着的整格积压**不能**就地切回按比例模式 ——
+                     * 整格模式一次发 120，按比例模式会拆成 15/30，而 Qt 的
+                     * `angleDelta/120` 是整数除法：小 delta 全被丢成 0。
+                     * 表现出来就是"快甩之后那一小段凭空没了"（v1.8.3 修）。
+                     *
+                     * 所以：只要还有积压就保持整格模式，让它一格一格排空；
+                     * 排空之后再把模式交回按比例（下一次加速事件会重新判定）。 */
+                    if (_animator.WholeNotch && _animator.PendingUnits == 0)
+                        _animator.WholeNotch = false;
                     Interlocked.Increment(ref _passed);
                     return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
                 }

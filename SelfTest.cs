@@ -1175,6 +1175,34 @@ internal static class SelfTest
         Check("全局快照不受覆盖影响", ovRs.MaxMultiplier == ov.Boost.MaxMultiplier,
             ovRs.MaxMultiplier.ToString());
 
+        /* 覆盖上限低于全局下限（只有手改 / 导入配置才拿得到这种组合）。
+         *
+         * MultiplierFor 是 Min + (Max - Min) * e：Min > Max 会让曲线**反向**
+         * （越甩越慢），而且容量按 Max 算、再被夹一次。下限必须跟着压下来。 */
+        var lowCap = AppConfig.Default();
+        lowCap.Boost.MinMultiplier = 2.5;
+        lowCap.Filter.Apps.Add(new AppRule
+        {
+            Exe = "lowcap.exe",
+            Override = new AppOverride { MaxMultiplier = 2 },
+        });
+        lowCap.Normalize();
+
+        var lowRs = RuntimeSettings.From(lowCap);
+        var gotLow = lowRs.PerApp.TryGetValue("lowcap.exe", out var lowApp) && lowApp != null;
+        Check("上限低于全局下限的覆盖照样生成快照", gotLow);
+        if (gotLow && lowApp != null)
+        {
+            Check("下限被压到不超过上限",
+                lowApp.BoostView.MinMultiplier <= lowApp.BoostView.MaxMultiplier,
+                $"{lowApp.BoostView.MinMultiplier} > {lowApp.BoostView.MaxMultiplier}");
+            Check("倍率曲线仍随速度单调不降",
+                WheelVelocityTracker.MultiplierFor(200, lowApp.BoostView)
+                >= WheelVelocityTracker.MultiplierFor(10, lowApp.BoostView),
+                $"{WheelVelocityTracker.MultiplierFor(200, lowApp.BoostView):0.00} < " +
+                $"{WheelVelocityTracker.MultiplierFor(10, lowApp.BoostView):0.00}");
+        }
+
         /* ⑨ v1.8.0 新增开关的默认值与 schema */
         var d8 = AppConfig.Default();
         d8.Normalize();
