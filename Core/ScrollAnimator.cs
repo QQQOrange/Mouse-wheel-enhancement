@@ -209,6 +209,17 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>反向时先停多久再起步。</summary>
     private const double ReverseHoldMs = 45;
 
+    /// <summary>
+    /// 迟到帧参与曲线计算时，dt 最多按帧间隔的几倍算（v1.8.5）。
+    /// 2.0 的含义：卡一下之后那一帧最多发两倍帧量，剩下的摊到后面 —— 不会再出现
+    /// "一帧 140 单位、前后帧 16 单位"那种肉眼可见的大跳。
+    /// </summary>
+    private const double MaxLateFrameFactor = 2.0;
+
+    /// <summary>掉帧降级进入/退出的连续慢帧数（迟滞，防止逐帧翻转）。</summary>
+    private const int SlowFramesEnter = 45;
+    private const int SlowFramesExit = 12;
+
     /// <summary>连续"跟不上帧"的计数与降级标志（v1.8.0，见 Loop）。</summary>
     private int _slowFrames;
     private bool _degraded;
@@ -664,6 +675,19 @@ internal sealed class ScrollAnimator : IDisposable
                 var dtMs = Math.Clamp(TicksToMs(now - _lastFrameTicks), 0.2, 50.0);
                 _lastFrameTicks = now;
 
+                /* ── 迟到那一帧不许"一次性补回来"（v1.8.5）──
+                 *
+                 * `FrameAmount` 是 `pending × (1 - e^(-dt/τ))`：dt 越大，一帧发得越多。
+                 * 这本来是"保持平均速度"的正确做法，但**观感是错的** ——
+                 * 实测（--frametrace jitter=12）：帧间隔 6.25 ms 的机器上某帧迟到到 18 ms，
+                 * 那一帧直接发掉积压的 43%（+140 单位 ≈ 1.2 格，前后帧只有 16~58），
+                 * 看起来就是"卡一下，然后猛地跳一段"。
+                 *
+                 * 平滑优先：按曲线算的时候，dt 最多按 2 倍帧间隔计。
+                 * 迟到的量不丢，摊到后面几帧 —— 总位移不变，只是不再有单帧大跳。
+                 * （掉帧计数器仍然用真实的 dtMs，否则就测不出"这台机器慢"。） */
+                var effDtMs = Math.Min(dtMs, s.FrameIntervalMs * MaxLateFrameFactor);
+
                 var pendingUnits = pendingMilli / Milli;
 
                 /* 反向软起步：刚翻方向的头 45ms 先不动，让旧动量的观感散掉再走。
@@ -684,12 +708,18 @@ internal sealed class ScrollAnimator : IDisposable
                  * 正常机器上这个分支永远进不来。 */
                 if (s.LowFpsDegrade)
                 {
+                    /* 恶化和恢复用不同的步长 + 不同的阈值（迟滞）：
+                     * 旧写法进出都在 40 附近，一旦贴住阈值就**逐帧翻转** ——
+                     * τ 在"跟手值"和"滑行值"之间来回跳，末段就是一段一段的。 */
                     if (dtMs > s.FrameIntervalMs * 2.5) _slowFrames++;
-                    else if (_slowFrames > 0) _slowFrames--;
-                    _degraded = _slowFrames > 40;
+                    else if (_slowFrames > 0) _slowFrames = Math.Max(0, _slowFrames - 2);
+
+                    if (!_degraded && _slowFrames >= SlowFramesEnter) _degraded = true;
+                    else if (_degraded && _slowFrames <= SlowFramesExit) _degraded = false;
                 }
                 else
                 {
+                    _slowFrames = 0;
                     _degraded = false;
                 }
 
@@ -699,7 +729,7 @@ internal sealed class ScrollAnimator : IDisposable
                  * 滑行 τ 由 GlideMs 反解（到点只剩 1 个单位），过渡用 55ms 的
                  * smoothstep —— τ 一步跳变会让速率瞬间掉一半，听起来就是"咔"。 */
                 var tau = s.TauMs;
-                if (s.SmoothEnabled && s.GlideMs > 0 && !_degraded)
+                if (s.SmoothEnabled && s.GlideMs > 0)
                 {
                     var idleMs = TicksToMs(now - Interlocked.Read(ref _lastInputTicks));
 
@@ -728,6 +758,15 @@ internal sealed class ScrollAnimator : IDisposable
                             TicksToMs(now - Interlocked.Read(ref _glideStartTicks)) / GlideRampMs, 0, 1);
                         w = w * w * (3 - 2 * w);
                         tau = s.TauMs + (_glideTauMs - s.TauMs) * w;
+
+                        /* 掉帧降级只做一件事：**别再额外变慢**（τ 不高于跟手值）。
+                         *
+                         * v1.8.0 原本是"整块跳过滑行 + 落地"，结果是降级一触发
+                         * τ 就从滑行值（60~70ms）掉回跟手值（45ms），而落地段的
+                         * 软着陆也一起没了 —— 末段直接"砸停"。这正是用户报的
+                         * "快停的时候卡一下、然后猛地跳一段"。
+                         * 落地段是防砸停的，任何时候都不能跳过。 */
+                        if (_degraded) tau = Math.Min(tau, s.TauMs);
 
                         /* ── 落地段：手里已经不到 LandingStartUnits 时，把 τ 平滑插值到 LandingTauMs ──
                          *
@@ -761,15 +800,24 @@ internal sealed class ScrollAnimator : IDisposable
                          * **只压不抬**：收尾上界的本意是"别拖"，不是"催它快点走完"。
                          * 把 τ 抬高会让末段从"渐停"变成"匀速小步走完"（末 6 帧速度
                          * 从 30 涨到 144），那是另一种顿挫。 */
-                        /* 落地段期间不收紧 —— 软着陆由 LandingTauMs 单独管。 */
+                        /* ── 收尾上界（重写成**连续**的，v1.8.5）──
+                         *
+                         * 旧版只在 `left > LandingStartUnits` 时收紧，于是 `left` 掉到
+                         * 12 单位以下那一刻，上界突然不再参与，τ 从 ~32ms 一帧跳回 ~62ms
+                         * （实测比值 1.93×）—— 速率瞬间减半，读作"卡了一下"；紧接着
+                         * 落地插值又把 τ 慢慢往回压（62 → 37），那一段就成了"又加速一下"。
+                         * 一卡一冲，正是"被切成一段一段、猛地跳一段"。
+                         *
+                         * 现在：上界对所有进度都参与，`left` 在里面被夹到 CloseUnits
+                         * （连续、不跳变）；下限取 LandingTauMs —— 上界的本意是"别拖"，
+                         * 不是"赶进度"，绝不能把 τ 压到比软着陆还小（那就是猛冲）。 */
                         var spentMs = TicksToMs(now - Interlocked.Read(ref _glideStartTicks));
-                        if (spentMs > 0 && left > LandingStartUnits
-                            && left > CloseUnits && _finishFromUnits > CloseUnits)
+                        if (spentMs > 0 && _finishFromUnits > CloseUnits)
                         {
                             var remainMs = Math.Max(20.0, MaxFinishMs - spentMs);
                             var span = Math.Log(Math.Max(_finishFromUnits / Math.Max(left, CloseUnits), 1.5));
                             var capTau = remainMs / Math.Max(span, 0.2);
-                            if (capTau < tau) tau = Math.Max(MinTauMs, capTau);
+                            if (capTau < tau) tau = Math.Max(LandingTauMs, capTau);
                         }
                     }
                 }
@@ -790,7 +838,7 @@ internal sealed class ScrollAnimator : IDisposable
                     /* 曲线给"这一帧该发多少"（小数），零头跨帧累积 —— 见 Quantize。
                      * 这一帧可能什么都不发（units == 0），那不代表卡住：
                      * 下帧接着攒，两次发送的间隔会越来越长，收尾才是渐停而不是砸停。 */
-                    var want = FrameAmount(pendingUnits, dtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+                    var want = FrameAmount(pendingUnits, effDtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
                     units = Quantize(want, Interlocked.Read(ref _carryMilli) / Milli, out var carry);
                     Interlocked.Exchange(ref _carryMilli, (long)Math.Round(carry * Milli));
                 }

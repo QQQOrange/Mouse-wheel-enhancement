@@ -96,6 +96,22 @@ internal static class FrameTrace
 
         var fail = 0;
 
+        /* 模拟慢机器的每帧附加延迟（毫秒）。0 = 不模拟。
+         *
+         * 用法：--frametrace jitter / --frametrace jitter=12
+         *
+         * 为什么需要它：掉帧降级（LowFpsDegrade）只在"出帧间隔持续超目标 2.5 倍"时
+         * 才生效，正常机器上永远进不去 —— 也就永远验证不到它。在 FrameSink 里睡一下
+         * 会让**下一次**循环的 dt 变长（_lastFrameTicks 在发送前就记好了），
+         * 正好复现"这台机器跟不上"的状态。 */
+        var jitterMs = 0.0;
+        foreach (var a in args)
+        {
+            if (a.Equals("jitter", StringComparison.OrdinalIgnoreCase)) { jitterMs = 12; break; }
+            if (a.StartsWith("jitter=", StringComparison.OrdinalIgnoreCase)
+                && double.TryParse(a[7..], out var jv)) { jitterMs = Math.Clamp(jv, 0, 40); break; }
+        }
+
         try
         {
             Services.InitConfig();   // 目录 + 日志 + 配置 + 刷新率（不装钩子、不建窗口）
@@ -108,6 +124,7 @@ internal static class FrameTrace
                 $"　　　滑行 {s.GlideMs:0} ms / 松手判定 {s.GlideDelayMs:0} ms" +
                 $"　积压上限 {s.MaxBacklogUnits:0} 单位　平滑 {(s.SmoothEnabled ? "开" : "关")}");
             sb.AppendLine($"　　　单帧上限 {s.UnitsPerFrame * 4} 单位（单帧量 × 4）");
+            if (jitterMs > 0) sb.AppendLine($"　　　⚠ 模拟慢帧：每帧额外 {jitterMs:0} ms");
             sb.AppendLine();
 
             if (!s.SmoothEnabled)
@@ -120,11 +137,11 @@ internal static class FrameTrace
              * 也就复现不出陈旧 dt。 */
             var idle = (int)Math.Max(1200, s.GlideDelayMs + 900);
 
-            fail += Case(sb, s, "空闲后滚一格", new[] { 120 }, gapMs: 0, idleMs: idle);
-            fail += Case(sb, s, "空闲后往回滚一格", new[] { -120 }, gapMs: 0, idleMs: idle);
-            fail += Case(sb, s, "空闲后连甩三格（15 ms 一下）", new[] { 120, 120, 120 }, gapMs: 15, idleMs: idle);
+            fail += Case(sb, s, "空闲后滚一格", new[] { 120 }, gapMs: 0, idleMs: idle, jitterMs: jitterMs);
+            fail += Case(sb, s, "空闲后往回滚一格", new[] { -120 }, gapMs: 0, idleMs: idle, jitterMs: jitterMs);
+            fail += Case(sb, s, "空闲后连甩三格（15 ms 一下）", new[] { 120, 120, 120 }, gapMs: 15, idleMs: idle, jitterMs: jitterMs);
             fail += Case(sb, s, "空闲后连甩六格（8 ms 一下）", new[] { 120, 120, 120, 120, 120, 120 },
-                gapMs: 8, idleMs: idle);
+                gapMs: 8, idleMs: idle, jitterMs: jitterMs);
 
             sb.AppendLine(new string('-', 64));
             sb.AppendLine(fail == 0 ? "全部通过" : $"有 {fail} 项失败");
@@ -148,12 +165,12 @@ internal static class FrameTrace
     /// <param name="gapMs">两次推入之间间隔多久 —— 模拟"连甩"。</param>
     /// <param name="idleMs">推之前先让线程闲多久（必须足够长，让它真进无限等待）。</param>
     private static int Case(StringBuilder sb, RuntimeSettings s, string name,
-        int[] pushes, double gapMs, int idleMs)
+        int[] pushes, double gapMs, int idleMs, double jitterMs = 0)
     {
         var total = pushes.Sum();
         sb.AppendLine($"■ {name}：共推入 {total:+#;-#;0} 单位（{Math.Abs(total) / 120.0:0.##} 格）");
 
-        var frames = Capture(s, pushes, gapMs, idleMs, out var drainMs);
+        var frames = Capture(s, pushes, gapMs, idleMs, jitterMs, out var drainMs);
         if (frames.Count == 0)
         {
             sb.AppendLine("  ✗ 一帧都没发出来");
@@ -211,8 +228,16 @@ internal static class FrameTrace
          * 单格滚动 390 ms 里有 180 ms 在磨最后 5% —— 那一段用户读作"延迟"。 */
         var t95 = TimeToPercent(frames, 0.95);
         var landMs = frames.Count == 0 ? 0 : frames[^1].AtMs - t95;
-        fail += Check(sb, $"走完 95% 后落地段 {landMs:0} ms（≤ {MaxLandMs:0}，收尾不拖）",
-            landMs <= MaxLandMs, $"{landMs:0} ms");
+
+        /* 预算按**实测节奏**缩放：这台机器一帧就是 15ms 的话，150ms 的绝对预算
+         * 只够 10 帧，落地段必然"超时"—— 那不是收尾拖，是机器慢。
+         * 折算成"最多占几个实际帧"（14 个）才是可比的量。 */
+        gaps.Sort();
+        var medianGap = gaps.Count > 0 ? gaps[gaps.Count / 2] : s.FrameIntervalMs;
+        var landBudget = Math.Max(MaxLandMs, medianGap * 14);
+        fail += Check(sb,
+            $"走完 95% 后落地段 {landMs:0} ms（≤ {landBudget:0}，收尾不拖）",
+            landMs <= landBudget, $"{landMs:0} ms > {landBudget:0} ms（中位帧隔 {medianGap:0.#} ms）");
 
         /* ④d **刻度感**：中段的步长不该大起大落。
          *
@@ -256,7 +281,31 @@ internal static class FrameTrace
             $"末 6 帧平均速度 {tailRate:0} 单位/秒（≤ {MaxTailRateUnits:0}，渐停而非砸停）",
             tailRate <= MaxTailRateUnits, $"{tailRate:0} 单位/秒");
 
+        /* ⑦ **末段 τ 不能骤降**：τ 是"这一帧敢发多少"的时间常数。
+         * 它在末段突然变小，等于末段突然加速 —— 用户看到的就是"快到末尾时猛地跳一段"。
+         * 允许缓慢下调（收尾上界会压 τ），但不允许一帧之内掉一半以上。 */
+        var tailTau = frames.Skip(Math.Max(0, frames.Count - 8)).Select(f => f.TauMs).ToArray();
+        var tauDrop = 1.0;
+        var tauRise = 1.0;
+        for (var i = 1; i < tailTau.Length; i++)
+        {
+            if (tailTau[i - 1] <= 0.5) continue;
+            var ratio = tailTau[i] / tailTau[i - 1];
+            tauDrop = Math.Min(tauDrop, ratio);
+            tauRise = Math.Max(tauRise, ratio);
+        }
+
+        /* 两个方向都要拦：
+         *   · 骤降 = 突然加速（末段猛跳一段）—— 旧版收尾上界一撤掉就是这个形态；
+         *   · 骤升 = 突然减速（"卡了一下"）—— 掉帧降级整块跳过滑行时是这个形态。
+         * 实测修好之后两个比值都是 1.00（τ 在末段恒定 35ms，靠 pending 自然衰减减速）。 */
+        fail += Check(sb, $"末段 τ 不骤降（最小比值 {tauDrop:0.00}，≥ 0.55）", tauDrop >= 0.55,
+            "τ 序列 " + string.Join(" → ", tailTau.Select(t => t.ToString("0.#"))));
+        fail += Check(sb, $"末段 τ 不骤升（最大比值 {tauRise:0.00}，≤ 1.65）", tauRise <= 1.65,
+            "τ 序列 " + string.Join(" → ", tailTau.Select(t => t.ToString("0.#"))));
+
         sb.AppendLine("  前 6 帧：" + Describe(frames.Take(6)));
+        sb.AppendLine("  末 8 帧 τ：" + string.Join(" → ", tailTau.Select(t => t.ToString("0.#") + "ms")));
         sb.AppendLine("  末 6 帧：" + Describe(frames.Skip(Math.Max(0, frames.Count - 6))));
         sb.AppendLine($"  共 {frames.Count} 帧，用时 {drainMs:0} ms，最大单帧 {maxFrame} 单位，" +
                       $"末段速度 {tailRate:0} 单位/秒，落地段 {landMs:0} ms");
@@ -304,7 +353,7 @@ internal static class FrameTrace
 
     /// <summary>真开一条动画线程，推入后收集出帧，直到发完或超时。</summary>
     private static List<Frame> Capture(RuntimeSettings s, int[] pushes, double gapMs, int idleMs,
-        out double drainMs)
+        double jitterMs, out double drainMs)
     {
         var frames = new List<Frame>();
         var gate = new object();
@@ -317,6 +366,10 @@ internal static class FrameTrace
         {
             lock (gate)
                 frames.Add(new Frame(units, clock.Elapsed.TotalMilliseconds - startAt, dt, tau));
+
+            /* 模拟"这台机器跟不上"：睡在这里，下一次循环的 dt 就会被拉长
+             * （_lastFrameTicks 在发送前已记好），从而踩到 LowFpsDegrade 的分支。 */
+            if (jitterMs > 0) Thread.Sleep((int)jitterMs);
         };
         animator.Start();
 

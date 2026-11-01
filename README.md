@@ -135,6 +135,8 @@ MouseWheelEnhancement.App.exe --smoke
 # 出帧追踪：真开动画线程、先闲够再推入，量"空闲后第一帧发了多少"
 # （不装钩子、不注入，已有实例在跑时也能跑）
 MouseWheelEnhancement.App.exe --frametrace
+# 同上，但模拟"这台机器跟不上"（每帧多睡 12ms）：验证末尾不卡顿、不猛跳
+MouseWheelEnhancement.App.exe --frametrace jitter=12
 
 # 自身窗口滚动实测：把光标真的挪到本程序帮助页上滚，量"一格到底滚了多少像素"。
 # 用来排查"设置页里一滚动就是一页 / 加速失效"这类只有自己页面犯的问题。
