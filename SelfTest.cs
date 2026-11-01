@@ -653,11 +653,11 @@ internal static class SelfTest
             > ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 1200, 300, Tau),
             "积压 480 的 τ 应大于积压 1200 的");
 
-        /* ④'' 尾段定时（v1.8.9）：最后几个单位不再靠"零头攒满"发，而是按
-         * `τ·ln(p/(p-1))` 定时发 —— 间隔单调变长、且一定不超过上限。
+        /* ④'' 尾段定时（v1.8.9 / v1.8.11）：最后几个单位按 `τ·ln(p/(p-1))` 定时发，
+         * 而且**间隔一旦超过 12ms 就直接收尾** —— 不许爬。
          *
-         * 这是用户报的"最后一下生硬"的直接修法：改前实测末步空窗 55ms
-         * （画面先停住，再补 0.5px），改后 26~31ms，仍在"连续运动"的读感里。 */
+         * 这两条对应的正是用户报的"停住之后又挪了一下"：
+         * 爬行的速度（<67 px/s）早就低于眼睛的运动检测阈值，最后那一下就成了孤立的一跳。 */
         var tailGaps = new List<double>();
         for (var p = 8; p >= 2; p--) tailGaps.Add(ScrollAnimator.TailGapMs(p, 35));
         var tailMono = true;
@@ -665,8 +665,12 @@ internal static class SelfTest
             if (tailGaps[i] <= tailGaps[i - 1]) tailMono = false;
         Check("尾段间隔随剩余量减少而单调变长", tailMono,
             string.Join(" / ", tailGaps.Select(g => g.ToString("0.0"))));
-        Check("尾段间隔有上限（不超过 28ms）", tailGaps.Max() <= 28.0 && ScrollAnimator.TailGapMs(1, 35) <= 28.0,
-            $"{tailGaps.Max():0.0} ms / 最后一步 {ScrollAnimator.TailGapMs(1, 35):0.0} ms");
+
+        Check("尾段间隔超过 12ms 时就该收尾（不爬行）",
+            ScrollAnimator.TailGapMs(3, 35) > 12 && ScrollAnimator.TailGapMs(8, 35) <= 12,
+            $"p=8 时 {ScrollAnimator.TailGapMs(8, 35):0.0} ms，p=3 时 {ScrollAnimator.TailGapMs(3, 35):0.0} ms");
+        Check("只剩 1 单位时返回 +∞（让调用方收尾，而不是硬发一个长间隔）",
+            double.IsPositiveInfinity(ScrollAnimator.TailGapMs(1, 35)));
         Check("尾段间隔有下限（不会连发）", ScrollAnimator.TailGapMs(8, 6) >= 4.0,
             $"{ScrollAnimator.TailGapMs(8, 6):0.0} ms");
 

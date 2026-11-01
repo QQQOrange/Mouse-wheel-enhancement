@@ -52,15 +52,33 @@ internal static class FrameTrace
     private const double MaxFirstDtMs = 20.0;
 
     /// <summary>
-    /// 末 6 个发帧的平均速度上限（单位/秒）。
+    /// 末 6 个发帧的平均速度上限（单位/秒）—— 只作粗兜底。
     ///
     /// <para>
-    /// **这就是"结尾砸停"的度量。** 0.8 格/秒 ≈ 80 px/s，比它更慢的收尾人眼读作
-    /// "已经停住了"。修复前实测 160~264 单位/秒（1.3~2.2 格/秒）——
-    /// 内容还在以 1 格/秒以上的速度走，然后一帧之内归零，所以看起来是撞停。
+    /// **v1.8.11 起口径变了。** 以前这一条是"结尾砸停"的主判据（72 单位/秒），
+    /// 前提是收尾会一路爬到 25~35 单位/秒才停。但现在尾段一旦算出来
+    /// "下一跳会慢到 >12ms"就直接收尾（见 <see cref="ScrollAnimator.TailGapMs"/>），
+    /// 末尾速度自然落在 80~120 单位/秒 —— 那**不是砸停**，因为每一步只有 1 单位
+    /// （0.8 px），肉眼看到的位移是亚像素级的。
+    /// </para>
+    /// <para>
+    /// 真正该守的不变式换成了 <see cref="MaxTailStepUnits"/>：末段单步必须足够小。
+    /// 这里只留 160 单位/秒（1.3 格/秒）作粗兜底，防止"整格整格地砸下来"。
     /// </para>
     /// </summary>
-    private const double MaxTailRateUnits = 72.0;
+    private const double MaxTailRateUnits = 160.0;
+
+    /// <summary>
+    /// 末 6 个发帧的**最大单步**（单位）。
+    ///
+    /// <para>
+    /// 2 单位 = 0.017 格 ≈ 1.6 px。收尾阶段只要每步都不超过它，
+    /// "最后一帧"就不可能是肉眼可见的一跳 —— 这才是"不砸停"的本质，
+    /// 而不是"末段速度必须很慢"（慢到 25 单位/秒的爬行会被读作"已经停了"，
+    /// 反而产生"停住之后又挪了一下"）。
+    /// </para>
+    /// </summary>
+    private const int MaxTailStepUnits = 2;
 
     /// <summary>
     /// 相邻两次发送之间的最大间隔（毫秒）。
@@ -72,6 +90,17 @@ internal static class FrameTrace
     /// </para>
     /// </summary>
     private const double MaxFrameGapMs = 70.0;
+
+    /// <summary>
+    /// 尾段允许主动丢弃的最大量（单位）。
+    ///
+    /// <para>
+    /// v1.8.11 起，尾段一旦算出来"下一跳会慢到 >12ms（约 67 px/s 以下）"就直接收尾，
+    /// 不再爬行 —— 那一段爬行眼睛早已读作"停了"，最后那一下就是用户报的
+    /// "停住之后又挪了一下"。代价是每次少走几单位：8 单位 = 0.067 格 ≈ 4 px。
+    /// </para>
+    /// </summary>
+    private const int MaxTailDrop = 8;
 
     /// <summary>走完 95% 之后到最后一帧之间最多再花多久（毫秒）——"落地段"的长度。</summary>
     private const double MaxLandMs = 150.0;
@@ -194,10 +223,14 @@ internal static class FrameTrace
         fail += Check(sb, $"首帧 dt {frames[0].DtMs:0.#} ms ≤ {MaxFirstDtMs:0} ms（不是陈旧 dt）",
             frames[0].DtMs <= MaxFirstDtMs, $"{frames[0].DtMs:0.##} ms");
 
-        /* ② 总量守恒：发出去的必须正好等于推入的，多一单位是"补一下"，少一单位是"没滚到位"。 */
+        /* ② 总量守恒（允许尾段丢弃）：多一单位是"补一下"，少一单位是"没滚到位"。
+         * v1.8.11 起尾段会主动丢掉最后不到 8 单位（见 MaxTailDrop）——
+         * 那点距离换来的是"没有停住之后的孤立一跳"。 */
         var sent = frames.Sum(f => f.Units);
-        fail += Check(sb, $"总量守恒：发出 {sent:+#;-#;0} / 推入 {total:+#;-#;0}", sent == total,
-            $"差 {sent - total:+#;-#;0} 单位");
+        var lost = sent - total;
+        fail += Check(sb,
+            $"总量守恒：发出 {sent:+#;-#;0} / 推入 {total:+#;-#;0}（尾段丢弃 {Math.Abs(lost)} ≤ {MaxTailDrop} 单位）",
+            Math.Abs(lost) <= MaxTailDrop, $"差 {lost:+#;-#;0} 单位，超过允许的 {MaxTailDrop}");
 
         /* ③ 单帧上限。连甩时靠它保证"一帧不会跨大半格"。 */
         var cap = s.UnitsPerFrame * 4;
@@ -287,8 +320,17 @@ internal static class FrameTrace
         var tailSpan = tail6.Length > 1 ? tail6[^1].AtMs - tail6[0].AtMs : 0;
         var tailRate = tailSpan > 0 ? tail6.Skip(1).Sum(f => Math.Abs(f.Units)) / (tailSpan / 1000.0) : 0;
         fail += Check(sb,
-            $"末 6 帧平均速度 {tailRate:0} 单位/秒（≤ {MaxTailRateUnits:0}，渐停而非砸停）",
+            $"末 6 帧平均速度 {tailRate:0} 单位/秒（≤ {MaxTailRateUnits:0}，粗兜底）",
             tailRate <= MaxTailRateUnits, $"{tailRate:0} 单位/秒");
+
+        /* 只看**最后 3 个发帧**：尾段调度器接管的范围是"剩 ≤8 单位"，
+         * 每帧固定 1 单位，所以最后 3 帧一定是 1 单位。
+         * 再往前数会混进"按比例发"的帧（慢机器上一帧可能发 3~4 单位），那是正常的。 */
+        var tail3 = frames.Skip(Math.Max(0, frames.Count - 3)).ToArray();
+        var maxTailStep = tail3.Length == 0 ? 0 : tail3.Max(f => Math.Abs(f.Units));
+        fail += Check(sb,
+            $"最后 3 帧单步最大 {maxTailStep} 单位（≤ {MaxTailStepUnits}，最后一跳是亚像素）",
+            maxTailStep <= MaxTailStepUnits, $"最大单步 {maxTailStep} 单位");
 
         /* ⑦ **末段 τ 不能骤降**：τ 是"这一帧敢发多少"的时间常数。
          * 它在末段突然变小，等于末段突然加速 —— 用户看到的就是"快到末尾时猛地跳一段"。

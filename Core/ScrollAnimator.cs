@@ -171,7 +171,36 @@ internal sealed class ScrollAnimator : IDisposable
     /// 已经贴到"人眼读作停住"的 40ms 边上。压到 24 之后实测落在 30~33ms。
     /// </para>
     /// </summary>
-    private const double MaxFinalGapMs = 24.0;
+    /// <summary>
+    /// 尾段单步间隔的**停止阈值**（毫秒）：间隔一旦超过它，就直接收尾，不再发。
+    ///
+    /// <para>
+    /// 这是 v1.8.11 的关键判断。此前是"把间隔封顶在 16~24ms 继续发"，
+    /// 结果是尾部变成一段 0.5px / 20ms 的**匀速爬行**（约 25~40 px/s）——
+    /// 眼睛早就把它读作"停了"，爬行最后那一下就成了"又挪了一下"。
+    /// </para>
+    /// <para>
+    /// 现在改为"不许爬到看起来停了"：间隔一旦超过 12ms（≈67 px/s 以下），
+    /// 动画直接结束。尾巴最后一跳因此总是紧挨着前一跳（≤12ms），
+    /// 读作"一直在动，然后停住"，而不是"停住之后又补一下"。
+    /// </para>
+    /// </summary>
+    private const double TailStopGapMs = 12.0;
+
+    /// <summary>
+    /// 收尾"不再爬"的门槛（单位）—— 剩这么点就直接结束，不再逐单位发送。
+    ///
+    /// <para>
+    /// 用户报的"停住之后又挪了一下"就是这一截：最后 1~2 单位（约 1.5px）是以
+    /// 20~40 px/s 的速度单独发出去的，而前面的运动早就降到眼睛的运动检测阈值以下、
+    /// 读作"已经停了"，于是那一下就成了独立的一跳。
+    /// </para>
+    /// <para>
+    /// 代价是每次滚动少走不到 1.6px（肉眼无法分辨绝对位置）。换来的是
+    /// **尾部没有孤立的小步**：最后一跳落在 16ms 内，和前一跳连成一段。
+    /// </para>
+    /// </summary>
+    private const double TailFinishUnits = 2.0;
     private const double MinTailGapMs = 4.0;
 
     /// <summary>跟手 τ → 滑行 τ 的过渡时长（毫秒）。</summary>
@@ -679,14 +708,32 @@ internal sealed class ScrollAnimator : IDisposable
         if (gate != 0 && now < gate) return 0;
 
         var p = Math.Abs(pendingUnits);
-        if (p < 1.0)
+
+        /* ── 不再爬（v1.8.11）──
+         *
+         * 剩不到 2 单位就直接结束：那一截只有 1.6px，发出去也不会被读作"还在动"，
+         * 只会变成"停住之后又挪了一下"。宁可少走这 1.6px，也不要那一下孤立的小步。 */
+        if (p <= TailFinishUnits)
         {
-            /* 只剩不到 1 单位（亚像素零头）：一次收掉。留着它只会让线程空转。 */
+            Interlocked.Exchange(ref _pendingMilli, 0);
             Interlocked.Exchange(ref _tailEmitTicks, 0);
-            return (int)Math.Sign(pendingUnits);
+            Interlocked.Exchange(ref _carryMilli, 0);
+            return 0;
         }
 
-        Interlocked.Exchange(ref _tailEmitTicks, now + MsToTicks(TailGapMs(p, tauMs)));
+        var gapMs = TailGapMs(p, tauMs);
+
+        /* 下一步会慢到"看起来已经停了"（间隔 > 12ms）→ 干脆在这里收尾。
+         * 继续发只会多出一下孤立的小步，正是用户报的"停住之后又挪了一下"。 */
+        if (gapMs > TailStopGapMs)
+        {
+            Interlocked.Exchange(ref _pendingMilli, 0);
+            Interlocked.Exchange(ref _tailEmitTicks, 0);
+            Interlocked.Exchange(ref _carryMilli, 0);
+            return 0;
+        }
+
+        Interlocked.Exchange(ref _tailEmitTicks, now + MsToTicks(gapMs));
         return (int)Math.Sign(pendingUnits);
     }
 
@@ -703,8 +750,10 @@ internal sealed class ScrollAnimator : IDisposable
     public static double TailGapMs(double pendingUnits, double tauMs)
     {
         var p = Math.Abs(pendingUnits);
-        if (p <= 1.0) return MaxFinalGapMs;
-        return Math.Clamp(tauMs * Math.Log(p / (p - 1.0)), MinTailGapMs, MaxFinalGapMs);
+        /* p = 1 时这个式子发散（指数永远到不了 0）→ 返回 +∞，
+         * 调用方据此判定"该收尾了"，而不是硬发一个特别长的间隔。 */
+        if (p <= 1.0) return double.PositiveInfinity;
+        return Math.Max(MinTailGapMs, tauMs * Math.Log(p / (p - 1.0)));
     }
 
     /// <summary>记一次推送的速度（EMA）。只用于"收尾时长"这一个判断，不参与加速决策。</summary>
