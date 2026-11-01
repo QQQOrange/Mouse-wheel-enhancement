@@ -86,6 +86,20 @@ public sealed class BoostConfig
 
     /// <summary>反向滚动时立刻丢掉未发完的积压（否则会"想往回滚却还在往下"）。</summary>
     public bool FlushOnReverse { get; set; } = true;
+
+    /// <summary>
+    /// 甩动翻页（实验性，v1.8.2）：快到接近满倍率时，一次「猛甩」额外补一屏的量。
+    ///
+    /// <para>
+    /// 老实说这是**估算**：Windows 不告诉别人"这一屏有多少像素"，
+    /// 所以"一屏"只能按格数折算（默认 6 格 ≈ 浏览器里半屏多一点）。
+    /// 因此默认关闭 —— 打开后长文档确实少甩几下，但短页面会显得冲。
+    /// </para>
+    /// </summary>
+    public bool FlickPage { get; set; } = false;
+
+    /// <summary>甩动翻页额外补几格（2~12）。</summary>
+    public int FlickPageNotches { get; set; } = 6;
 }
 
 public sealed class SmoothConfig
@@ -192,6 +206,9 @@ public sealed class FilterConfig
         new AppRule { Exe = "anydesk.exe", Note = "AnyDesk：远控画面里注入会叠加" },
         new AppRule { Exe = "teamviewer.exe", Note = "TeamViewer：远控画面里注入会叠加" },
         new AppRule { Exe = "rustdesk.exe", Note = "RustDesk：远控画面里注入会叠加" },
+        new AppRule { Exe = "vgtray.exe", Note = "Vanguard 反作弊托盘：对注入敏感" },
+        new AppRule { Exe = "easyanticheat.exe", Note = "EAC 反作弊：对注入敏感" },
+        new AppRule { Exe = "beservice.exe", Note = "BattlEye 反作弊：对注入敏感" },
         new AppRule { Exe = "osu!.exe", Note = "音游：节奏对时序极敏感" },
         new AppRule { Exe = "VALORANT-Win64-Shipping.exe", Note = "竞技游戏：反作弊对注入敏感" },
         new AppRule { Exe = "League of Legends.exe", Note = "竞技游戏：反作弊对注入敏感" },
@@ -507,6 +524,8 @@ public sealed class AppConfig
         Boost.MaxMultiplier = Whole(Clamp(Boost.MaxMultiplier, 1.0, 8.0));
         // 倍率下限固定 1.0：曲线必须从"阈值处正好 1 倍"起步，否则一过阈值就跳一截
         Boost.MinMultiplier = 1.0;
+
+        Boost.FlickPageNotches = (int)Clamp(Boost.FlickPageNotches, 2, 12);
 
         Smooth.TargetFps = (int)Clamp(Smooth.TargetFps, 30, 240);
         // 每格帧数只接受 120 的约数：这样每帧发出去的都是 120 的整数分之几，

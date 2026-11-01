@@ -28,6 +28,12 @@ public sealed record RuntimeSettings
     public double MaxMultiplier { get; init; }
     public bool FlushOnReverse { get; init; }
 
+    /// <summary>甩动翻页（实验性）：满倍率附近额外补一屏。</summary>
+    public bool FlickPage { get; init; }
+
+    /// <summary>甩动翻页额外补几格。</summary>
+    public int FlickPageNotches { get; init; } = 6;
+
     public bool SmoothEnabled { get; init; }
     public bool SmoothAlways { get; init; }
     /// <summary>出帧间隔（毫秒）。自动模式下来自显示器刷新率，手动模式下来自配置。</summary>
@@ -237,6 +243,8 @@ public sealed record RuntimeSettings
             MinMultiplier = c.Boost.MinMultiplier,
             MaxMultiplier = c.Boost.MaxMultiplier,
             FlushOnReverse = c.Boost.FlushOnReverse,
+            FlickPage = c.Boost.FlickPage,
+            FlickPageNotches = c.Boost.FlickPageNotches,
             SmoothEnabled = c.Enabled && c.Smooth.Enabled,
             SmoothAlways = c.Smooth.Scope == SmoothScope.Always,
             FrameIntervalMs = frameMs,

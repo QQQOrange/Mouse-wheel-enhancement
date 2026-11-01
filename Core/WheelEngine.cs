@@ -62,6 +62,29 @@ public sealed class WheelEngine : IDisposable
     /// <summary>已经为哪个 exe 打过"整格加速"日志（每程序一次）。</summary>
     private string _notchLogged = "";
 
+    /// <summary>上一次"甩动翻页"的时刻（500ms 内只补一次，防连甩叠加）。</summary>
+    private long _lastFlickMs;
+
+    /// <summary>
+    /// 甩动翻页：接近满倍率 + 速度明显超过满速点时，额外补一屏的量（v1.8.2，实验性）。
+    ///
+    /// <para>
+    /// 返回**额外**的格数（0 = 不补）。阈值取 4.5× 是因为再往下就成了"加速加速"，
+    /// 用户会觉得甩一下就飞出去；只有真到顶格才补。
+    /// </para>
+    /// </summary>
+    private int FlickExtraNotches(RuntimeSettings s, in BoostDecision decision)
+    {
+        if (!s.FlickPage) return 0;
+        if (decision.Multiplier < 4.5) return 0;
+        if (decision.RatePerSec < s.SaturationPerSec * 1.2) return 0;
+
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastFlickMs) < 500) return 0;
+        Interlocked.Exchange(ref _lastFlickMs, now);
+        return s.FlickPageNotches;
+    }
+
     /* ── 看门狗 / 度量（v1.8.0） ── */
 
     /// <summary>最近一次收到滚轮事件的时刻（看门狗用它判断"现在是不是空闲"）。</summary>
@@ -515,7 +538,8 @@ public sealed class WheelEngine : IDisposable
                 /* 倍率兑现成**事件个数**：3× → 3 个整格。
                  * 交给动画器按帧逐个发（见 ScrollAnimator.PushWholeNotches），
                  * 让快滚有推进的节奏，而不是"啪"一下跳过 5 档。 */
-                var notches = ScrollSemantics.WholeNotchesFor(decision.OutputUnits);
+                var notches = ScrollSemantics.WholeNotchesFor(decision.OutputUnits)
+                              + FlickExtraNotches(s, decision);
                 var sign = Math.Sign(decision.OutputUnits);
                 if (sign == 0) sign = Math.Sign(delta);
 
@@ -556,7 +580,11 @@ public sealed class WheelEngine : IDisposable
 
             /* 按比例滚动的框架：算出来多少就发多少，一格 = 120 单位。
              * 摊帧（每格 4~8 帧）带来的平滑全在这一步。 */
-            _animator.Push(decision.OutputUnits);
+            var outUnits = decision.OutputUnits;
+            var flick = FlickExtraNotches(s, decision);
+            if (flick > 0) outUnits += Math.Sign(outUnits) * flick * Native.WHEEL_DELTA;
+
+            _animator.Push(outUnits);
             Interlocked.Increment(ref _boosted);
             NotifyBoosted(decision.Multiplier, s);
 

@@ -271,6 +271,7 @@ public partial class MainWindow : Window
             RefreshStartupSwitches();
             CloseToTraySwitch.IsChecked = c.Behavior.CloseToTray;
             PauseSelfSwitch.IsChecked = c.Behavior.PauseWhileSettingsOpen;
+            FlickPageSwitch.IsChecked = c.Boost.FlickPage;
             HorizontalSwitch.IsChecked = c.Input.HorizontalBoost;
             OsdSwitch.IsChecked = c.Behavior.OsdMultiplier;
             WatchdogSwitch.IsChecked = c.Behavior.HookWatchdog;
@@ -1117,6 +1118,13 @@ public partial class MainWindow : Window
     {
         if (_loading) return;
         Services.Config.Behavior.PauseWhileSettingsOpen = PauseSelfSwitch.IsChecked == true;
+        Commit();
+    }
+
+    private void FlickPage_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        Services.Config.Boost.FlickPage = FlickPageSwitch.IsChecked == true;
         Commit();
     }
 

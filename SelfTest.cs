@@ -1186,6 +1186,15 @@ internal static class SelfTest
         Check("速度停手默认开", d8.Smooth.VelocityStop);
         Check("掉帧降级默认开", d8.Smooth.LowFpsDegrade);
 
+        Check("甩动翻页默认关闭（实验性）", !d8.Boost.FlickPage);
+        Check("甩动翻页默认 6 格", d8.Boost.FlickPageNotches == 6, d8.Boost.FlickPageNotches.ToString());
+
+        var flick = AppConfig.Default();
+        flick.Boost.FlickPageNotches = 99;
+        flick.Normalize();
+        Check("甩动翻页格数被夹到 12", flick.Boost.FlickPageNotches == 12,
+            flick.Boost.FlickPageNotches.ToString());
+
         var rs8 = RuntimeSettings.From(d8);
         Check("横向开关被带到运行时快照", rs8.HorizontalBoost == d8.Input.HorizontalBoost);
         Check("看门狗开关被带到运行时快照", rs8.OsdMultiplier == d8.Behavior.OsdMultiplier);

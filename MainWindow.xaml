@@ -555,6 +555,21 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
+                                        <TextBlock Text="甩动翻页（实验性）" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="快速甩到接近满倍率时，额外补一屏的量（约 6 格），长文档少甩几下。默认关闭：短页面会显得冲，而且「一屏」是按格估算的。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="FlickPageSwitch" Grid.Column="1"
+                                                  Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                  Checked="FlickPage_Changed" Unchecked="FlickPage_Changed" />
+                                </Grid>
+
+                                <Grid Margin="0,0,0,16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
                                         <TextBlock Text="反转加速方向" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
                                                    Text="只给系统里设过「滚轮反向」的鼠标用。正常鼠标不要开，否则上下相反。" />

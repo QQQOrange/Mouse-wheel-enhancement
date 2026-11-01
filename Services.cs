@@ -64,6 +64,17 @@ internal static class Services
 
         IsElevated = Native.IsElevated();
 
+        /* 环境自检：DPI 缩放 / 架构 / 虚拟桌面大小。
+         * 排查"位置算错、范围算错"时，这三个是第一时间要看的 ——
+         * 200% 缩放下把物理像素当 DIP 用，是这类 bug 最常见的来源。 */
+        try
+        {
+            Log.Info($"环境：64位={Environment.Is64BitProcess} / 管理员={IsElevated} / " +
+                     $"虚拟桌面(DIP)={SystemParameters.VirtualScreenWidth:0}×{SystemParameters.VirtualScreenHeight:0} / " +
+                     $"刷新率={RefreshRateMonitor.FrameIntervalMs:0.##}ms");
+        }
+        catch { /* 取不到就算了，不能因为记日志失败挡住启动 */ }
+
         Store = new ConfigStore();
         Store.Changed += OnConfigChanged;
 
