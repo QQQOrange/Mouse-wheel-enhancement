@@ -145,6 +145,27 @@ internal sealed class ScrollAnimator : IDisposable
     private const double MinStopMs = 90.0;
     private const double MaxStopMs = 900.0;
 
+    /// <summary>
+    /// 尾段进入"逐个定时发送"的阈值（单位）。
+    ///
+    /// <para>
+    /// 只剩不到 1/15 格时，逐帧按比例发会遇到一个硬问题：`want` 已经小于 1 单位，
+    /// 只能靠零头累积，于是"什么时候凑满 1 单位"由累积速度决定 —— 发送间隔忽长忽短。
+    /// 实测（--scrollsmooth）末段间隔 6 13 5 13 13 18 19 27 **55** ms：
+    /// 最后一步空窗 55ms，画面早被读作"已经停了"，之后那一下就是"抽搐"。
+    /// </para>
+    /// <para>
+    /// 所以尾段换成**按指数曲线直接算下一步该在什么时候发**：一次固定 1 单位，
+    /// 间隔 = τ·ln(p/(p-1))（正是指数衰减走到"再少 1 单位"所需的时间），
+    /// 并封顶 <see cref="MaxFinalGapMs"/>，保证不会出现"停住之后再补一下"。
+    /// </para>
+    /// </summary>
+    private const double TailScheduleUnits = 8.0;
+
+    /// <summary>尾段单步间隔的上下限（毫秒）。上限 28ms ≈ 36fps，仍在"连续运动"的读感里。</summary>
+    private const double MaxFinalGapMs = 28.0;
+    private const double MinTailGapMs = 4.0;
+
     /// <summary>跟手 τ → 滑行 τ 的过渡时长（毫秒）。</summary>
     private const double GlideRampMs = 55.0;
 
@@ -265,6 +286,9 @@ internal sealed class ScrollAnimator : IDisposable
 
     /// <summary>上一次推送的时刻（QPC），配合 <see cref="_pushRateMilli"/> 算瞬时速度。</summary>
     private long _lastPushTicks;
+
+    /// <summary>尾段里"下一次允许发送"的时刻（QPC）。0 = 没在尾段模式里。</summary>
+    private long _tailEmitTicks;
 
     /// <summary>
     /// 本轮滑行的时间常数（毫秒）。松手那一刻按「滑行时长」反解一次，
@@ -631,6 +655,50 @@ internal sealed class ScrollAnimator : IDisposable
     /// 想要"一点都不拖"，正确做法是把滑行调成 0，而不是让它加速。
     /// </para>
     /// </summary>
+    /// <summary>
+    /// 尾段的一次发送决策：到点了就发 1 单位，并把下一次的时刻按指数曲线推后。
+    ///
+    /// <para>
+    /// 间隔用 `τ·ln(p/(p-1))`：这正是"指数衰减从 p 单位走到 p-1 单位"所需的时间，
+    /// 所以尾段的**每个单位**都落在曲线上，而不是"凑满就算"。
+    /// 于是间隔天然单调变长，且被 <see cref="MaxFinalGapMs"/> 封顶 ——
+    /// 不会出现"画面已经停住 50ms，再补一下"的抽搐。
+    /// </para>
+    /// </summary>
+    private int ScheduleTailUnit(double pendingUnits, double tauMs, long now)
+    {
+        var gate = Interlocked.Read(ref _tailEmitTicks);
+        if (gate != 0 && now < gate) return 0;
+
+        var p = Math.Abs(pendingUnits);
+        if (p < 1.0)
+        {
+            /* 只剩不到 1 单位（亚像素零头）：一次收掉。留着它只会让线程空转。 */
+            Interlocked.Exchange(ref _tailEmitTicks, 0);
+            return (int)Math.Sign(pendingUnits);
+        }
+
+        Interlocked.Exchange(ref _tailEmitTicks, now + MsToTicks(TailGapMs(p, tauMs)));
+        return (int)Math.Sign(pendingUnits);
+    }
+
+    /// <summary>
+    /// 尾段**下一个单位**该等多久（毫秒）。纯函数，便于自检直接断言。
+    ///
+    /// <para>
+    /// 指数衰减从 p 单位走到 p-1 单位所需的时间就是 `τ·ln(p/(p-1))`，
+    /// 所以按它来发，尾段的每个单位都精确落在曲线上。
+    /// 上下限的作用：`p→1` 时这个式子趋于无穷（指数永远到不了 0），
+    /// 所以用 <see cref="MaxFinalGapMs"/> 封顶；下限防止极端 τ 下连发把曲线打断。
+    /// </para>
+    /// </summary>
+    public static double TailGapMs(double pendingUnits, double tauMs)
+    {
+        var p = Math.Abs(pendingUnits);
+        if (p <= 1.0) return MaxFinalGapMs;
+        return Math.Clamp(tauMs * Math.Log(p / (p - 1.0)), MinTailGapMs, MaxFinalGapMs);
+    }
+
     /// <summary>记一次推送的速度（EMA）。只用于"收尾时长"这一个判断，不参与加速决策。</summary>
     private void TrackPushRate(int units)
     {
@@ -744,6 +812,7 @@ internal sealed class ScrollAnimator : IDisposable
                     _slowFrames = 0;
                     _degraded = false;
                     Interlocked.Exchange(ref _reverseHoldTicks, 0);
+                    Interlocked.Exchange(ref _tailEmitTicks, 0);
 
                     /* **等醒来的这一刻才算"上一帧"**。
                      *
@@ -939,8 +1008,17 @@ internal sealed class ScrollAnimator : IDisposable
                         : 0;
                     if (units != 0) Interlocked.Exchange(ref _lastWholeMs, (long)nowMsWhole);
                 }
+                else if (s.SmoothEnabled && Math.Abs(pendingUnits) <= TailScheduleUnits)
+                {
+                    /* 尾段：按指数曲线**直接算下一次该在什么时候发**（v1.8.9）。
+                     * 一次固定 1 单位，间隔 τ·ln(p/(p-1)) 并封顶 —— 见 TailScheduleUnits。 */
+                    Interlocked.Exchange(ref _carryMilli, 0);
+                    units = ScheduleTailUnit(pendingUnits, tau, now);
+                }
                 else
                 {
+                    Interlocked.Exchange(ref _tailEmitTicks, 0);
+
                     /* 曲线给"这一帧该发多少"（小数），零头跨帧累积 —— 见 Quantize。
                      * 这一帧可能什么都不发（units == 0），那不代表卡住：
                      * 下帧接着攒，两次发送的间隔会越来越长，收尾才是渐停而不是砸停。 */

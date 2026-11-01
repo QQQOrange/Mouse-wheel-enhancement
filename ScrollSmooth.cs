@@ -66,6 +66,21 @@ internal static class ScrollSmooth
     /// <summary>末段最后两次变化之间允许的最大间隔（"停住了又补一下"）。</summary>
     private const double MaxTailGapMs = 80;
 
+    /// <summary>
+    /// 收尾最后一步的间隔上限（v1.8.9）。
+    ///
+    /// <para>
+    /// 80ms 那个阈值只拦"明显拖"，但用户报的"最后一下生硬"其实是**更小的空窗**：
+    /// 实测末步间隔 57ms —— 画面先停住 57ms，然后补 0.5px 再结束。
+    /// 人眼把前 40ms 读作"已经停了"，后面那一下就是"抽搐"。
+    /// 40ms 之内（≈25fps）还能读作连续运动，所以末步必须落在这个窗口里。
+    /// </para>
+    /// </summary>
+    private const double MaxFinalGapMs = 40;
+
+    /// <summary>速度"抽搐"容忍度：相邻两步的速度比超过它就算一次回跳。</summary>
+    private const double VelocitySpikeRatio = 1.30;
+
     private readonly record struct Sample(double AtMs, double Offset);
 
     public static int Run(MainWindow w)
@@ -190,6 +205,43 @@ internal static class ScrollSmooth
             var tailGap = tail.Count >= 2 ? tail[^1].AtMs - tail[^2].AtMs : 0;
             fail += Check(sb, $"末段最后一步间隔 {tailGap:0.#} ms（≤ {MaxTailGapMs:0}）",
                 tailGap <= MaxTailGapMs, $"最后一步隔了 {tailGap:0.#} ms 才补上");
+
+            /* ⑤ **末步空窗**：停住太久再补一下 = "最后一下生硬"（v1.8.9）。
+             * 40ms ≈ 25fps，超过它人眼就把前一段读作"已经停了"。 */
+            fail += Check(sb, $"末步空窗 {tailGap:0.#} ms（≤ {MaxFinalGapMs:0}，不在停住之后再补一下）",
+                tailGap <= MaxFinalGapMs, $"最后一步隔了 {tailGap:0.#} ms，读作停住后又补了一下");
+
+            /* ⑥ **速度不抽搐**：末段每一步的瞬时速度（px/ms）不能回跳。
+             *
+             * 位移是 0.5px 量级、间隔是 5~25ms 量级，两者都受整数单位与渲染帧的量化，
+             * 单看任一项都会误判；只有"速度"是用户眼睛真正读到的量。
+             * 回跳 = 已经在减速了又忽然快一下 —— 那就是"生硬"的量化形态。 */
+            var velSpikes = 0;
+            var worstVel = 1.0;
+            for (var i = 1; i < tail.Count; i++)
+            {
+                var d0 = tail[i - 1].AtMs;
+                var d1 = tail[i].AtMs;
+                var prevGap = i >= 2 ? tail[i - 1].AtMs - tail[i - 2].AtMs : 0;
+                if (prevGap <= 0 || d1 - d0 <= 0) continue;
+                var vPrev = tail[i - 1].Px / prevGap;
+                var vNow = tail[i].Px / (d1 - d0);
+                if (vNow > vPrev * VelocitySpikeRatio)
+                {
+                    velSpikes++;
+                    worstVel = Math.Max(worstVel, vNow / Math.Max(1e-6, vPrev));
+                }
+            }
+            fail += Check(sb, $"末段速度不回跳（抽搐 {velSpikes} 次，最多允许 1 次）",
+                velSpikes <= 1, $"末段有 {velSpikes} 次速度回跳，最大 {worstVel:0.0}×");
+
+            var vTail = new List<string>();
+            for (var i = 1; i < tail.Count; i++)
+            {
+                var g = tail[i].AtMs - tail[i - 1].AtMs;
+                if (g > 0) vTail.Add($"{tail[i].Px / g:0.000}");
+            }
+            sb.AppendLine("  末段速度(px/ms)：" + string.Join(" → ", vTail));
 
             sb.AppendLine();
             sb.AppendLine("  前 10 步：" + Describe(steps.Take(10)));

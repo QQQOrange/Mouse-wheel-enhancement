@@ -653,6 +653,23 @@ internal static class SelfTest
             > ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 1200, 300, Tau),
             "积压 480 的 τ 应大于积压 1200 的");
 
+        /* ④'' 尾段定时（v1.8.9）：最后几个单位不再靠"零头攒满"发，而是按
+         * `τ·ln(p/(p-1))` 定时发 —— 间隔单调变长、且一定不超过上限。
+         *
+         * 这是用户报的"最后一下生硬"的直接修法：改前实测末步空窗 55ms
+         * （画面先停住，再补 0.5px），改后 26~31ms，仍在"连续运动"的读感里。 */
+        var tailGaps = new List<double>();
+        for (var p = 8; p >= 2; p--) tailGaps.Add(ScrollAnimator.TailGapMs(p, 35));
+        var tailMono = true;
+        for (var i = 1; i < tailGaps.Count; i++)
+            if (tailGaps[i] <= tailGaps[i - 1]) tailMono = false;
+        Check("尾段间隔随剩余量减少而单调变长", tailMono,
+            string.Join(" / ", tailGaps.Select(g => g.ToString("0.0"))));
+        Check("尾段间隔有上限（不超过 28ms）", tailGaps.Max() <= 28.0 && ScrollAnimator.TailGapMs(1, 35) <= 28.0,
+            $"{tailGaps.Max():0.0} ms / 最后一步 {ScrollAnimator.TailGapMs(1, 35):0.0} ms");
+        Check("尾段间隔有下限（不会连发）", ScrollAnimator.TailGapMs(8, 6) >= 4.0,
+            $"{ScrollAnimator.TailGapMs(8, 6):0.0} ms");
+
         // ④ 单帧上限：追赶时也不许"一帧跨好几格"
         var burst = ScrollAnimator.FrameAmount(600, 16.7, Tau, Upf, true);
         Check("单帧不超过 4 个标准帧量（默认 120 单位）", burst <= Upf * 4, $"{burst:0.0} 单位");
