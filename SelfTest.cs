@@ -1085,6 +1085,44 @@ internal static class SelfTest
             badPlace.Appearance.WindowWidth == 0 && badPlace.Appearance.WindowHeight == 0,
             $"{badPlace.Appearance.WindowWidth}×{badPlace.Appearance.WindowHeight}");
         Check("越界页签被收敛到 6", badPlace.Appearance.LastTab == 6, badPlace.Appearance.LastTab.ToString());
+
+        /* ⑥ 暂停不跨重启（v1.7.13）
+         *
+         * 这是"开机自启之后功能没启用、得手动点一下启用"的根因：
+         * Enabled 是持久化字段，随手暂停一次就被写进 config.json，
+         * 之后每次自启都拿着 false 空转。读配置时必须抹平。 */
+        var paused = AppConfig.Default();
+        paused.Enabled = false;
+        var wasPaused = ConfigStore.ResetSessionState(paused);
+        Check("暂停态在启动时被重置为启用", paused.Enabled && wasPaused,
+            $"enabled={paused.Enabled} wasPaused={wasPaused}");
+
+        var alreadyOn = AppConfig.Default();
+        Check("本来就是启用态时不算被纠正", alreadyOn.Enabled && !ConfigStore.ResetSessionState(alreadyOn),
+            $"enabled={alreadyOn.Enabled}");
+
+        /* ⑦ 走真实读盘路径：config.json 里写着 false，构造出来的 ConfigStore 必须是启用态，
+         *    并且立刻把文件纠正回 true（否则下次还是读到 false）。 */
+        var tmpDir = Path.Combine(Path.GetTempPath(), "mwe-selftest-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(tmpDir);
+            File.WriteAllText(Path.Combine(tmpDir, "config.json"),
+                "{\"enabled\":false,\"schemaVersion\":5}", new UTF8Encoding(false));
+
+            using var store = new ConfigStore(tmpDir);
+            Check("磁盘上的暂停态读进来就是启用态", store.Config.Enabled,
+                store.Config.Enabled.ToString());
+
+            var onDisk = File.ReadAllText(Path.Combine(tmpDir, "config.json"), Encoding.UTF8);
+            Check("纠正结果已回写到 config.json",
+                onDisk.Contains("\"enabled\": true", StringComparison.Ordinal),
+                onDisk.Contains("\"enabled\": false", StringComparison.Ordinal) ? "仍是 false" : "未找到该字段");
+        }
+        finally
+        {
+            try { Directory.Delete(tmpDir, true); } catch { }
+        }
     }
 
     /// <summary>

@@ -91,6 +91,13 @@ public sealed class ConfigStore : IDisposable
              * 这种鬼数字，而界面上显示的是 10 —— 两边对不上比什么都可疑。 */
             var before = JsonSerializer.Serialize(cfg, JsonOpts);
             cfg.Normalize();
+
+            /* 暂停态不跨进程（见 ResetSessionState）。必须放在 changed 比对之前：
+             * 这样文件里的 enabled=false 会被顺手写回 true，
+             * 运行状态和磁盘内容不会各说各话。 */
+            if (ResetSessionState(cfg))
+                Log.Info("上次退出时处于暂停状态，本次启动自动启用（暂停只在本次运行内有效）");
+
             var changed = !string.Equals(before, JsonSerializer.Serialize(cfg, JsonOpts), StringComparison.Ordinal);
 
             Config = cfg;
@@ -120,6 +127,29 @@ public sealed class ConfigStore : IDisposable
             Config = AppConfig.Default();
             Config.Normalize();
         }
+    }
+
+    /// <summary>
+    /// 「暂停」只算**本次运行**的状态，每次进程启动一律从「已启用」开始。
+    ///
+    /// <para>
+    /// 为什么必须这么做：<c>Enabled</c> 以前是普通持久化字段，用户随手按一次
+    /// 热键 / 点一下托盘「暂停增强」，这个 false 就被写进 config.json。
+    /// 之后开机自启拉起来的进程照单全收 —— 钩子装上了、托盘也绿着，
+    /// 但引擎拿着 <c>Enabled=false</c> 把每一次滚动原样放行。
+    /// 用户看到的现象就是「自启之后功能没启用，得手动点一下启用才生效」。
+    /// </para>
+    /// <para>
+    /// 暂停是"我现在先不加速"的临时意愿，不该跨进程、更不该跨重启延续。
+    /// 所以读配置时统一抹平；返回 true 表示配置里确实残留着暂停态（调用方记一条日志，
+    /// 方便事后对时间线）。
+    /// </para>
+    /// </summary>
+    public static bool ResetSessionState(AppConfig cfg)
+    {
+        if (cfg.Enabled) return false;
+        cfg.Enabled = true;
+        return true;
     }
 
     /// <summary>把明文令牌（用户手改 / 老版本留下的）迁移成加密字段。</summary>

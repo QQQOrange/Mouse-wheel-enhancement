@@ -281,7 +281,16 @@ public sealed class AppConfig
     /// <summary>配置结构版本，用于将来的迁移。</summary>
     public int SchemaVersion { get; set; } = 5;
 
-    /// <summary>功能总开关（托盘和界面都能切）。</summary>
+    /// <summary>
+    /// 功能总开关（托盘和界面都能切）。
+    ///
+    /// <para>
+    /// ⚠ **这是"本次运行"的状态，不跨重启**。字段仍然落盘（方便排查当时是什么状态），
+    /// 但读配置时会被 <see cref="ConfigStore.ResetSessionState"/> 一律抹成 true ——
+    /// 否则用户随手暂停一次，之后每次开机自启都是暂停态，
+    /// 表现就是"自启之后功能没启用，得手动点一下"。
+    /// </para>
+    /// </summary>
     public bool Enabled { get; set; } = true;
 
     public BoostConfig Boost { get; set; } = new();
