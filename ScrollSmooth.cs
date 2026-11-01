@@ -51,6 +51,18 @@ internal static class ScrollSmooth
     /// <summary>末段相邻步长的最大放大倍数（"又窜一下"）。</summary>
     private const double MaxTailRise = 1.6;
 
+    /// <summary>
+    /// 末段回升判定的**绝对容差**（px）。
+    ///
+    /// <para>
+    /// 收尾时单步会降到 0.5 px（半像素，亚像素滚动就是这个量级）。
+    /// 0.5 → 1.0 按比值算是 2.0×，可实际只差 **0.5 像素** —— 人眼看不见，
+    /// 那是像素量化噪声，不是"又窜一段"。所以比值判定要配一个绝对容差：
+    /// 只有"既涨了 1.6 倍以上、又多走了 1.5 px 以上"才算回升。
+    /// </para>
+    /// </summary>
+    private const double TailRiseAbsolutePx = 1.5;
+
     /// <summary>末段最后两次变化之间允许的最大间隔（"停住了又补一下"）。</summary>
     private const double MaxTailGapMs = 80;
 
@@ -156,11 +168,23 @@ internal static class ScrollSmooth
              *    回升 = "已经在减速了，突然又窜一下"。 */
             var tail = steps.Skip(Math.Max(0, steps.Count - 8)).ToList();
             var worstRise = 0.0;
+            var worstDiff = 0.0;
             for (var i = 1; i < tail.Count; i++)
-                worstRise = Math.Max(worstRise, tail[i].Px / Math.Max(0.5, tail[i - 1].Px));
+            {
+                var prevStep = Math.Max(0.5, tail[i - 1].Px);
+                /* 只有"倍数超了 **且** 绝对量也超了"才算回升 ——
+                 * 半像素级的 0.5→1 是像素量化，不是又窜一下。 */
+                if (tail[i].Px > prevStep * MaxTailRise && tail[i].Px - prevStep > TailRiseAbsolutePx)
+                {
+                    worstRise = Math.Max(worstRise, tail[i].Px / prevStep);
+                    worstDiff = Math.Max(worstDiff, tail[i].Px - prevStep);
+                }
+            }
             fail += Check(sb,
-                $"末段不回升（最大放大 {worstRise:0.00}×，≤ {MaxTailRise:0.#}）",
-                worstRise <= MaxTailRise, "末段步长 " + string.Join(" ", tail.Select(t => t.Px.ToString("0.#"))));
+                $"末段不回升（超阈值 {worstRise:0.00}×{TailRiseAbsolutePx:0.#}px 以上，≤ {MaxTailRise:0.#}×）",
+                worstRise == 0,
+                $"末段有一跳比上一步大 {worstRise:0.00}×（多 {worstDiff:0.#} px）：" +
+                string.Join(" ", tail.Select(t => t.Px.ToString("0.#"))));
 
             /* ④ 末段不拖：最后两次变化的间隔。 */
             var tailGap = tail.Count >= 2 ? tail[^1].AtMs - tail[^2].AtMs : 0;
