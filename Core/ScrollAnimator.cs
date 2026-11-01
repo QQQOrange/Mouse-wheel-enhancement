@@ -162,8 +162,16 @@ internal sealed class ScrollAnimator : IDisposable
     /// </summary>
     private const double TailScheduleUnits = 8.0;
 
-    /// <summary>尾段单步间隔的上下限（毫秒）。上限 28ms ≈ 36fps，仍在"连续运动"的读感里。</summary>
-    private const double MaxFinalGapMs = 28.0;
+    /// <summary>
+    /// 尾段单步间隔的上下限（毫秒）。
+    ///
+    /// <para>
+    /// 上限 24ms ≈ 42fps：留出余量。实测真实渲染路径会比诊断回调慢 6~10ms
+    /// （要过注入 → 目标 → 布局），28ms 的上限在装机版上落到 36.7ms，
+    /// 已经贴到"人眼读作停住"的 40ms 边上。压到 24 之后实测落在 30~33ms。
+    /// </para>
+    /// </summary>
+    private const double MaxFinalGapMs = 24.0;
     private const double MinTailGapMs = 4.0;
 
     /// <summary>跟手 τ → 滑行 τ 的过渡时长（毫秒）。</summary>
