@@ -15,7 +15,7 @@ namespace MouseWheelEnhancement.Core;
 /// 钩子只做一次字段读取，没有锁、没有分配、没有正则编译。
 /// 正则和 HashSet 也在这里提前编译好（匹配就是 O(1) 与一次已编译的 match）。
 /// </summary>
-public sealed class RuntimeSettings
+public sealed record RuntimeSettings
 {
     public long Revision { get; init; }
 
@@ -63,6 +63,31 @@ public sealed class RuntimeSettings
     public bool IgnoreShift { get; init; }
     public bool InvertDirection { get; init; }
     public bool EnhancePrecisionInput { get; init; }
+
+    /// <summary>Shift+滚轮（横向）也走加速曲线（v1.8.0）。</summary>
+    public bool HorizontalBoost { get; init; }
+
+    /// <summary>加速时在光标旁显示倍率（OSD，v1.8.0）。</summary>
+    public bool OsdMultiplier { get; init; }
+
+    /// <summary>反向滚动时插一段软起步（v1.8.0）。</summary>
+    public bool ReverseEase { get; init; }
+
+    /// <summary>松手延迟随最近速度延长（v1.8.0）。</summary>
+    public bool VelocityStop { get; init; }
+
+    /// <summary>掉帧时自动降级（v1.8.0）。</summary>
+    public bool LowFpsDegrade { get; init; }
+
+    /// <summary>每格拆几帧（派生按应用覆盖时要用它重算单帧容量）。</summary>
+    public int FramesPerNotch { get; init; } = 4;
+
+    /// <summary>积压上限（格）。同样是为了在派生覆盖时重算。</summary>
+    public double MaxBacklogNotches { get; init; } = 5;
+
+    /// <summary>按 exe 预烘焙的覆盖快照；没设覆盖的应用不在这里。</summary>
+    public IReadOnlyDictionary<string, RuntimeSettings> PerApp { get; init; } =
+        new Dictionary<string, RuntimeSettings>(StringComparer.OrdinalIgnoreCase);
 
     public FilterMode FilterMode { get; init; }
     public IReadOnlySet<string> FilterApps { get; init; } = new HashSet<string>();
@@ -196,7 +221,13 @@ public sealed class RuntimeSettings
             ? (int)Math.Max(1, Math.Round(Math.Max(1, c.Boost.MaxMultiplier)))
             : 1;
 
-        return new RuntimeSettings
+        return Build(c, boostScale, frameMs, framesPerNotch, rx);
+    }
+
+    private static RuntimeSettings Build(AppConfig c, int boostScale, double frameMs,
+        int framesPerNotch, Regex? rx)
+    {
+        var rs = new RuntimeSettings
         {
             Revision = Interlocked.Increment(ref _revision),
             Enabled = c.Enabled,
@@ -216,10 +247,17 @@ public sealed class RuntimeSettings
             GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
             BoostScale = boostScale,
+            FramesPerNotch = framesPerNotch,
+            MaxBacklogNotches = Math.Max(1.0, c.Smooth.MaxBacklogNotches),
             IgnoreCtrlAlt = c.Input.IgnoreCtrlAltWheel,
             IgnoreShift = c.Input.IgnoreShiftWheel,
             InvertDirection = c.Input.InvertDirection,
             EnhancePrecisionInput = c.Input.EnhancePrecisionInput,
+            HorizontalBoost = c.Input.HorizontalBoost,
+            OsdMultiplier = c.Behavior.OsdMultiplier,
+            ReverseEase = c.Smooth.ReverseEase,
+            VelocityStop = c.Smooth.VelocityStop,
+            LowFpsDegrade = c.Smooth.LowFpsDegrade,
             FilterMode = c.Filter.Mode,
             SkipSelf = c.Behavior.PauseWhileSettingsOpen,
             FilterApps = new HashSet<string>(
@@ -236,6 +274,64 @@ public sealed class RuntimeSettings
                 FlushOnReverse = c.Boost.FlushOnReverse,
             },
         };
+
+        /* 按应用覆盖：**在这里一次性烘焙好**，钩子里只做一次字典查找。
+         * 覆盖项只影响"倍率上限"和"平滑开关"，其余字段原样继承全局。 */
+        Dictionary<string, RuntimeSettings>? perApp = null;
+        foreach (var a in c.Filter.Apps)
+        {
+            if (a?.Override == null) continue;
+            var name = AppRuleName.Normalize(a.Exe);
+            if (name.Length == 0) continue;
+            (perApp ??= new Dictionary<string, RuntimeSettings>(StringComparer.OrdinalIgnoreCase))[name] =
+                rs.WithOverride(a.Override);
+        }
+
+        return perApp == null ? rs : rs with { PerApp = perApp };
+    }
+
+    /// <summary>
+    /// 按应用覆盖派生一份快照（v1.8.0）。
+    ///
+    /// <para>
+    /// 只改"倍率上限"和"平滑开关"两项，并且**连带重算**依赖倍率的三个派生量
+    /// （单帧容量 / 积压上限 / 速度判定用的 BoostView）——
+    /// 只改 MaxMultiplier 而不改这三个，会出现"界面写着 2×、实际被容量夹死"
+    /// 那种 v1.7.3 修过一遍的老问题。倍率容量与单帧容量的不变式见
+    /// <see cref="UnitsPerFrameFor"/> / <see cref="BacklogUnitsFor"/>。
+    /// </para>
+    /// </summary>
+    public RuntimeSettings WithOverride(AppOverride? o)
+    {
+        if (o == null) return this;
+        var s = this;
+
+        if (o.MaxMultiplier is double raw)
+        {
+            var mult = Math.Max(1.0, Math.Round(raw));
+            var scale = (int)Math.Max(1, Math.Round(mult));
+            s = s with
+            {
+                MaxMultiplier = mult,
+                BoostScale = scale,
+                UnitsPerFrame = UnitsPerFrameFor(s.FramesPerNotch, scale),
+                MaxBacklogUnits = BacklogUnitsFor(s.MaxBacklogNotches, scale),
+                BoostView = new BoostConfig
+                {
+                    FastThresholdPerSec = s.BoostView.FastThresholdPerSec,
+                    SaturationPerSec = s.BoostView.SaturationPerSec,
+                    MinMultiplier = s.BoostView.MinMultiplier,
+                    MaxMultiplier = mult,
+                    Enabled = s.BoostView.Enabled,
+                    FlushOnReverse = s.BoostView.FlushOnReverse,
+                },
+            };
+        }
+
+        if (o.Smooth is bool smooth)
+            s = s with { SmoothEnabled = smooth && s.Enabled };
+
+        return s;
     }
 
     /// <summary>

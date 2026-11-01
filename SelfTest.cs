@@ -1136,6 +1136,59 @@ internal static class SelfTest
         {
             try { Directory.Delete(tmpDir, true); } catch { }
         }
+
+        /* ⑧ 按应用覆盖（v1.8.0）
+         *
+         * 覆盖只改"倍率上限 / 平滑开关"，但依赖倍率的三个派生量必须一起重算 ——
+         * 只改 MaxMultiplier 不改容量，就会出现"界面写 2×、实际被夹死"的老问题。 */
+        var ov = AppConfig.Default();
+        ov.Filter.Apps.Add(new AppRule
+        {
+            Exe = "Code.EXE",
+            Override = new AppOverride { MaxMultiplier = 9.7, Smooth = false },
+        });
+        ov.Normalize();
+
+        var ovRule = ov.Filter.Apps.FirstOrDefault(a => a.Exe == "code.exe");
+        Check("覆盖项的 exe 被归一化", ovRule != null, "没找到 code.exe");
+        Check("覆盖倍率取整并夹到 8", ovRule?.Override?.MaxMultiplier == 8,
+            ovRule?.Override?.MaxMultiplier?.ToString() ?? "null");
+        Check("覆盖的平滑开关保留", ovRule?.Override?.Smooth == false);
+
+        var ovRs = RuntimeSettings.From(ov);
+        var hasApp = ovRs.PerApp.TryGetValue("code.exe", out var appRs);
+        Check("覆盖被烘焙成独立快照", hasApp && appRs != null, hasApp.ToString());
+        if (hasApp && appRs != null)
+        {
+            Check("快照里的倍率上限 = 8", appRs.MaxMultiplier == 8, appRs.MaxMultiplier.ToString());
+            Check("速度判定看到的是覆盖后的倍率", appRs.BoostView.MaxMultiplier == 8,
+                appRs.BoostView.MaxMultiplier.ToString());
+            Check("单帧容量按覆盖后的倍率重算",
+                appRs.UnitsPerFrame == RuntimeSettings.UnitsPerFrameFor(appRs.FramesPerNotch, 8),
+                appRs.UnitsPerFrame.ToString());
+            Check("积压上限按覆盖后的倍率重算",
+                Math.Abs(appRs.MaxBacklogUnits
+                         - RuntimeSettings.BacklogUnitsFor(appRs.MaxBacklogNotches, 8)) < 0.01,
+                appRs.MaxBacklogUnits.ToString("0"));
+            Check("覆盖里的「平滑关」生效", !appRs.SmoothEnabled);
+        }
+        Check("全局快照不受覆盖影响", ovRs.MaxMultiplier == ov.Boost.MaxMultiplier,
+            ovRs.MaxMultiplier.ToString());
+
+        /* ⑨ v1.8.0 新增开关的默认值与 schema */
+        var d8 = AppConfig.Default();
+        d8.Normalize();
+        Check("schema 已推进到 6", d8.SchemaVersion >= 6, d8.SchemaVersion.ToString());
+        Check("横向加速默认开", d8.Input.HorizontalBoost);
+        Check("倍率浮层默认开", d8.Behavior.OsdMultiplier);
+        Check("钩子看门狗默认开", d8.Behavior.HookWatchdog);
+        Check("反向软起步默认开", d8.Smooth.ReverseEase);
+        Check("速度停手默认开", d8.Smooth.VelocityStop);
+        Check("掉帧降级默认开", d8.Smooth.LowFpsDegrade);
+
+        var rs8 = RuntimeSettings.From(d8);
+        Check("横向开关被带到运行时快照", rs8.HorizontalBoost == d8.Input.HorizontalBoost);
+        Check("看门狗开关被带到运行时快照", rs8.OsdMultiplier == d8.Behavior.OsdMultiplier);
     }
 
     /// <summary>
@@ -1180,7 +1233,7 @@ internal static class SelfTest
         legacy.Normalize();
         Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
         // v1 的配置会一路迁移到当前版本（v2 自排除 + v3 平滑范围 + v4 滑行语义）
-        Check("迁移后 schemaVersion 记为当前版本 5", legacy.SchemaVersion == 5, legacy.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为当前版本 6", legacy.SchemaVersion == 6, legacy.SchemaVersion.ToString());
 
         // 已经是 v2 之后，用户自己打开就不再被覆盖
         var kept = AppConfig.Default();
@@ -1199,7 +1252,7 @@ internal static class SelfTest
         scope2.Normalize();
         Check("v2 老配置的平滑范围被纠正为所有滚动", scope2.Smooth.Scope == SmoothScope.Always,
             scope2.Smooth.Scope.ToString());
-        Check("迁移后 schemaVersion 记为 5", scope2.SchemaVersion == 5, scope2.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为 6", scope2.SchemaVersion == 6, scope2.SchemaVersion.ToString());
 
         // v3 之后用户自己选回「仅加速时」不再被覆盖
         var keptScope = AppConfig.Default();
@@ -1217,7 +1270,7 @@ internal static class SelfTest
         oldGlide.Normalize();
         Check("v3 老配置的滑行时长换算成新默认值", oldGlide.Smooth.GlideMs == 300,
             oldGlide.Smooth.GlideMs.ToString());
-        Check("v4 迁移后 schemaVersion 记为 5", oldGlide.SchemaVersion == 5, oldGlide.SchemaVersion.ToString());
+        Check("v4 迁移后 schemaVersion 记为 6", oldGlide.SchemaVersion == 6, oldGlide.SchemaVersion.ToString());
 
         var glideOff = AppConfig.Default();
         glideOff.SchemaVersion = 3;
@@ -1236,7 +1289,7 @@ internal static class SelfTest
         oldFrames.Normalize();
         Check("v4 老配置的 8 帧/格 不被改动", oldFrames.Smooth.FramesPerNotch == 8,
             oldFrames.Smooth.FramesPerNotch.ToString());
-        Check("v5 迁移后 schemaVersion 记为 5", oldFrames.SchemaVersion == 5,
+        Check("v5 迁移后 schemaVersion 记为 6", oldFrames.SchemaVersion == 6,
             oldFrames.SchemaVersion.ToString());
 
         var oldFrames6 = AppConfig.Default();

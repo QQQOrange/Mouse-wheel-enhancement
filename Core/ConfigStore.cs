@@ -280,6 +280,25 @@ public sealed class ConfigStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// 整体替换配置（导入用，v1.8.0）。归一化 + 抹平暂停态 + 立即落盘。
+    /// </summary>
+    public void Replace(AppConfig cfg)
+    {
+        cfg.Normalize();
+        ResetSessionState(cfg);   // 导入文件里的"暂停"同样不该带进来
+        Config = cfg;
+        SaveNow();
+        Changed?.Invoke(Config);
+    }
+
+    /// <summary>按配置文件同样的规则反序列化一段 JSON（导入/自检用）。</summary>
+    public static AppConfig? Parse(string json)
+    {
+        try { return JsonSerializer.Deserialize<AppConfig>(json, JsonOpts); }
+        catch { return null; }
+    }
+
     public void ResetToDefaults()
     {
         var token = Config.Update.GitHubTokenProtected;

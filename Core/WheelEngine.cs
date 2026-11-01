@@ -23,6 +23,9 @@ public sealed class WheelEngine : IDisposable
 {
     private readonly TargetResolver _targets = new();
     private readonly WheelVelocityTracker _tracker = new();
+
+    /// <summary>横向（Shift+滚轮）专用的速度跟踪器，见钩子里的横向分支。</summary>
+    private readonly WheelVelocityTracker _trackerH = new();
     private readonly ScrollAnimator _animator = new();
     private readonly ManualResetEventSlim _hookReady = new(false);
 
@@ -58,6 +61,22 @@ public sealed class WheelEngine : IDisposable
 
     /// <summary>已经为哪个 exe 打过"整格加速"日志（每程序一次）。</summary>
     private string _notchLogged = "";
+
+    /* ── 看门狗 / 度量（v1.8.0） ── */
+
+    /// <summary>最近一次收到滚轮事件的时刻（看门狗用它判断"现在是不是空闲"）。</summary>
+    private long _lastEventTicks;
+
+    /// <summary>钩子装上的时刻（决定什么时候轮到下一次定期轮换）。</summary>
+    private long _hookBornTicks;
+
+    /// <summary>钩子线程里处理"轮换"的自定义消息。</summary>
+    private const int WmRotate = 0x8000 + 0x4D;
+
+    /// <summary>回调耗时（QPC 周期）的最大值 / 采样次数，每 10 秒被读走一次。</summary>
+    private long _cbMaxTicks;
+    private long _cbSamples;
+    private long _rotations;
     /// <summary>
     /// 最近一次解析到的目标应用。**故意包成不可变引用**再由 Volatile 交换：
     /// TargetInfo 是 4 个字段的结构体（含两个引用），直接在两个线程间读写会是
@@ -68,6 +87,23 @@ public sealed class WheelEngine : IDisposable
 
     /// <summary>钩子安装/运行出问题时抛给界面（只抛一次，不刷屏）。</summary>
     public event Action<string>? Faulted;
+
+    /// <summary>真的加速了（倍率 ≥ 1.5）时抛出，给 OSD 用。热路径上只有一次判空 + 时间戳比较。</summary>
+    public event Action<double>? Boosted;
+
+    private long _lastBoostNotifyMs;
+
+    private void NotifyBoosted(double multiplier, RuntimeSettings s)
+    {
+        var h = Boosted;
+        if (h == null || !s.OsdMultiplier || multiplier < 1.5) return;
+
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastBoostNotifyMs) < 120) return;
+        Interlocked.Exchange(ref _lastBoostNotifyMs, now);
+
+        try { h(multiplier); } catch { /* 界面那边出问题不能影响滚动 */ }
+    }
 
     internal ScrollAnimator Animator => _animator;
     public TargetResolver Targets => _targets;
@@ -174,6 +210,81 @@ public sealed class WheelEngine : IDisposable
         return Start();
     }
 
+    /* ══════════════ 看门狗（v1.8.0） ══════════════ */
+
+    /// <summary>钩子线程还活着吗（线程死了要重启，光换钩子没用）。</summary>
+    public bool HookThreadAlive => _thread is { IsAlive: true };
+
+    /// <summary>最近一次滚轮事件的时刻（毫秒）。看门狗用它判断"是不是空闲"。</summary>
+    public long LastEventTicks => Interlocked.Read(ref _lastEventTicks);
+
+    /// <summary>当前钩子装上的时刻。</summary>
+    public long HookBornTicks => Interlocked.Read(ref _hookBornTicks);
+
+    /// <summary>已轮换次数（日志/自检用）。</summary>
+    public long Rotations => Interlocked.Read(ref _rotations);
+
+    /// <summary>
+    /// 请求钩子线程换一个新钩子。
+    ///
+    /// <para>
+    /// 为什么要轮换：Windows 在回调超时（<c>LowLevelHooksTimeout</c>）后会**静默摘掉**
+    /// 低层钩子 —— 句柄还在、回调不再来，界面上一切正常，就是滚轮不加速了。
+    /// 没有 API 能查询"我的钩子还在不在"，唯一的自愈办法是定期换一个新的。
+    /// </para>
+    /// <para>只在**空闲**时换（调用方判断），避免换的过程中吞掉正在进行的滚动。</para>
+    /// </summary>
+    public void RequestHookRotation()
+    {
+        var tid = _threadId;
+        if (tid == 0 || !_running) return;
+        try { Native.PostThreadMessage(tid, WmRotate, IntPtr.Zero, IntPtr.Zero); }
+        catch { /* 线程刚好退出，交给看门狗下一轮重启 */ }
+    }
+
+    /// <summary>只在钩子线程里调用：先拆旧的再装新的，中间不留两个钩子并存。</summary>
+    private void RotateHook()
+    {
+        try
+        {
+            var old = _hook;
+            _hook = IntPtr.Zero;
+
+            /* ⚠ 必须先拆后装。两个 SetWindowsHookEx 同时挂着的话，
+             * 每个滚轮事件会被两套钩子各接管一次 —— 用户看到"速度突然翻倍"，
+             * 而且旧句柄永远泄漏（见 Start() 里的同一条警告）。 */
+            if (old != IntPtr.Zero)
+            {
+                try { Native.UnhookWindowsHookEx(old); } catch { }
+            }
+
+            var fresh = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, _proc!, Native.GetModuleHandle(null), 0);
+            if (fresh == IntPtr.Zero)
+            {
+                Log.Warn($"钩子轮换失败（错误码 {Marshal.GetLastWin32Error()}），下一轮重试");
+                return;
+            }
+
+            _hook = fresh;
+            Interlocked.Exchange(ref _hookBornTicks, Environment.TickCount64);
+            Interlocked.Increment(ref _rotations);
+            Log.Info("钩子已轮换（防系统静默摘钩）");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("钩子轮换异常：" + ex.Message);
+        }
+    }
+
+    /// <summary>取走这一轮的性能度量并清零（定时器每 10 秒调一次写日志）。</summary>
+    public (long Samples, double MaxMs, long Rotations) TakeHookStats()
+    {
+        var n = Interlocked.Exchange(ref _cbSamples, 0);
+        var maxTicks = Interlocked.Exchange(ref _cbMaxTicks, 0);
+        var rot = Interlocked.Read(ref _rotations);
+        return (n, maxTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency, rot);
+    }
+
     private void HookThread()
     {
         _threadId = Native.GetCurrentThreadId();
@@ -192,9 +303,13 @@ public sealed class WheelEngine : IDisposable
                 return;
             }
             _hookReady.Set();
+            Interlocked.Exchange(ref _hookBornTicks, Environment.TickCount64);
 
             while (Native.GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
             {
+                /* 看门狗请求"换一个新钩子"：系统在回调超时后会**静默摘掉**低层钩子，
+                 * 句柄还在但回调不再来。唯一的自愈办法就是重新装一个。 */
+                if (msg.message == WmRotate) RotateHook();
                 // 低层钩子的回调由系统在消息泵里投递，这里转发一下就够了
                 _ = msg;
             }
@@ -218,7 +333,6 @@ public sealed class WheelEngine : IDisposable
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
-
         /* 已经停止（Stop 后线程还没退出、或者钩子正在被换掉）时一律放行。
          *
          * 这一行是"关闭增强之后滚轮还在被加速"的唯一防线：
@@ -228,6 +342,7 @@ public sealed class WheelEngine : IDisposable
          * 于是"停用"之后钩子照旧工作，用户看到的是"关了还是加速"。 */
         if (!_running) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
+        long t0 = 0;
         try
         {
             /* ⚠ 这一段运行在系统输入链路上，必须**又快又不抛**。
@@ -236,6 +351,11 @@ public sealed class WheelEngine : IDisposable
              *   所以这里不做任何 IO、不做日志、不做正则编译。 */
             if ((int)wParam != Native.WM_MOUSEWHEEL)
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            /* 从这一行开始才计时：低层钩子会收到**所有**鼠标事件（每次移动都来），
+             * 每一条都读一次 QPC 是浪费。只有滚轮事件才值得统计。 */
+            t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            Interlocked.Exchange(ref _lastEventTicks, Environment.TickCount64);
 
             var data = Marshal.PtrToStructure<Native.MSLLHOOKSTRUCT>(lParam);
 
@@ -251,14 +371,27 @@ public sealed class WheelEngine : IDisposable
             if (delta == 0)
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
-            // Ctrl/Alt + 滚轮 = 缩放，必须 1:1；Shift + 滚轮 = 横向，交回系统
+            // Ctrl/Alt + 滚轮 = 缩放，必须 1:1
             if (s.IgnoreCtrlAlt && (Native.IsKeyDown(Native.VK_CONTROL) || Native.IsKeyDown(Native.VK_MENU)))
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
-            if (s.IgnoreShift && Native.IsKeyDown(Native.VK_SHIFT))
+
+            /* Shift + 滚轮：
+             *   · 开了「横向加速」→ 走下面的横向分支（放大位移）；
+             *   · 没开 → 维持老行为，原样交回系统做横向滚动。 */
+            var shiftDown = Native.IsKeyDown(Native.VK_SHIFT);
+            if (shiftDown && !s.HorizontalBoost && s.IgnoreShift)
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
             var target = _targets.ResolveForWheel(s.NeedsTitle);
             Volatile.Write(ref _lastTargetBox, new TargetBox(target));
+
+            /* 按应用覆盖（v1.8.0）：只换"倍率上限 / 平滑开关"两项，
+             * 快照在配置变更时就烘焙好了，这里只做一次字典查找。 */
+            if (s.PerApp.Count > 0 && !string.IsNullOrEmpty(target.Exe)
+                && s.PerApp.TryGetValue(target.Exe, out var perApp))
+            {
+                s = perApp;
+            }
 
             /* 默认**不**排除自己：设置窗口里的滚动也该被增强，
              * 否则用户在自己的软件里根本试不出效果（这正是曾经的困惑来源）。
@@ -293,6 +426,44 @@ public sealed class WheelEngine : IDisposable
                 if (Interlocked.Exchange(ref _uipiWarned, 1) == 0)
                     Log.Warn($"目标程序权限更高（{target.Exe}），注入会被系统拦截，" +
                              "已改为原样放行（想要加速请以管理员身份运行本程序）");
+                Interlocked.Increment(ref _passed);
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
+            /* ── Shift + 滚轮 = 横向加速（v1.8.0） ──
+             *
+             * 用**独立的**速度跟踪器：横竖混用同一个会让"先上下滚两下再按住 Shift"
+             * 继承上下的速度，一横滚就直接顶格，很突兀。
+             *
+             * 横向不做摊帧：HWHEEL 在绝大多数程序里是整格跳，拆帧会被丢掉。
+             * 所以这里发的是"放大后的整段位移"——定位是更快到目标，不是更顺。 */
+            if (shiftDown && s.HorizontalBoost)
+            {
+                var hNow = Environment.TickCount64;
+                var hd = _trackerH.Sample(delta, hNow,
+                    s.BoostEnabled ? s.BoostView : NoBoostView,
+                    s.InvertDirection, s.EnhancePrecisionInput, s.BoostScale);
+
+                Interlocked.Increment(ref _events);
+                Volatile.Write(ref _lastRate, hd.RatePerSec);
+
+                if (!hd.Boosted)
+                {
+                    Interlocked.Increment(ref _passed);
+                    return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+                }
+
+                /* 方向：Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右 —— 所以翻号。 */
+                var units = -hd.OutputUnits;
+                if (InputInjector.SendHWheel(units))
+                {
+                    Interlocked.Increment(ref _boosted);
+                    Volatile.Write(ref _lastMultiplier, hd.Multiplier);
+                    NotifyBoosted(hd.Multiplier, s);
+                    return (IntPtr)1;   // 吞掉原事件：这一下由放大后的横向事件代替
+                }
+
+                /* 注入失败（权限/被拦）就放行原事件，绝不能让滚动凭空消失。 */
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
@@ -362,6 +533,7 @@ public sealed class WheelEngine : IDisposable
                 }
 
                 Interlocked.Increment(ref _boosted);
+                NotifyBoosted(decision.Multiplier, s);
                 return (IntPtr)1;
             }
 
@@ -386,6 +558,7 @@ public sealed class WheelEngine : IDisposable
              * 摊帧（每格 4~8 帧）带来的平滑全在这一步。 */
             _animator.Push(decision.OutputUnits);
             Interlocked.Increment(ref _boosted);
+            NotifyBoosted(decision.Multiplier, s);
 
             // 吞掉原事件：这一下由我们自己按计算好的量发出去
             return (IntPtr)1;
@@ -401,6 +574,19 @@ public sealed class WheelEngine : IDisposable
                 Log.Error("钩子回调异常（已放行）", ex);
             }
             return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+        finally
+        {
+            /* 记录本次回调耗时（只统计滚轮事件）。采样本身是两次 QPC 读，
+             * 相对 6ms 的回调预算可以忽略；它的用途是"性能劣化能被日志发现"，
+             * 而不是给每个事件建账。 */
+            if (t0 != 0)
+            {
+                var dt = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+                if (dt > Interlocked.Read(ref _cbMaxTicks))
+                    Interlocked.Exchange(ref _cbMaxTicks, dt);
+                Interlocked.Increment(ref _cbSamples);
+            }
         }
     }
 

@@ -203,6 +203,16 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>本轮滑行开始的时刻；0 = 当前不在滑行。</summary>
     private long _glideStartTicks;
 
+    /// <summary>反向软起步的截止时刻（QPC）。见 PushCore 的 flushOnReverse 分支。</summary>
+    private long _reverseHoldTicks;
+
+    /// <summary>反向时先停多久再起步。</summary>
+    private const double ReverseHoldMs = 45;
+
+    /// <summary>连续"跟不上帧"的计数与降级标志（v1.8.0，见 Loop）。</summary>
+    private int _slowFrames;
+    private bool _degraded;
+
     /// <summary>
     /// 本轮滑行的时间常数（毫秒）。松手那一刻按「滑行时长」反解一次，
     /// 之后整轮不变 —— 中途不变才不会有速率台阶。
@@ -407,6 +417,15 @@ internal sealed class ScrollAnimator : IDisposable
             Interlocked.Exchange(ref _carryMilli, 0);
             /* 新一轮收尾从这一刻重新起算，否则上一轮的"已过时长"会把新一轮 τ 一上来就收紧。 */
             Interlocked.Exchange(ref _glideStartTicks, 0);
+
+            /* ── 反向软起步（v1.8.0）──
+             *
+             * 光"丢掉积压"还是硬切：旧动量的尾巴被瞬间抹掉、新方向立刻全速，
+             * 快滚中途回拨时会有一下顿挫。这里插 45ms 的停顿当作过渡，
+             * 让方向翻转有个"收—再起步"的呼吸感。
+             * 只在用户显式打开 ReverseEase 时生效，且不影响同向连滚。 */
+            if (Volatile.Read(ref _settings).ReverseEase)
+                Interlocked.Exchange(ref _reverseHoldTicks, _clock.ElapsedTicks + MsToTicks(ReverseHoldMs));
         }
 
         /* 积压上限：**直接截断**，而不是记一条"到点就一次发完"的截止期。
@@ -613,6 +632,9 @@ internal sealed class ScrollAnimator : IDisposable
                      * 意义只有 1/120 格（亚像素）。 */
                     Interlocked.Exchange(ref _carryMilli, 0);
                     _finishFromUnits = 0;
+                    _slowFrames = 0;
+                    _degraded = false;
+                    Interlocked.Exchange(ref _reverseHoldTicks, 0);
 
                     /* **等醒来的这一刻才算"上一帧"**。
                      *
@@ -644,16 +666,43 @@ internal sealed class ScrollAnimator : IDisposable
 
                 var pendingUnits = pendingMilli / Milli;
 
+                /* 反向软起步：刚翻方向的头 45ms 先不动，让旧动量的观感散掉再走。 */
+                if (now < Interlocked.Read(ref _reverseHoldTicks)) continue;
+
+                /* 掉帧降级（v1.8.0）：实测出帧间隔连续超过目标 2.5 倍，
+                 * 就认为这一轮跑不动 —— 关掉滑行，别让积压越拖越多。
+                 * 正常机器上这个分支永远进不来。 */
+                if (s.LowFpsDegrade)
+                {
+                    if (dtMs > s.FrameIntervalMs * 2.5) _slowFrames++;
+                    else if (_slowFrames > 0) _slowFrames--;
+                    _degraded = _slowFrames > 40;
+                }
+                else
+                {
+                    _degraded = false;
+                }
+
                 /* 松手判定：超过 GlideDelayMs 没有新输入，就认为滚轮停了。
                  *
                  * 松手后不再"另换一套曲线"，只是把 τ 从跟手值平滑挪到滑行值：
                  * 滑行 τ 由 GlideMs 反解（到点只剩 1 个单位），过渡用 55ms 的
                  * smoothstep —— τ 一步跳变会让速率瞬间掉一半，听起来就是"咔"。 */
                 var tau = s.TauMs;
-                if (s.SmoothEnabled && s.GlideMs > 0)
+                if (s.SmoothEnabled && s.GlideMs > 0 && !_degraded)
                 {
                     var idleMs = TicksToMs(now - Interlocked.Read(ref _lastInputTicks));
-                    if (idleMs > s.GlideDelayMs)
+
+                    /* 速度停手（v1.8.0）：甩得越猛手里积压越多，就多等一会儿再收尾。
+                     * 上限 +80%（30ms → 54ms），慢滚完全不受影响。 */
+                    var glideDelay = s.GlideDelayMs;
+                    if (s.VelocityStop)
+                    {
+                        glideDelay += Math.Clamp(
+                            Math.Abs(pendingUnits) / Native.WHEEL_DELTA * 4.0, 0, s.GlideDelayMs * 0.8);
+                    }
+
+                    if (idleMs > glideDelay)
                     {
                         if (Interlocked.Read(ref _glideStartTicks) == 0)
                         {

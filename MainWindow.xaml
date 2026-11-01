@@ -297,6 +297,51 @@
                                                   Style="{StaticResource Switch}" VerticalAlignment="Center"
                                                   Checked="PauseSelf_Changed" Unchecked="PauseSelf_Changed" />
                                 </Grid>
+
+                                <Grid Margin="0,16,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Shift + 滚轮横向加速" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="宽表格、代码 diff、时间轴这类横向内容，按住 Shift 快拨时同样放大位移。横向没有平滑，只更快。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="HorizontalSwitch" Grid.Column="1"
+                                                  Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                  Checked="Horizontal_Changed" Unchecked="Horizontal_Changed" />
+                                </Grid>
+
+                                <Grid Margin="0,16,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="加速时显示倍率" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="快速滚动时在光标旁闪一下当前倍率（如 3.2×），300 毫秒后淡出。不抢焦点、点不中。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="OsdSwitch" Grid.Column="1"
+                                                  Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                  Checked="Osd_Changed" Unchecked="Osd_Changed" />
+                                </Grid>
+
+                                <Grid Margin="0,16,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="钩子看门狗" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="Windows 有时会静默摘掉钩子（表现是用着用着突然不加速）。开启后会自动发现并恢复，长期不用时也会换一个新钩子。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="WatchdogSwitch" Grid.Column="1"
+                                                  Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                  Checked="Watchdog_Changed" Unchecked="Watchdog_Changed" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -851,7 +896,9 @@
                                                VerticalAlignment="Center" Text="0 项" />
                                 </Grid>
                                 <ListBox x:Name="AppsList" Style="{StaticResource PlainListBox}"
-                                         ItemContainerStyle="{StaticResource PlainListBoxItem}" MaxHeight="330">
+                                         ItemContainerStyle="{StaticResource PlainListBoxItem}" MaxHeight="330"
+                                         MouseRightButtonUp="AppsList_RightClick"
+                                         ToolTip="右键某个程序，可单独设它的倍率上限和平滑开关">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
                                             <Grid>
@@ -862,8 +909,12 @@
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding Exe}" Style="{StaticResource Mono}"
                                                                FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" />
-                                                    <TextBlock Text="{Binding Note}" Style="{StaticResource Caption}"
-                                                               Margin="0,2,0,0" />
+                                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                                        <TextBlock Text="{Binding Note}" Style="{StaticResource Caption}" />
+                                                        <TextBlock Text="{Binding Override}" Style="{StaticResource Caption}"
+                                                                   Margin="6,0,0,0"
+                                                                   Foreground="{DynamicResource AccentHover}" />
+                                                    </StackPanel>
                                                 </StackPanel>
                                                 <Button Grid.Column="1" Content="✕" Style="{StaticResource TinyButton}"
                                                         Tag="{Binding Exe}" Click="RemoveApp_Click"
@@ -1188,6 +1239,18 @@
                                     <TextBlock x:Name="AboutElevation" Grid.Column="1" Style="{StaticResource Mono}"
                                                FontSize="11.5" />
                                 </Grid>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <Button Content="导出诊断包…" Style="{StaticResource GhostButton}"
+                                            Click="ExportDiag_Click" Margin="0,0,8,0"
+                                            ToolTip="把配置、日志和环境信息打成一个 zip；反馈问题时发这个最省事" />
+                                    <Button Content="导出配置…" Style="{StaticResource GhostButton}"
+                                            Click="ExportConfig_Click" Margin="0,0,8,0"
+                                            ToolTip="只导出 config.json，可带到另一台机器导入" />
+                                    <Button Content="导入配置…" Style="{StaticResource GhostButton}"
+                                            Click="ImportConfig_Click"
+                                            ToolTip="从一份 config.json 恢复设置（会整体覆盖当前设置）" />
+                                </StackPanel>
 
                                 <StackPanel Orientation="Horizontal">
                                     <Button x:Name="RestartHookBtn" Content="重启钩子" Style="{StaticResource GhostButton}"

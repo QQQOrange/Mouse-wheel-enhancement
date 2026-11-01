@@ -22,6 +22,9 @@ internal static class Native
     public const uint MOD_WIN = 0x0008;
 
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
+    /// <summary>横向滚轮（Shift+滚轮的等价物，v1.8.0）。</summary>
+    public const uint MOUSEEVENTF_HWHEEL = 0x1000;
+
     public const uint INPUT_MOUSE = 0;
     public const int WHEEL_DELTA = 120;
 
@@ -520,4 +523,26 @@ internal static class Native
         catch { return ""; }
         finally { CloseHandle(h); }
     }
+
+    /* ── 窗口扩展样式（OSD 的"点不中 / 不抢焦点"，v1.8.0） ── */
+
+    public static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex) =>
+        IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, nIndex) : (IntPtr)GetWindowLong32(hWnd, nIndex);
+
+    public static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr value) =>
+        IntPtr.Size == 8
+            ? SetWindowLongPtr64(hWnd, nIndex, value)
+            : (IntPtr)SetWindowLong32(hWnd, nIndex, value.ToInt32());
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+    private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int value);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr value);
 }

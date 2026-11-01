@@ -51,4 +51,31 @@ internal static class InputInjector
 
         return Native.SendInput(1, buf, InputSize) == 1;
     }
+
+    /// <summary>
+    /// 发一次**横向**滚轮（v1.8.0）。正数 = 向右。
+    ///
+    /// <para>
+    /// 横向没有摊帧：<c>MOUSEEVENTF_HWHEEL</c> 在绝大多数程序里都是"一格一格"
+    /// 或者按系统行数整段跳，拆帧只会被丢。所以这里直接发放大后的整段位移，
+    /// 定位是"更快到目标"，不是"更顺"。
+    /// </para>
+    /// <para>注意方向：Shift + 纵向滚轮的语义正好和 HWHEEL 相反，调用方要自己翻号。</para>
+    /// </summary>
+    public static bool SendHWheel(int units)
+    {
+        if (units == 0) return true;
+        units = Math.Clamp(units, -MaxUnitsPerCall, MaxUnitsPerCall);
+
+        var buf = _buffer ??= new Native.INPUT[1];
+        buf[0].type = Native.INPUT_MOUSE;
+        buf[0].u.mi.dx = 0;
+        buf[0].u.mi.dy = 0;
+        buf[0].u.mi.mouseData = unchecked((uint)units);
+        buf[0].u.mi.dwFlags = Native.MOUSEEVENTF_HWHEEL;
+        buf[0].u.mi.time = 0;
+        buf[0].u.mi.dwExtraInfo = Signature;
+
+        return Native.SendInput(1, buf, InputSize) == 1;
+    }
 }

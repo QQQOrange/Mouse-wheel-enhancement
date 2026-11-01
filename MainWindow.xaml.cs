@@ -1,5 +1,9 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
+using System.Text;
+using IOPath = System.IO.Path;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -267,6 +271,9 @@ public partial class MainWindow : Window
             RefreshStartupSwitches();
             CloseToTraySwitch.IsChecked = c.Behavior.CloseToTray;
             PauseSelfSwitch.IsChecked = c.Behavior.PauseWhileSettingsOpen;
+            HorizontalSwitch.IsChecked = c.Input.HorizontalBoost;
+            OsdSwitch.IsChecked = c.Behavior.OsdMultiplier;
+            WatchdogSwitch.IsChecked = c.Behavior.HookWatchdog;
 
             BoostSwitch.IsChecked = c.Boost.Enabled;
             ThresholdSlider.Value = c.Boost.FastThresholdPerSec;
@@ -1113,6 +1120,27 @@ public partial class MainWindow : Window
         Commit();
     }
 
+    private void Horizontal_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        Services.Config.Input.HorizontalBoost = HorizontalSwitch.IsChecked == true;
+        Commit();
+    }
+
+    private void Osd_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        Services.Config.Behavior.OsdMultiplier = OsdSwitch.IsChecked == true;
+        Commit();
+    }
+
+    private void Watchdog_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        Services.Config.Behavior.HookWatchdog = WatchdogSwitch.IsChecked == true;
+        Commit();
+    }
+
     /* ══════════════ 事件：加速 ══════════════ */
 
     private void Boost_Changed(object sender, RoutedEventArgs e)
@@ -1426,16 +1454,235 @@ public partial class MainWindow : Window
          * 原来这段在**每次**配置变更时都跑（拖滑块一秒几十次），
          * 结果是列表被清空重建几十次：选中项丢失、滚动位置跳回顶部、
          * 还平白产生一堆 UI 对象。 */
-        var signature = string.Join('\u0001', apps.Select(a => a.Exe + '\u0002' + a.Note));
+        var signature = string.Join('\u0001', apps.Select(a =>
+            a.Exe + '\u0002' + a.Note + '\u0003' + OverrideSummary(a.Override)));
         if (signature == _appsSignature) return;
         _appsSignature = signature;
 
         _rows.Clear();
         foreach (var a in apps.OrderBy(a => a.Exe, StringComparer.OrdinalIgnoreCase))
-            _rows.Add(new AppRuleRowData { Exe = a.Exe, Note = string.IsNullOrWhiteSpace(a.Note) ? "（无备注）" : a.Note });
+            _rows.Add(new AppRuleRowData
+            {
+                Exe = a.Exe,
+                Note = string.IsNullOrWhiteSpace(a.Note) ? "（无备注）" : a.Note,
+                Override = OverrideSummary(a.Override),
+            });
 
         AppsCount.Text = $"{apps.Count} 项";
         AppsEmpty.Visibility = apps.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>把一份覆盖写成一句人话（空覆盖 → 空串）。</summary>
+    private static string OverrideSummary(AppOverride? o)
+    {
+        if (o == null) return "";
+        var parts = new List<string>();
+        if (o.MaxMultiplier is double m) parts.Add($"上限 {m:0}×");
+        if (o.Smooth is bool sm) parts.Add(sm ? "平滑开" : "平滑关");
+        return parts.Count == 0 ? "" : "· " + string.Join(" · ", parts);
+    }
+
+    /// <summary>
+    /// 名单里右键某个程序 → 设这个程序专属的倍率上限 / 平滑开关（v1.8.0）。
+    ///
+    /// <para>
+    /// 用代码临时建菜单而不是写进 XAML：菜单项要根据当前值打勾，
+    /// 还要在点完之后立刻刷新列表摘要，代码里建比模板绑定更直接。
+    /// </para>
+    /// </summary>
+    private void AppsList_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ItemsControl.ContainerFromElement(AppsList, e.OriginalSource as DependencyObject)
+            is not ListBoxItem item || item.DataContext is not AppRuleRowData row) return;
+
+        var rule = Services.Config.Filter.Apps
+            .FirstOrDefault(a => string.Equals(a.Exe, row.Exe, StringComparison.OrdinalIgnoreCase));
+        if (rule == null) return;
+
+        var menu = new ContextMenu();
+
+        var multRoot = new MenuItem { Header = $"「{row.Exe}」倍率上限" };
+        void AddMult(string label, double? value)
+        {
+            var mi = new MenuItem
+            {
+                Header = label,
+                IsCheckable = true,
+                IsChecked = rule.Override?.MaxMultiplier is double cur
+                    ? Math.Abs(cur - (value ?? -1)) < 0.01
+                    : value == null,
+            };
+            mi.Click += (_, _) => ApplyOverride(rule, o => o.MaxMultiplier = value);
+            multRoot.Items.Add(mi);
+        }
+        AddMult("跟随全局", null);
+        for (var i = 2; i <= 8; i++) AddMult($"{i}×", i);
+        menu.Items.Add(multRoot);
+
+        var smoothRoot = new MenuItem { Header = "平滑" };
+        void AddSmooth(string label, bool? value)
+        {
+            var mi = new MenuItem
+            {
+                Header = label,
+                IsCheckable = true,
+                IsChecked = rule.Override?.Smooth == value,
+            };
+            mi.Click += (_, _) => ApplyOverride(rule, o => o.Smooth = value);
+            smoothRoot.Items.Add(mi);
+        }
+        AddSmooth("跟随全局", null);
+        AddSmooth("开", true);
+        AddSmooth("关", false);
+        menu.Items.Add(smoothRoot);
+
+        menu.Items.Add(new Separator());
+        var reset = new MenuItem { Header = "清除这个程序的覆盖" };
+        reset.Click += (_, _) => ApplyOverride(rule, _ => { }, clear: true);
+        menu.Items.Add(reset);
+
+        menu.PlacementTarget = item;
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    /* ══════════════ 事件：导出 / 导入（v1.8.0） ══════════════ */
+
+    /// <summary>
+    /// 一键导出诊断包：配置 + 日志 + 环境信息打成一个 zip，直接定位到资源管理器。
+    ///
+    /// <para>
+    /// 目的很实际：报障时不用再教用户"去哪个文件夹找 config.json 和 app.log"，
+    /// 也不用猜对方跑的是哪个版本、是不是管理员、多少 DPI。
+    /// </para>
+    /// </summary>
+    private void ExportDiag_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Services.Store.SaveNow();
+
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var dir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            if (!Directory.Exists(dir)) dir = AppPaths.DataDir;
+            var path = IOPath.Combine(dir, $"鼠标滚轮增强-诊断-{stamp}.zip");
+
+            using (var zip = ZipFile.Open(path, ZipArchiveMode.Create))
+            {
+                if (File.Exists(Services.Store.ConfigPath))
+                    zip.CreateEntryFromFile(Services.Store.ConfigPath, "config.json");
+
+                if (File.Exists(Log.FilePath))
+                    zip.CreateEntryFromFile(Log.FilePath, "logs/app.log");
+
+                var entry = zip.CreateEntry("system.txt");
+                using var w = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+                var dpi = VisualTreeHelper.GetDpi(this);
+                w.WriteLine($"版本        : v{Services.Version}");
+                w.WriteLine($"导出时间    : {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                w.WriteLine($"系统        : {Environment.OSVersion}");
+                w.WriteLine($"运行时      : .NET {Environment.Version} / 64位={Environment.Is64BitProcess}");
+                w.WriteLine($"管理员权限  : {Services.IsElevated}");
+                w.WriteLine($"数据目录    : {AppPaths.DataDir}");
+                w.WriteLine($"配置路径    : {Services.Store.ConfigPath}");
+                w.WriteLine($"窗口 DPI    : {dpi.DpiScaleX:0.##}x / {dpi.DpiScaleY:0.##}x");
+                w.WriteLine($"虚拟桌面    : {SystemParameters.VirtualScreenWidth:0}×{SystemParameters.VirtualScreenHeight:0}");
+                w.WriteLine($"帧间隔      : {RefreshRateMonitor.FrameIntervalMs:0.##} ms（自动跟随={Services.Config.Smooth.AutoFps}）");
+                w.WriteLine($"钩子        : running={Services.Engine.IsRunning} thread={Services.Engine.HookThreadAlive} 轮换={Services.Engine.Rotations}");
+                w.WriteLine($"目标应用    : {Services.Engine.LastTarget.Exe}（{Services.Engine.LastTarget.Class}）");
+                w.WriteLine($"上下限提示  : 上面这行如果是空，说明还没滚动过");
+            }
+
+            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+            SetFooterHint($"诊断包已导出：{IOPath.GetFileName(path)}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"导出失败：{ex.Message}", Services.AppTitle,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ExportConfig_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出配置",
+            Filter = "配置文件 (*.json)|*.json",
+            FileName = $"mouse-wheel-config-{DateTime.Now:yyyyMMdd-HHmm}.json",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            Services.Store.SaveNow();
+            File.Copy(Services.Store.ConfigPath, dlg.FileName, true);
+            SetFooterHint($"配置已导出：{IOPath.GetFileName(dlg.FileName)}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"导出失败：{ex.Message}", Services.AppTitle,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ImportConfig_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "导入配置",
+            Filter = "配置文件 (*.json)|*.json|所有文件 (*.*)|*.*",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            var cfg = ConfigStore.Parse(File.ReadAllText(dlg.FileName, Encoding.UTF8));
+            if (cfg == null)
+            {
+                MessageBox.Show(this, "这个文件不是有效的配置文件（JSON 解析失败）。",
+                    Services.AppTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            Services.Store.Replace(cfg);   // 归一化 + 落盘 + 通知引擎
+            LoadFromConfig();
+            RefreshApps();
+            RefreshTokenUi();
+            RedrawCurve();
+            RefreshStats();
+            SetFooterHint("配置已导入并生效");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"导入失败：{ex.Message}", Services.AppTitle,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>底部右侧那行小字临时换成一句提示（导出/导入完成后用）。</summary>
+    private void SetFooterHint(string text)
+    {
+        if (FooterRight != null) FooterRight.Text = text;
+    }
+
+    private void ApplyOverride(AppRule rule, Action<AppOverride> mutate, bool clear = false)
+    {
+        if (clear)
+        {
+            rule.Override = null;
+        }
+        else
+        {
+            rule.Override ??= new AppOverride();
+            mutate(rule.Override);
+            // 两项都空 → 当成没设，配置文件更干净
+            if (rule.Override.MaxMultiplier == null && rule.Override.Smooth == null)
+                rule.Override = null;
+        }
+
+        Services.Store.Touch();
+        RefreshApps();
     }
 
     private void AddApp_Click(object sender, RoutedEventArgs e)
@@ -2070,4 +2317,7 @@ internal sealed class AppRuleRowData
 {
     public string Exe { get; init; } = "";
     public string Note { get; init; } = "";
+
+    /// <summary>覆盖摘要（v1.8.0），例如"· 上限 3× · 平滑关"。空串 = 完全跟随全局。</summary>
+    public string Override { get; init; } = "";
 }

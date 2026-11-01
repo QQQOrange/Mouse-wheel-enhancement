@@ -34,6 +34,27 @@ public sealed class AppRule
 {
     public string Exe { get; set; } = "";
     public string Note { get; set; } = "";
+
+    /// <summary>
+    /// 这个应用专属的参数覆盖（v1.8.0）。null = 完全跟随全局。
+    ///
+    /// <para>
+    /// 只覆盖"最影响体感、又必须按应用分开调"的两项：倍率上限和平滑开关。
+    /// 其余参数（阈值、满速点、惯性）跟着全局走 —— 覆盖项越多，用户越难理解
+    /// 为什么两个程序手感不一样，配置也越难维护。
+    /// </para>
+    /// </summary>
+    public AppOverride? Override { get; set; }
+}
+
+/// <summary>按应用覆盖的参数。每一项都是可空的：null 表示"跟随全局设置"。</summary>
+public sealed class AppOverride
+{
+    /// <summary>这个应用里的倍率上限（1~8）。null = 跟随全局。</summary>
+    public double? MaxMultiplier { get; set; }
+
+    /// <summary>这个应用里要不要平滑。null = 跟随全局。</summary>
+    public bool? Smooth { get; set; }
 }
 
 public sealed class BoostConfig
@@ -127,6 +148,36 @@ public sealed class SmoothConfig
     /// </para>
     /// </summary>
     public int GlideDelayMs { get; set; } = 30;
+
+    /// <summary>
+    /// 反向滚动时给一小段"减速再反向"的过渡（v1.8.0）。
+    ///
+    /// <para>
+    /// 原来的做法是"检测到反向就把积压整个丢掉、立刻按新方向发"——
+    /// 快滚途中回拨会有一个明显的顿挫（旧动量的尾巴被硬切断）。
+    /// 打开后会在方向翻转处插一个约 45ms 的软起步：先停半拍，再按新方向加速。
+    /// </para>
+    /// </summary>
+    public bool ReverseEase { get; set; } = true;
+
+    /// <summary>
+    /// 松手判定参考"滚得多快"：甩得越快，允许它多滑一会儿才收（v1.8.0）。
+    ///
+    /// <para>
+    /// 原来只看"多久没有新事件"（固定 30ms）。同样是松手，慢慢拨和猛地一甩
+    /// 用的是同一个延迟 —— 快甩时显得收得太急。打开后延迟会随最近速度
+    /// 延长最多 1.8 倍（30 → 54ms），慢滚完全不受影响。
+    /// </para>
+    /// </summary>
+    public bool VelocityStop { get; set; } = true;
+
+    /// <summary>
+    /// 掉帧时自动降级（v1.8.0）：实测出帧间隔持续超过目标的 2.5 倍时，
+    /// 缩短滑行并对积压更早收口，避免"越滚越滞后"。
+    ///
+    /// <para>只在明显跑不动时才生效，正常机器上不会有任何行为变化。</para>
+    /// </summary>
+    public bool LowFpsDegrade { get; set; } = true;
 }
 
 public sealed class FilterConfig
@@ -136,6 +187,11 @@ public sealed class FilterConfig
     public List<AppRule> Apps { get; set; } = new()
     {
         new AppRule { Exe = "mstsc.exe", Note = "远程桌面：注入会和控制端滚动叠加" },
+        new AppRule { Exe = "sunloginclient.exe", Note = "向日葵：远控画面里注入会叠加" },
+        new AppRule { Exe = "todesk.exe", Note = "ToDesk：远控画面里注入会叠加" },
+        new AppRule { Exe = "anydesk.exe", Note = "AnyDesk：远控画面里注入会叠加" },
+        new AppRule { Exe = "teamviewer.exe", Note = "TeamViewer：远控画面里注入会叠加" },
+        new AppRule { Exe = "rustdesk.exe", Note = "RustDesk：远控画面里注入会叠加" },
         new AppRule { Exe = "osu!.exe", Note = "音游：节奏对时序极敏感" },
         new AppRule { Exe = "VALORANT-Win64-Shipping.exe", Note = "竞技游戏：反作弊对注入敏感" },
         new AppRule { Exe = "League of Legends.exe", Note = "竞技游戏：反作弊对注入敏感" },
@@ -152,6 +208,18 @@ public sealed class InputConfig
 
     /// <summary>Shift + 滚轮（横向滚动）原样放行。</summary>
     public bool IgnoreShiftWheel { get; set; } = true;
+
+    /// <summary>
+    /// Shift + 滚轮（横向）也按速度曲线加速（v1.8.0）。
+    ///
+    /// <para>
+    /// 只在这一项打开时生效；关掉时 <see cref="IgnoreShiftWheel"/> 说了算 ——
+    /// 保持"按住 Shift 就是原样横向滚"的老行为作为兜底。
+    /// 横向没有平滑（<c>MOUSEEVENTF_HWHEEL</c> 没有可靠的摊帧语义），
+    /// 只放大位移，所以是"更快"而不是"更顺"。
+    /// </para>
+    /// </summary>
+    public bool HorizontalBoost { get; set; } = true;
 
     /// <summary>反转加速方向（给"滚轮反向"鼠标用）。</summary>
     public bool InvertDirection { get; set; } = false;
@@ -271,6 +339,27 @@ public sealed class AppBehaviorConfig
     /// </para>
     /// </summary>
     public string LauncherPath { get; set; } = "";
+
+    /// <summary>
+    /// 快速滚动时在屏幕角落显示当前倍率（OSD，v1.8.0）。
+    ///
+    /// <para>
+    /// 只在"确实加速了"（倍率 ≥ 1.5）时出现，位置贴着光标右侧，
+    /// 300ms 后淡出；不会抢焦点、点不中（`WS_EX_TRANSPARENT`）。
+    /// 觉得吵就在「概览 → 其他」里关掉。
+    /// </para>
+    /// </summary>
+    public bool OsdMultiplier { get; set; } = true;
+
+    /// <summary>
+    /// 钩子看门狗（v1.8.0）：线程死了自动重启；长期空闲时定期换一个新钩子。
+    ///
+    /// <para>
+    /// Windows 在回调超时后会**静默摘掉**低层钩子，句柄还在、回调却不再来，
+    /// 用户看到的是"用着用着突然不加速了"。定期轮换是唯一能自愈的办法。
+    /// </para>
+    /// </summary>
+    public bool HookWatchdog { get; set; } = true;
 }
 
 /// <summary>
@@ -381,7 +470,14 @@ public sealed class AppConfig
             SchemaVersion = 5;
         }
 
-        SchemaVersion = Math.Max(5, SchemaVersion);
+        /* ── v6 迁移：v1.8.0 的新增项 ──
+         *
+         * 按应用覆盖、横向加速、OSD、看门狗、反向过渡、速度停手、掉帧降级
+         * 全是**新增字段**，老配置里没有它们时由属性初始值兜底，
+         * 不需要改写用户已有设置。只把版本号推上去。 */
+        if (SchemaVersion < 6) SchemaVersion = 6;
+
+        SchemaVersion = Math.Max(6, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* 窗口大小/位置：0 表示"没记录"（首次启动），按默认居中。
@@ -424,7 +520,14 @@ public sealed class AppConfig
         if (Filter.Apps == null) Filter.Apps = new();
         Filter.Apps = Filter.Apps
             .Where(a => a != null && !string.IsNullOrWhiteSpace(a.Exe))
-            .Select(a => new AppRule { Exe = AppRuleName.Normalize(a.Exe), Note = (a.Note ?? "").Trim() })
+            .Select(a => new AppRule
+            {
+                Exe = AppRuleName.Normalize(a.Exe),
+                Note = (a.Note ?? "").Trim(),
+                /* 覆盖项要跟着条目一起搬走：重建对象时漏掉它，
+                 * 用户设的"这个程序 2×"会在下一次归一化时无声消失。 */
+                Override = NormalizeOverride(a.Override),
+            })
             .Where(a => a.Exe.Length > 0)
             .GroupBy(a => a.Exe, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
@@ -441,6 +544,16 @@ public sealed class AppConfig
          * 那个约束的前提是"管理员只是开机自启的一种形态"。现在这个开关管的是
          * **每一次启动**（手动双击也要提权），跟开不开机自启是两件事 ——
          * 有人就想要"平时以管理员跑，但别开机自己启动"。所以这里不再拉平。 */
+    }
+
+    /// <summary>按应用覆盖项的清洗：倍率取整并夹到 1~8；两项都没填就整个丢掉。</summary>
+    private static AppOverride? NormalizeOverride(AppOverride? o)
+    {
+        if (o == null) return null;
+        if (o.MaxMultiplier.HasValue)
+            o.MaxMultiplier = Whole(Clamp(o.MaxMultiplier.Value, 1, 8));
+        if (!o.MaxMultiplier.HasValue && !o.Smooth.HasValue) return null;
+        return o;
     }
 
     /// <summary>`owner/repo` 的基本清洗：去掉网址前缀、多余斜杠、`.git` 后缀。</summary>

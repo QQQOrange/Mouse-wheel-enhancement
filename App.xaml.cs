@@ -529,6 +529,7 @@ public partial class App : System.Windows.Application
 
         // 全局热键：Ctrl+Alt+W 开关增强，Ctrl+Alt+S 打开设置。失败只记日志，不影响主流程。
         RegisterGlobalHotkeys();
+        StartRuntimeAssist();
 
         var startMinimized = e.Args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
         if (!startMinimized) ShowMainWindow();
@@ -2100,8 +2101,126 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>真正的退出入口（托盘菜单、安装完更新重启都用它）。</summary>
+    /* ══════════════ 运行时守护：OSD + 看门狗（v1.8.0） ══════════════ */
+
+    private static OsdWindow? _osd;
+    private static System.Threading.Timer? _watchdog;
+
+    /// <summary>上一次看门狗看到的钩子轮换次数（用来发现"刚轮换过"）。</summary>
+    private static long _lastRotations;
+
+    private void StartRuntimeAssist()
+    {
+        try
+        {
+            Services.Engine.Boosted += OnBoosted;
+            _watchdog = new System.Threading.Timer(_ => WatchdogTick(), null,
+                TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("运行时守护启动失败（不影响滚动）：" + ex.Message);
+        }
+    }
+
+    private static void StopRuntimeAssist()
+    {
+        try { _watchdog?.Dispose(); } catch { }
+        _watchdog = null;
+
+        try
+        {
+            if (_osd != null)
+            {
+                _osd.Hide();
+                _osd.Close();
+            }
+        }
+        catch { }
+        _osd = null;
+    }
+
+    /// <summary>钩子线程回调：只做封送，真正的窗口操作留给 UI 线程。</summary>
+    private void OnBoosted(double multiplier)
+    {
+        var d = Dispatcher;
+        if (d == null || d.HasShutdownStarted) return;
+
+        _ = d.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                _osd ??= new OsdWindow();
+                _osd.Flash(multiplier);
+            }
+            catch (Exception ex)
+            {
+                // OSD 是锦上添花，坏掉就永久关掉它，别每次滚动都抛
+                Log.Warn("倍率浮层失败，本次运行不再显示：" + ex.Message);
+                Services.Engine.Boosted -= OnBoosted;
+            }
+        }));
+    }
+
+    /// <summary>
+    /// 每 5 秒一次：钩子还活着吗？该不该换一个新的？
+    ///
+    /// <para>
+    /// 低层钩子被系统静默摘掉时没有任何通知，句柄仍然非零 ——
+    /// 唯一能自愈的方式就是**定期换一个新的**。为了不吞掉正在进行的滚动，
+    /// 只在"至少 3 秒没有滚轮事件"的空闲窗口里换。
+    /// </para>
+    /// </summary>
+    private static void WatchdogTick()
+    {
+        try
+        {
+            var engine = Services.Engine;
+            if (engine == null) return;
+
+            if (!Services.Config.Behavior.HookWatchdog)
+            {
+                _ = engine.TakeHookStats();  // 关掉也要把计数器清零，避免下次开时数字虚高
+                return;
+            }
+
+            if (!engine.HookThreadAlive || !engine.IsRunning)
+            {
+                Log.Warn("看门狗：钩子线程已不在，正在重启钩子");
+                engine.Restart();
+                return;
+            }
+
+            var now = Environment.TickCount64;
+            var idle = now - engine.LastEventTicks;
+            var age = now - engine.HookBornTicks;
+
+            /* 10 分钟换一次，且必须空闲。轮换会有一瞬间（几十微秒）没有钩子在位，
+             * 正在滚的时候换会丢事件 —— 所以宁可等。 */
+            if (age > 10 * 60_000 && idle > 3000)
+                engine.RequestHookRotation();
+
+            var (samples, maxMs, rotations) = engine.TakeHookStats();
+
+            if (rotations != _lastRotations)
+            {
+                _lastRotations = rotations;
+            }
+
+            /* 只在明显偏慢时记一条：正常回调是几十微秒量级，
+             * 超过 40ms 说明这台机器在输入链路上被拖住了，值得留证据。 */
+            if (samples > 0 && maxMs > 40)
+                Log.Warn($"钩子回调耗时偏高：最大 {maxMs:0.0} ms / {samples} 次（已轮换 {rotations} 次）");
+        }
+        catch
+        {
+            // 守护线程绝不能把进程带走
+        }
+    }
+
     public static void ExitApp(int exitCode = 0)
     {
+        StopRuntimeAssist();
         UnregisterGlobalHotkeys();
         Services.Shutdown();
         if (Current is App app)
