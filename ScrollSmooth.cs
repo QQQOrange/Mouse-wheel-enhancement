@@ -1,0 +1,286 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Threading;
+using MouseWheelEnhancement.Core;
+
+namespace MouseWheelEnhancement;
+
+/// <summary>
+/// <c>--scrollsmooth</c>：在**真实注入 + 真实渲染**的路径上量"逐帧位移"，
+/// 专门抓"末尾卡一下、然后猛地跳一段"。
+///
+/// <para>
+/// 和 <c>--frametrace</c> 的分工：
+/// </para>
+/// <list type="bullet">
+/// <item><c>--frametrace</c> 走 <see cref="ScrollAnimator.FrameSink"/>，**不注入**，
+/// 量的是"动画器打算发多少"。它能抓到曲线本身的不连续，但抓不到
+/// 注入 → 目标程序 → 布局 这一路的问题。</item>
+/// <item>本命令把光标真的挪到帮助页上、真的 <c>SendInput</c>，然后在
+/// <c>CompositionTarget.Rendering</c> 里逐帧读 <c>ScrollViewer.VerticalOffset</c> ——
+/// 量的是**用户眼睛里看到的位移**。</item>
+/// </list>
+///
+/// <para>
+/// 为什么必须分开：v1.8.5 修的三个原因（收尾上界硬开关、降级整块跳过、迟到帧补偿）
+/// 都在动画器里，`--frametrace` 能验；但"末段是不是真的一帧一跳"最终取决于
+/// 注入到 WPF 布局这一路，只有真滚才知道。
+/// </para>
+///
+/// <para>
+/// 判据（任一不过 → 退出码非 0）：
+/// ① 有位移；② 单帧突刺 ≤ 中位步长的 <see cref="MaxSpikeRatio"/>；
+/// ③ 末段不回升（后一步不得超过前一步的 1.6 倍）；④ 末段不拖（最后两次变化间隔 ≤ 80 ms）。
+/// </para>
+/// </summary>
+internal static class ScrollSmooth
+{
+    /// <summary>外来签名：让钩子把它当成"用户"的滚轮，走完整增强链路。</summary>
+    private const int ForeignSig = 0x00001234;
+
+    /// <summary>单帧位移 / 中位位移的上限。超过就是"一帧跳一大段"。</summary>
+    private const double MaxSpikeRatio = 3.5;
+
+    /// <summary>末段相邻步长的最大放大倍数（"又窜一下"）。</summary>
+    private const double MaxTailRise = 1.6;
+
+    /// <summary>末段最后两次变化之间允许的最大间隔（"停住了又补一下"）。</summary>
+    private const double MaxTailGapMs = 80;
+
+    private readonly record struct Sample(double AtMs, double Offset);
+
+    public static int Run(MainWindow w)
+    {
+        var sb = new StringBuilder();
+        var fail = 0;
+
+        sb.AppendLine($"逐帧滚动平滑度实测  v{Log.Version}   {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine(new string('-', 66));
+
+        try
+        {
+            w.SelectTab(MainWindow.HelpTabIndex);
+            w.UpdateLayout();
+            Pump(300);
+
+            var sv = w.HelpScroll;
+            if (sv == null)
+            {
+                sb.AppendLine("失败：帮助页里找不到滚动容器");
+                return 2;
+            }
+
+            sb.AppendLine($"帮助页视口 {sv.ActualWidth:0}×{sv.ActualHeight:0}，" +
+                          $"ScrollableHeight {sv.ScrollableHeight:0}");
+
+            var p = sv.PointToScreen(new Point(sv.ActualWidth / 2, sv.ActualHeight / 2));
+            if (!Native.SetCursorPos((int)p.X, (int)p.Y))
+            {
+                sb.AppendLine("失败：光标挪不过去（会话可能被锁）");
+                return 3;
+            }
+            try { w.Activate(); w.Topmost = true; w.Topmost = false; } catch { }
+            Pump(300);
+
+            var myHwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+            var under = Native.WindowFromPoint(new Native.POINT { X = (int)p.X, Y = (int)p.Y });
+            var root = under == IntPtr.Zero ? IntPtr.Zero : Native.GetAncestor(under, Native.GA_ROOT);
+            if (root != myHwnd)
+            {
+                sb.AppendLine("失败：光标位置被别的窗口占着（把本程序放到最前面再跑）");
+                return 3;
+            }
+
+            /* 先滚到中段：末尾才有滑行空间，也避开"一上来就在底部"的假象。 */
+            for (var i = 0; i < 5; i++)
+            {
+                InputInjector.SendWheelWith(-Native.WHEEL_DELTA, ForeignSig);
+                Pump(60);
+            }
+            Pump(600);
+
+            var samples = Capture(sv, out var injections);
+            sb.AppendLine($"注入 {injections} 格，采样 {samples.Count} 帧");
+            sb.AppendLine();
+
+            if (samples.Count < 4)
+            {
+                sb.AppendLine("✗ 采样太少（窗口可能被遮挡或没有渲染）");
+                return 4;
+            }
+
+            /* 只保留"真的变了"的样本：渲染帧率高于实际位移频率，
+             * 大量重复值会把中位数拉到 0。 */
+            var steps = new List<(double AtMs, double Px)>();
+            for (var i = 1; i < samples.Count; i++)
+            {
+                var d = samples[i].Offset - samples[i - 1].Offset;
+                if (Math.Abs(d) < 0.01) continue;
+                steps.Add((samples[i].AtMs, Math.Abs(d)));
+            }
+
+            if (steps.Count < 4)
+            {
+                sb.AppendLine($"✗ 位移步数太少（{steps.Count} 步），测不出来");
+                return 5;
+            }
+
+            var total = steps.Sum(s => s.Px);
+            sb.AppendLine($"总位移 {total:0.#} px，共 {steps.Count} 步" +
+                          $"（{total / injections:0.#} px/格）");
+            sb.AppendLine();
+
+            /* ① 有位移 */
+            fail += Check(sb, $"有位移（{total:0.#} px）", total > 1, "几乎没有滚动");
+            if (fail > 0) { Finish(sb, fail); return fail; }
+
+            /* ② 单帧突刺：跳过前 2 步（起手本来就大），比中位步长。
+             *    这就是"猛地跳一段"的量化。 */
+            var body = steps.Skip(2).Select(s => s.Px).ToList();
+            var sorted = body.OrderBy(v => v).ToList();
+            var median = sorted[sorted.Count / 2];
+            var maxStep = body.Max();
+            var spike = maxStep / Math.Max(0.5, median);
+            fail += Check(sb,
+                $"单帧突刺 {spike:0.0}×（≤ {MaxSpikeRatio:0.#}，最大 {maxStep:0.#} / 中位 {median:0.#} px）",
+                spike <= MaxSpikeRatio, $"最大单帧 {maxStep:0.#} px 是中位的 {spike:0.0} 倍");
+
+            /* ③ 末段不回升：最后 8 步里，后一步不该比前一步大太多。
+             *    回升 = "已经在减速了，突然又窜一下"。 */
+            var tail = steps.Skip(Math.Max(0, steps.Count - 8)).ToList();
+            var worstRise = 0.0;
+            for (var i = 1; i < tail.Count; i++)
+                worstRise = Math.Max(worstRise, tail[i].Px / Math.Max(0.5, tail[i - 1].Px));
+            fail += Check(sb,
+                $"末段不回升（最大放大 {worstRise:0.00}×，≤ {MaxTailRise:0.#}）",
+                worstRise <= MaxTailRise, "末段步长 " + string.Join(" ", tail.Select(t => t.Px.ToString("0.#"))));
+
+            /* ④ 末段不拖：最后两次变化的间隔。 */
+            var tailGap = tail.Count >= 2 ? tail[^1].AtMs - tail[^2].AtMs : 0;
+            fail += Check(sb, $"末段最后一步间隔 {tailGap:0.#} ms（≤ {MaxTailGapMs:0}）",
+                tailGap <= MaxTailGapMs, $"最后一步隔了 {tailGap:0.#} ms 才补上");
+
+            sb.AppendLine();
+            sb.AppendLine("  前 10 步：" + Describe(steps.Take(10)));
+            sb.AppendLine("  末 10 步：" + Describe(steps.Skip(Math.Max(0, steps.Count - 10))));
+            sb.AppendLine($"  中位 {median:0.#} px / 最大 {maxStep:0.#} px / 共 {steps.Count} 步");
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine("✗ 实测本身抛异常：" + ex.Message);
+            fail++;
+        }
+
+        Finish(sb, fail);
+        return fail;
+    }
+
+    private static void Finish(StringBuilder sb, int fail)
+    {
+        sb.AppendLine(new string('-', 66));
+        sb.AppendLine(fail == 0 ? "结论：全部通过" : $"结论：有 {fail} 项未通过");
+
+        var path = Path.Combine(AppPaths.DataDir, "scrollsmooth.txt");
+        try { File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false)); } catch { }
+        try { Console.Out.Write(sb.ToString()); } catch { }
+
+        Log.Info("scrollsmooth 结束，失败 " + fail + " 项，报告 " + path);
+    }
+
+    /// <summary>
+    /// 挂上逐帧采样，然后打一段快滚（8 格 @45 ms —— 触发加速与滑行），
+    /// 一直采到位移停住或超时。
+    /// </summary>
+    private static List<Sample> Capture(ScrollViewer sv, out int injections)
+    {
+        var list = new List<Sample>();
+        var clock = Stopwatch.StartNew();
+
+        EventHandler onFrame = (_, _) =>
+        {
+            /* 这个回调在**渲染帧**上触发（160 Hz 就是 6.25 ms 一次）。
+             * 读的是"上一轮布局完成后的 offset"，恒定滞后一帧 ——
+             * 对逐帧步长的比值判断没有影响。 */
+            list.Add(new Sample(clock.Elapsed.TotalMilliseconds, sv.VerticalOffset));
+        };
+
+        System.Windows.Media.CompositionTarget.Rendering += onFrame;
+        try
+        {
+            const int notches = 8;
+            const int gapMs = 45;
+            var deadline = Stopwatch.StartNew();
+            var n = 0;
+
+            while (n < notches && deadline.ElapsedMilliseconds < 3000)
+            {
+                InputInjector.SendWheelWith(-Native.WHEEL_DELTA, ForeignSig);
+                n++;
+                Pump(gapMs);
+            }
+            injections = n;
+
+            /* 采到"连续 250 ms 没有变化"为止 —— 全程包含滑行收尾。 */
+            var lastChange = clock.Elapsed.TotalMilliseconds;
+            var lastOffset = sv.VerticalOffset;
+            var idleFrom = clock.Elapsed.TotalMilliseconds;
+            while (clock.Elapsed.TotalMilliseconds - idleFrom < 250
+                   && clock.Elapsed.TotalMilliseconds < 6000)
+            {
+                Pump(50);
+                var now = sv.VerticalOffset;
+                if (Math.Abs(now - lastOffset) > 0.01)
+                {
+                    lastOffset = now;
+                    lastChange = clock.Elapsed.TotalMilliseconds;
+                    idleFrom = clock.Elapsed.TotalMilliseconds;
+                }
+            }
+            _ = lastChange;
+        }
+        finally
+        {
+            System.Windows.Media.CompositionTarget.Rendering -= onFrame;
+        }
+
+        return list;
+    }
+
+    private static string Describe(IEnumerable<(double AtMs, double Px)> steps)
+    {
+        var prev = double.NaN;
+        return string.Join("  ", steps.Select(s =>
+        {
+            var gap = double.IsNaN(prev) ? 0 : s.AtMs - prev;
+            prev = s.AtMs;
+            return $"{s.Px:0.#}px{(gap > 0 ? $"(+{gap:0}ms)" : "")}";
+        }));
+    }
+
+    private static int Check(StringBuilder sb, string what, bool ok, string detail)
+    {
+        if (ok)
+        {
+            sb.AppendLine("  ✓ " + what);
+            return 0;
+        }
+        sb.AppendLine("  ✗ " + what + "　—— " + detail);
+        return 1;
+    }
+
+    private static void Pump(int ms)
+    {
+        var frame = new DispatcherFrame();
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+        timer.Tick += (s, e) => { frame.Continue = false; timer.Stop(); };
+        timer.Start();
+        Dispatcher.PushFrame(frame);
+    }
+}

@@ -138,6 +138,10 @@ MouseWheelEnhancement.App.exe --frametrace
 # 同上，但模拟"这台机器跟不上"（每帧多睡 12ms）：验证末尾不卡顿、不猛跳
 MouseWheelEnhancement.App.exe --frametrace jitter=12
 
+# 逐帧平滑度实测：真注入 + 真渲染，逐帧读 VerticalOffset，抓"末尾卡一下 / 猛跳一段"。
+# 判据：单帧突刺 ≤ 3.5×中位、末段不回升 ≤ 1.6×、最后一步间隔 ≤ 80 ms
+MouseWheelEnhancement.App.exe --scrollsmooth
+
 # 自身窗口滚动实测：把光标真的挪到本程序帮助页上滚，量"一格到底滚了多少像素"。
 # 用来排查"设置页里一滚动就是一页 / 加速失效"这类只有自己页面犯的问题。
 # 可选 lines=N 先把系统「每次滚动几行」设成 N（1/2/3 各跑一次最直观）

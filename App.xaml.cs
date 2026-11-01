@@ -381,6 +381,20 @@ public partial class App : System.Windows.Application
          * 可能是钩子放行后 WPF 自己滚、可能是我们的像素换算、也可能是内层容器抢走。
          * 这条命令把三条路径分别量出来（位移读自 ScrollViewer.VerticalOffset），
          * 并让 OnPreviewMouseWheelScroll 把每一条判据写进 wheeltest.txt。 */
+        /* 逐帧平滑度实测：真注入 + 真渲染，逐帧读 VerticalOffset。
+         * 与 --frametrace 互补（那条走 FrameSink，不注入）。 */
+        if (e.Args.Any(a => a.Equals("--scrollsmooth", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var ssWin = new MainWindow();
+            ssWin.Show();
+            ssWin.UpdateLayout();
+            var ssCode = ScrollSmooth.Run(ssWin);
+            Shutdown(ssCode);
+            Environment.Exit(ssCode);
+            return;
+        }
+
         if (e.Args.Any(a => a.StartsWith("--wheeltest", StringComparison.OrdinalIgnoreCase)))
         {
             var lines = 0;
