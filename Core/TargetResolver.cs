@@ -3,12 +3,12 @@ using System.Collections.Concurrent;
 namespace MouseWheelEnhancement.Core;
 
 /// <summary>一次"这个滚动会落到谁身上"的解析结果。</summary>
-public readonly record struct TargetInfo(IntPtr Hwnd, uint Pid, string Exe, string Title, string Class)
+public readonly record struct TargetInfo(IntPtr Hwnd, uint Pid, string Exe, string Title, string Class, bool Elevated)
 {
     public bool IsKnown => !string.IsNullOrEmpty(Exe);
-    public static readonly TargetInfo Unknown = new(IntPtr.Zero, 0, "", "", "");
+    public static readonly TargetInfo Unknown = new(IntPtr.Zero, 0, "", "", "", false);
 
-    /// <summary>这个窗口是不是"一个滚轮事件滚一档"的框架（WPF / WinForms）。</summary>
+    /// <summary>这个窗口是不是"一个滚轮事件滚一档"的框架（WPF / WinForms / Qt）。</summary>
     public bool ScrollsOncePerEvent => ScrollSemantics.IsPerEventScroll(Class);
 }
 
@@ -31,6 +31,13 @@ public static class ScrollSemantics
     /// </list>
     ///
     /// <para>
+    /// ⚠ 上面第一类里，Qt 是**特殊情况**（v1.7.14 起归到第二类）：
+    /// Qt 名义上按 delta 算，实际是 <c>angleDelta().y() / 120</c> 的整数除法，
+    /// 小于 120 的 delta 一律得 0 —— 摊帧发 15 单位等于完全不滚。
+    /// 所以 Qt 必须按整格发（详见 <see cref="IsQtWindow"/>）。
+    /// </para>
+    ///
+    /// <para>
     /// WPF 这一条是它自己的已知缺陷（dotnet/wpf#5936："the ScrollViewer always
     /// scrolls a fixed amount … despite MouseWheelEventArgs returning the Delta value"），
     /// 官方至今没改，因为改了会动所有人的滚动距离。所以只能由我们在注入侧适配。
@@ -47,7 +54,53 @@ public static class ScrollSemantics
         // WinForms：WindowsForms10.Window.8.app.0.<hash>
         if (className.StartsWith("WindowsForms10.", StringComparison.Ordinal)) return true;
 
+        // Qt 5/6：Qt51514QWindowIcon / Qt652QWindowIcon / Qt6.5.2QWindowIcon
+        if (IsQtWindow(className)) return true;
+
         return false;
+    }
+
+    /// <summary>
+    /// 目标窗口是不是 **Qt** 的顶层窗口（微信 4.x、QQ、Telegram Desktop 等都是）。
+    ///
+    /// <para>
+    /// 为什么 Qt 也算"按事件次数"：Qt 的 <c>QScrollBar::wheelEvent</c> 是这么算档数的 ——
+    /// </para>
+    /// <code>
+    ///     int delta = event-&gt;angleDelta().y() / 120;   // 整 数 除 法
+    /// </code>
+    /// <para>
+    /// 也就是说 <b>任何小于 120 的 delta 都会被除成 0</b>，一个字节都不滚。
+    /// 而我们"按比例"路径会把一格（120）拆成 4~8 帧、每帧 15~30 单位发出去 ——
+    /// 到 Qt 这边全部变成 0。现象就是：
+    /// </para>
+    /// <list type="bullet">
+    /// <item>慢滚（低于阈值）原样放行 → <b>完全正常</b>；</item>
+    /// <item>快滚（被接管）→ 我们吞掉原事件、改发一串 15 单位 → <b>一个像素都不动</b>。</item>
+    /// </list>
+    /// <para>
+    /// 微信"聊天列表/消息区里加速无效"就是这么来的（v1.7.14 修）。
+    /// 改成按整格发（N 个 ±120）之后，Qt 才认得出来。
+    /// </para>
+    /// <para>
+    /// 代价：Qt 应用里没有亚格平滑 —— 和 WPF/WinForms 一样，是框架粒度决定的，不是我们偷懒。
+    /// </para>
+    /// </summary>
+    public static bool IsQtWindow(string className)
+    {
+        // 形如 Qt51514QWindowIcon / Qt652QWindowIcon：
+        // Qt + 纯数字（版本号，可能带点）+ QWindow
+        if (!className.StartsWith("Qt", StringComparison.Ordinal)) return false;
+        if (className.IndexOf("QWindow", StringComparison.Ordinal) < 0) return false;
+
+        // 版本号段必须全是数字或点，避免把 "QtWhatever..." 之类的误判进来
+        var end = className.IndexOf("QWindow", StringComparison.Ordinal);
+        for (var i = 2; i < end; i++)
+        {
+            var ch = className[i];
+            if (!char.IsDigit(ch) && ch != '.') return false;
+        }
+        return end > 2;
     }
 
     /// <summary>
@@ -97,6 +150,8 @@ public sealed class TargetResolver
         public string Exe = "";
         /// <summary>顶层窗口类名（判断滚动语义用），跟着 pid 一起缓存。</summary>
         public string Class = "";
+        /// <summary>目标进程是否以管理员运行（UIPI 判定用），跟着 pid 一起缓存。</summary>
+        public bool Elevated;
         /// <summary>标题懒加载：null = 还没取过。</summary>
         public string? Title;
     }
@@ -132,7 +187,16 @@ public sealed class TargetResolver
         if (!_cache.TryGetValue(hwnd, out var e) || e.Pid != pid)
         {
             // 句柄被复用了（或第一次见）：旧条目作废，重新解析
-            e = new Entry { Pid = pid, Exe = Native.ExeNameOfPid(pid), Class = Native.ClassNameOf(hwnd) };
+            e = new Entry
+            {
+                Pid = pid,
+                Exe = Native.ExeNameOfPid(pid),
+                Class = Native.ClassNameOf(hwnd),
+                /* 提权判定只在这里做一次（每窗口一次）。放在钩子的热路径上做
+                 * OpenProcess+OpenProcessToken 会把输入链路拖慢，而钩子超时
+                 * 会被系统直接摘掉。 */
+                Elevated = Native.IsProcessElevated(pid),
+            };
             if (_cache.Count > 512) _cache.Clear();
             _cache[hwnd] = e;
         }
@@ -140,6 +204,6 @@ public sealed class TargetResolver
         var title = "";
         if (needTitle) title = e.Title ??= Native.TitleOf(hwnd);
 
-        return new TargetInfo(hwnd, pid, e.Exe, title, e.Class);
+        return new TargetInfo(hwnd, pid, e.Exe, title, e.Class, e.Elevated);
     }
 }

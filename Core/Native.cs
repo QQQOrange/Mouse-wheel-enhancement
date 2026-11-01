@@ -445,6 +445,42 @@ internal static class Native
         catch { return false; }
     }
 
+    /// <summary>
+    /// 目标进程是否以管理员身份运行。
+    ///
+    /// <para>
+    /// 只为一件事服务：<b>UIPI</b>。Windows 不允许低权限进程把输入注入到高权限窗口，
+    /// 而这种拦截是**静默**的 —— <c>SendInput</c> 照样返回 1，事件却没人收。
+    /// 所以"吞掉原事件再注入"的加速方式在那种情况下等于把滚动整个吞掉。
+    /// </para>
+    /// <para>
+    /// 打不开进程 / 打不开令牌时按上下文判断：<c>ERROR_ACCESS_DENIED(5)</c>
+    /// 通常就意味着"对方权限更高"，保守地当作已提权，让调用方走"原样放行"。
+    /// </para>
+    /// </summary>
+    public static bool IsProcessElevated(uint pid)
+    {
+        if (pid == 0) return false;
+
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero)
+            return Marshal.GetLastWin32Error() == 5;
+
+        try
+        {
+            if (!OpenProcessToken(h, 0x0008 /*TOKEN_QUERY*/, out var tok))
+                return Marshal.GetLastWin32Error() == 5;
+            try
+            {
+                return GetTokenInformation(tok, 20 /*TokenElevation*/, out var elevated, sizeof(int), out _)
+                       && elevated != 0;
+            }
+            finally { CloseHandle(tok); }
+        }
+        catch { return false; }
+        finally { CloseHandle(h); }
+    }
+
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
 

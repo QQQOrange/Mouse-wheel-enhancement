@@ -49,6 +49,15 @@ public sealed class WheelEngine : IDisposable
     private long _lastErrorMs;
     private double _lastMultiplier = 1.0;
     private double _lastRate;
+
+    /// <summary>本进程是不是管理员（UIPI 判定的另一半）。构造时取一次，之后不变。</summary>
+    private readonly bool _selfElevated = Native.IsElevated();
+
+    /// <summary>UIPI 放行的日志只打一次，别在钩子里刷屏。</summary>
+    private int _uipiWarned;
+
+    /// <summary>已经为哪个 exe 打过"整格加速"日志（每程序一次）。</summary>
+    private string _notchLogged = "";
     /// <summary>
     /// 最近一次解析到的目标应用。**故意包成不可变引用**再由 Volatile 交换：
     /// TargetInfo 是 4 个字段的结构体（含两个引用），直接在两个线程间读写会是
@@ -267,6 +276,27 @@ public sealed class WheelEngine : IDisposable
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
+            /* ── UIPI：目标比我们权限高时，别吞事件 ──
+             *
+             * Windows 不允许低权限进程向高权限窗口注入输入，而且这种拦截是**静默**的：
+             * SendInput 照样返回 1，事件却被丢掉。常见场景就是微信、任务管理器这类
+             * 以管理员运行的程序，而本程序自己不是管理员。
+             *
+             * 如果我们照常"吞掉原事件 → 再注入"，用户看到的就是**滚动卡死**
+             * （本来能滚的窗口，一快滚就完全不动）。所以这里直接原样放行：
+             * 加速失效，但至少滚动是正常的、可预期的。
+             *
+             * 判定结果按窗口缓存在 TargetResolver 里，热路径上只读一个 bool。 */
+            if (target.Elevated && !_selfElevated)
+            {
+                if (_animator.PendingUnits != 0) _animator.Clear();
+                if (Interlocked.Exchange(ref _uipiWarned, 1) == 0)
+                    Log.Warn($"目标程序权限更高（{target.Exe}），注入会被系统拦截，" +
+                             "已改为原样放行（想要加速请以管理员身份运行本程序）");
+                Interlocked.Increment(ref _passed);
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
             var nowMs = Environment.TickCount64;
             var decision = _tracker.Sample(delta, nowMs,
                 s.BoostEnabled ? s.BoostView : NoBoostView,
@@ -320,6 +350,16 @@ public sealed class WheelEngine : IDisposable
 
                 _animator.WholeNotch = true;
                 _animator.PushWholeNotches(sign * notches);
+
+                /* 每个程序只记一次"整格加速"的判定依据。
+                 * 排查"某个软件里加速没反应"时，这条日志能立刻回答两个问题：
+                 *   ① 引擎到底有没有接管它；② 发出去的是几个整格。 */
+                if (!string.Equals(_notchLogged, target.Exe, StringComparison.OrdinalIgnoreCase))
+                {
+                    _notchLogged = target.Exe;
+                    Log.Info($"整格加速：{target.Exe}（{target.Class}）" +
+                             $"倍率 {decision.Multiplier:0.00}× → {notches} 格");
+                }
 
                 Interlocked.Increment(ref _boosted);
                 return (IntPtr)1;

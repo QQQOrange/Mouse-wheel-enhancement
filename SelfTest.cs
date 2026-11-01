@@ -331,8 +331,21 @@ internal static class SelfTest
             !ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1"));
         Check("Firefox 不算", !ScrollSemantics.IsPerEventScroll("MozillaWindowClass"));
         Check("Office 不算", !ScrollSemantics.IsPerEventScroll("XLMAIN"));
-        Check("Qt 不算", !ScrollSemantics.IsPerEventScroll("Qt5152QWindowIcon"));
         Check("记事本（系统 Edit）不算", !ScrollSemantics.IsPerEventScroll("Notepad"));
+
+        /* Qt = 按事件滚动（v1.7.14）
+         *
+         * QScrollBar::wheelEvent 是 `angleDelta().y() / 120` 的**整数除法**：
+         * 15/120 = 0，一个字节都不滚。所以微信（Qt51514QWindowIcon）里
+         * 摊帧发 15 单位等于"什么都没发生" —— 这就是"聊天列表加速无效"的根因。
+         * 必须按整格（±120）发，Qt 才认得。 */
+        Check("Qt 5 窗口（微信 4.x）算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("Qt51514QWindowIcon"));
+        Check("Qt 6 窗口也算", ScrollSemantics.IsPerEventScroll("Qt652QWindowIcon"));
+        Check("Qt 变体（带点版本号）也算", ScrollSemantics.IsPerEventScroll("Qt6.5.2QWindowIcon"));
+        Check("只是以 Qt 开头但不是 Qt 窗口的不算",
+            !ScrollSemantics.IsPerEventScroll("QtWhatever") &&
+            !ScrollSemantics.IsPerEventScroll("QtIconHost"));
         Check("空类名不算（拿不到就按比例处理，别误伤）",
             !ScrollSemantics.IsPerEventScroll(""));
         Check("前缀相近但不等的不算",
