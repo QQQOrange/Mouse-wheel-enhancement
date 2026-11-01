@@ -2106,9 +2106,6 @@ public partial class App : System.Windows.Application
     private static OsdWindow? _osd;
     private static System.Threading.Timer? _watchdog;
 
-    /// <summary>上一次看门狗看到的钩子轮换次数（用来发现"刚轮换过"）。</summary>
-    private static long _lastRotations;
-
     private void StartRuntimeAssist()
     {
         try
@@ -2128,6 +2125,10 @@ public partial class App : System.Windows.Application
         try { _watchdog?.Dispose(); } catch { }
         _watchdog = null;
 
+        /* 先退订再关窗：退出过程中动画线程可能还在跑，退订后就不会再往
+         * 已经要销毁的 UI 线程封送 OSD 更新。 */
+        try { if (Services.Engine != null) Services.Engine.Boosted -= OnBoosted; } catch { }
+
         try
         {
             if (_osd != null)
@@ -2141,9 +2142,9 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>钩子线程回调：只做封送，真正的窗口操作留给 UI 线程。</summary>
-    private void OnBoosted(double multiplier)
+    private static void OnBoosted(double multiplier)
     {
-        var d = Dispatcher;
+        var d = Application.Current?.Dispatcher;
         if (d == null || d.HasShutdownStarted) return;
 
         _ = d.BeginInvoke(new Action(() =>
@@ -2201,11 +2202,6 @@ public partial class App : System.Windows.Application
                 engine.RequestHookRotation();
 
             var (samples, maxMs, rotations) = engine.TakeHookStats();
-
-            if (rotations != _lastRotations)
-            {
-                _lastRotations = rotations;
-            }
 
             /* 只在明显偏慢时记一条：正常回调是几十微秒量级，
              * 超过 40ms 说明这台机器在输入链路上被拖住了，值得留证据。 */

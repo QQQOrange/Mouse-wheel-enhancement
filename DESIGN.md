@@ -3392,6 +3392,18 @@ Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右。用**独立的**速
 - `--smoke` / `--measure --show` / `--frametrace` 全 rc=0
 - 旧配置升级：schema 5 → 6 只推版本号，不改任何用户已有设置
 
+### 49.8 v1.8.1：自审修掉的四个问题
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 反向软起步会把一个核吃满 | `if (now < hold) continue;` 回到循环顶部，而 `_nextFrameTicks` 只有**真正发帧**时才前进 —— 于是 45ms 内全速空转 | 改成 `WaitUntil(hold)` 睡到那一刻，且能被新输入唤醒 |
+| 2 | 连续快滚时 OSD 会突然消失 | 上一次淡出的 `Completed` 回调仍会执行 `Hide()`，把刚亮起来的浮层藏掉 | 加显示代次 `_generation`，收尾回调比对代次后作废 |
+| 3 | 200% 缩放下 OSD 跑到两倍远 / 贴边判断失效 | `GetCursorPos` 是物理像素，WPF 的 `Left/Top` 是 DIP | 按 `VisualTreeHelper.GetDpi` 换算成 DIP 再定位 |
+| 4 | 导入别人机器的配置后开机自启可能指向空气 | `launcherPath` 被整体覆盖 | 导入后若新路径不存在、本机旧路径有效，则保留本机值 |
+
+另外两处收尾：OSD 改为**先 Show 再定位**（Show 前 `ActualWidth` 是 0，贴边按兜底尺寸算）；
+退出时退订 `Engine.Boosted`，避免关窗过程中还往要销毁的 UI 线程封送。
+
 ---
 
 MIT License · © 2026 QQQOrange

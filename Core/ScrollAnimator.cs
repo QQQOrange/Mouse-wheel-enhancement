@@ -666,8 +666,18 @@ internal sealed class ScrollAnimator : IDisposable
 
                 var pendingUnits = pendingMilli / Milli;
 
-                /* 反向软起步：刚翻方向的头 45ms 先不动，让旧动量的观感散掉再走。 */
-                if (now < Interlocked.Read(ref _reverseHoldTicks)) continue;
+                /* 反向软起步：刚翻方向的头 45ms 先不动，让旧动量的观感散掉再走。
+                 *
+                 * ⚠ 这里必须**睡到那一刻**再回来，不能直接 continue：
+                 * continue 会回到循环顶部，而 _nextFrameTicks 只有真正发帧时才前进，
+                 * 于是会在 45ms 里以满速空转（实测能把一个核吃满）。
+                 * WaitUntil 会被新输入唤醒，所以方向再变也能立刻响应。 */
+                var holdTicks = Interlocked.Read(ref _reverseHoldTicks);
+                if (now < holdTicks)
+                {
+                    if (!WaitUntil(holdTicks)) break;
+                    continue;
+                }
 
                 /* 掉帧降级（v1.8.0）：实测出帧间隔连续超过目标 2.5 倍，
                  * 就认为这一轮跑不动 —— 关掉滑行，别让积压越拖越多。

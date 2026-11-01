@@ -608,6 +608,25 @@
 
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
+                                <TextBlock Text="手感曲线" Style="{StaticResource H2}" />
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,10"
+                                           Text="不想逐个调滑块就选一个现成的：三档只改「收尾时间常数」和「惯性长度」，其余参数不动。" />
+                                <WrapPanel>
+                                    <Button Content="干脆" Style="{StaticResource GhostButton}" Tag="crisp"
+                                            Click="CurvePreset_Click" Margin="0,0,8,0"
+                                            ToolTip="收尾快、惯性短（τ 20ms / 惯性 120ms）" />
+                                    <Button Content="顺滑" Style="{StaticResource GhostButton}" Tag="smooth"
+                                            Click="CurvePreset_Click" Margin="0,0,8,0"
+                                            ToolTip="默认手感（τ 30ms / 惯性 300ms）" />
+                                    <Button Content="悠长" Style="{StaticResource GhostButton}" Tag="long"
+                                            Click="CurvePreset_Click"
+                                            ToolTip="收得更慢、滑得更远（τ 45ms / 惯性 400ms）" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />

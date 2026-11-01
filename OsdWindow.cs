@@ -36,6 +36,9 @@ internal sealed class OsdWindow : Window
     private readonly TextBlock _label;
     private readonly DispatcherTimer _hide;
 
+    /// <summary>显示代次：每次 Flash 自增，旧淡出动画的收尾回调据此作废。</summary>
+    private int _generation;
+
     public OsdWindow()
     {
         WindowStyle = WindowStyle.None;
@@ -70,7 +73,14 @@ internal sealed class OsdWindow : Window
         _hide.Tick += (_, _) =>
         {
             _hide.Stop();
-            Fade(0, 180, () => { if (Opacity <= 0.01) Hide(); });
+
+            /* 记下当前代次：淡出期间如果又来了新的 Flash（连续快滚），
+             * 代次会变，这次收尾就作废 —— 否则会把刚亮起来的 OSD 藏掉。 */
+            var gen = _generation;
+            Fade(0, 180, () =>
+            {
+                if (gen == _generation && Opacity <= 0.01) Hide();
+            });
         };
 
         SourceInitialized += (_, _) =>
@@ -86,11 +96,15 @@ internal sealed class OsdWindow : Window
     public void Flash(double multiplier)
     {
         _label.Text = $"{multiplier:0.0}×";
+        _generation++;
 
         if (!IsVisible)
         {
-            PlaceNearCursor();
+            /* 先 Show 再定位：Show 之前 ActualWidth/ActualHeight 还是 0，
+             * 贴边判断会按兜底尺寸算，OSD 可能压到屏幕边缘外。 */
             Show();
+            UpdateLayout();
+            PlaceNearCursor();
         }
         else
         {
@@ -116,20 +130,31 @@ internal sealed class OsdWindow : Window
     {
         if (!Native.GetCursorPos(out var p)) return;
 
+        /* ⚠ 坐标系陷阱：GetCursorPos 给的是**物理像素**，
+         * 而 WPF 的 Left/Top 是**设备无关单位（DIP）**。
+         * 在 200% 缩放的机器上直接把物理值赋给 Left，窗口会跑到两倍远的地方；
+         * 贴边判断也会因为拿物理值和 DIP 值比较而失效。这里统一换算成 DIP。 */
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var cursorX = p.X / (dpi.DpiScaleX <= 0 ? 1 : dpi.DpiScaleX);
+        var cursorY = p.Y / (dpi.DpiScaleY <= 0 ? 1 : dpi.DpiScaleY);
+
         UpdateLayout();
         var w = ActualWidth > 1 ? ActualWidth : 64;
         var h = ActualHeight > 1 ? ActualHeight : 28;
 
-        var x = p.X + 18.0;
-        var y = p.Y + 18.0;
+        var x = cursorX + 18.0;
+        var y = cursorY + 18.0;
 
-        // 碰边就翻到另一侧，别让 OSD 跑出屏幕
-        var vw = SystemParameters.VirtualScreenWidth + SystemParameters.VirtualScreenLeft;
-        var vh = SystemParameters.VirtualScreenHeight + SystemParameters.VirtualScreenTop;
-        if (x + w > vw) x = p.X - w - 12;
-        if (y + h > vh) y = p.Y - h - 12;
-        if (x < SystemParameters.VirtualScreenLeft) x = SystemParameters.VirtualScreenLeft;
-        if (y < SystemParameters.VirtualScreenTop) y = SystemParameters.VirtualScreenTop;
+        // 虚拟桌面边界也是 DIP，和 Left/Top 同一套单位
+        var left = SystemParameters.VirtualScreenLeft;
+        var top = SystemParameters.VirtualScreenTop;
+        var right = left + SystemParameters.VirtualScreenWidth;
+        var bottom = top + SystemParameters.VirtualScreenHeight;
+
+        if (x + w > right) x = cursorX - w - 12;
+        if (y + h > bottom) y = cursorY - h - 12;
+        if (x < left) x = left;
+        if (y < top) y = top;
 
         Left = x;
         Top = y;

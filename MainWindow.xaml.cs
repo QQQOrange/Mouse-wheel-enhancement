@@ -1645,7 +1645,21 @@ public partial class MainWindow : Window
                 return;
             }
 
+            /* 导入的是别人机器上的配置时，launcherPath 很可能指向一个本机不存在的路径 ——
+             * 那会让"开机自启"任务指向空气。这里保留本机那份有效的路径。 */
+            var localLauncher = Services.Config.Behavior.LauncherPath;
+
             Services.Store.Replace(cfg);   // 归一化 + 落盘 + 通知引擎
+
+            var importedLauncher = Services.Config.Behavior.LauncherPath;
+            if (!string.IsNullOrEmpty(localLauncher) && File.Exists(localLauncher)
+                && (string.IsNullOrEmpty(importedLauncher) || !File.Exists(importedLauncher)))
+            {
+                Services.Config.Behavior.LauncherPath = localLauncher;
+                Services.Store.Touch();
+                SetFooterHint("配置已导入（启动器路径保留本机值）");
+            }
+
             LoadFromConfig();
             RefreshApps();
             RefreshTokenUi();
@@ -1664,6 +1678,30 @@ public partial class MainWindow : Window
     private void SetFooterHint(string text)
     {
         if (FooterRight != null) FooterRight.Text = text;
+    }
+
+    /// <summary>
+    /// 手感曲线预设（v1.8.1）：只动「收尾时间常数」和「惯性长度」两个滑块。
+    ///
+    /// <para>
+    /// 这两个决定了"收尾有多黏"，是普通用户唯一能听出差别的一对参数；
+    /// 阈值、满速点、摊帧数保持不动 —— 预设覆盖太多项会让人搞不清是谁在起作用。
+    /// </para>
+    /// </summary>
+    private void CurvePreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button b || b.Tag is not string key) return;
+
+        var (tau, glide) = key switch
+        {
+            "crisp" => (20.0, 120.0),
+            "long" => (45.0, 400.0),
+            _ => (30.0, 300.0),
+        };
+
+        TauSlider.Value = tau;
+        GlideSlider.Value = glide;
+        SetFooterHint($"已应用「{b.Content}」手感");
     }
 
     private void ApplyOverride(AppRule rule, Action<AppOverride> mutate, bool clear = false)
