@@ -627,6 +627,32 @@ internal static class SelfTest
             Math.Abs(ScrollAnimator.GlideTau(120, 100, Tau) - Tau) < 1e-9,
             $"{ScrollAnimator.GlideTau(120, 100, Tau):0.0} ms");
 
+        /* ④' 收尾 τ 随**这一次的手速**变化（v1.8.8）。
+         *
+         * 这是用户这次报的"停止后动画在极短时间内迅速结束、很突兀"的根：
+         * 以前不论手速，收尾 τ 都被钉在 35 ms（v1.8.5 把下限固定成 LandingTauMs），
+         * 快甩攒下的动量被那一刀砍掉，剩下几个单位被催着发完。 */
+        double StopMs(double nps, double backlog) =>
+            ScrollAnimator.StopTau(nps * Native.WHEEL_DELTA, backlog, 300, Tau)
+            * Math.Log(Math.Max(backlog, 1.5));
+
+        var stopSlow = ScrollAnimator.StopTau(1 * Native.WHEEL_DELTA, 120, 300, Tau);
+        var stopMid = ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 480, 300, Tau);
+        var stopFast = ScrollAnimator.StopTau(24 * Native.WHEEL_DELTA, 600, 300, Tau);
+
+        Check("手速越快收尾 τ 越大", stopSlow < stopMid && stopMid <= stopFast,
+            $"{stopSlow:0.0} / {stopMid:0.0} / {stopFast:0.0} ms");
+        Check("手速越快收尾总时长越长",
+            StopMs(1, 120) < StopMs(8, 480) && StopMs(8, 480) < StopMs(24, 600),
+            $"{StopMs(1, 120):0} / {StopMs(8, 480):0} / {StopMs(24, 600):0} ms");
+        Check("慢滚收尾也够长（≥150 ms，不砸停）", StopMs(1, 120) >= 150, $"{StopMs(1, 120):0} ms");
+        Check("快滚收尾不无限拖（≤900 ms）", StopMs(24, 600) <= 900, $"{StopMs(24, 600):0} ms");
+        Check("收尾 τ 不低于跟手 τ（松手后不会提速）", stopSlow >= Tau - 1e-9, $"{stopSlow:0.0} ms");
+        Check("同一手速下积压越大 τ 越小",
+            ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 480, 300, Tau)
+            > ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 1200, 300, Tau),
+            "积压 480 的 τ 应大于积压 1200 的");
+
         // ④ 单帧上限：追赶时也不许"一帧跨好几格"
         var burst = ScrollAnimator.FrameAmount(600, 16.7, Tau, Upf, true);
         Check("单帧不超过 4 个标准帧量（默认 120 单位）", burst <= Upf * 4, $"{burst:0.0} 单位");

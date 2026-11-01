@@ -76,6 +76,9 @@ internal static class FrameTrace
     /// <summary>走完 95% 之后到最后一帧之间最多再花多久（毫秒）——"落地段"的长度。</summary>
     private const double MaxLandMs = 150.0;
 
+    /// <summary>落地段最多占整段收尾的比例（v1.8.8；收尾时长本身已按手速自适应）。</summary>
+    private const double MaxLandShare = 0.62;
+
     /// <summary>
     /// 中段步长起伏上限（最大 / 中位）。
     ///
@@ -229,15 +232,21 @@ internal static class FrameTrace
         var t95 = TimeToPercent(frames, 0.95);
         var landMs = frames.Count == 0 ? 0 : frames[^1].AtMs - t95;
 
-        /* 预算按**实测节奏**缩放：这台机器一帧就是 15ms 的话，150ms 的绝对预算
-         * 只够 10 帧，落地段必然"超时"—— 那不是收尾拖，是机器慢。
-         * 折算成"最多占几个实际帧"（14 个）才是可比的量。 */
+        /* 落地段预算（v1.8.8 起改口径）。
+         *
+         * 收尾时长现在**按手速自适应**（快滚更长、慢滚更短，见 ScrollAnimator.StopTau），
+         * 所以再拿"绝对 150ms"当上限，等于把设计意图判成失败。
+         * 改成两条真正该守的不变式：
+         *   ① 落地段不许吃掉整段收尾的大半（ratio）；
+         *   ② 绝对上限 500ms（防"拖半秒以上"那种体验）。
+         * 另配一条"按实际帧节奏缩放"的兜底，供极慢机器使用。 */
         gaps.Sort();
         var medianGap = gaps.Count > 0 ? gaps[gaps.Count / 2] : s.FrameIntervalMs;
-        var landBudget = Math.Max(MaxLandMs, medianGap * 14);
+        var landBudget = Math.Max(Math.Min(MaxLandMs + 350, drainMs * MaxLandShare), medianGap * 14);
         fail += Check(sb,
-            $"走完 95% 后落地段 {landMs:0} ms（≤ {landBudget:0}，收尾不拖）",
-            landMs <= landBudget, $"{landMs:0} ms > {landBudget:0} ms（中位帧隔 {medianGap:0.#} ms）");
+            $"走完 95% 后落地段 {landMs:0} ms（≤ {landBudget:0}，不超过整段 {MaxLandShare:P0}）",
+            landMs <= landBudget,
+            $"{landMs:0} ms > {landBudget:0} ms（整段 {drainMs:0} ms，中位帧隔 {medianGap:0.#} ms）");
 
         /* ④d **刻度感**：中段的步长不该大起大落。
          *
