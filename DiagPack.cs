@@ -84,14 +84,42 @@ internal static class DiagPack
         var configPath = Services.Store?.ConfigPath;
         if (!string.IsNullOrEmpty(configPath) && File.Exists(configPath))
         {
-            zip.CreateEntryFromFile(configPath, "config.json");
-            written.Add("config.json");
+            /* 配置**不能原样打包**：DPAPI 不可用的极端环境里令牌是明文存在
+             * config.json 的，而这个包的设计用途就是"发给开发者看"。
+             * 用户在公开 issue 里贴一次就等于把令牌公开了。所以这里写一份脱敏副本。 */
+            var entry = zip.CreateEntry("config.json");
+            try
+            {
+                var text = File.ReadAllText(configPath, Encoding.UTF8);
+                text = RedactSecrets(text);
+                using var w = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+                w.Write(text);
+                written.Add("config.json");
+            }
+            catch (Exception ex)
+            {
+                written.Add("config.json（写入失败：" + ex.Message + "）");
+            }
         }
 
         if (File.Exists(Log.FilePath))
         {
-            zip.CreateEntryFromFile(Log.FilePath, "logs/app.log");
-            written.Add("logs/app.log");
+            /* 日志可能正被后台线程写着（FileShare.ReadWrite）。CreateEntryFromFile
+             * 只按 FileShare.Read 打开，会撞共享冲突 —— 偏偏"刚出过问题"的那一刻
+             * 正是最需要诊断包的时候。所以自己按 ReadWrite 打开再拷。 */
+            var entry = zip.CreateEntry("logs/app.log");
+            try
+            {
+                using var src = new FileStream(Log.FilePath, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                using var dst = entry.Open();
+                src.CopyTo(dst);
+                written.Add("logs/app.log");
+            }
+            catch (Exception ex)
+            {
+                written.Add("logs/app.log（写入失败：" + ex.Message + "）");
+            }
         }
 
         var system = zip.CreateEntry("system.txt");
@@ -102,6 +130,33 @@ internal static class DiagPack
         written.Add("system.txt");
 
         return written;
+    }
+
+    /// <summary>
+    /// 把配置里的凭据换成占位符。
+    ///
+    /// <para>
+    /// JSON 结构不做解析（配置可以手改坏，诊断包不能因此失败）：
+    /// 直接按行替换两个键的值。宁可多替换一行，也不能漏出去一串真令牌。
+    /// </para>
+    /// </summary>
+    internal static string RedactSecrets(string json)
+    {
+        var sb = new StringBuilder(json.Length);
+        foreach (var line in json.Split('\n'))
+        {
+            var t = line.TrimStart();
+            if (t.StartsWith("\"gitHubToken\"", StringComparison.OrdinalIgnoreCase) ||
+                t.StartsWith("\"gitHubTokenProtected\"", StringComparison.OrdinalIgnoreCase))
+            {
+                var colon = line.IndexOf(':');
+                var comma = line.TrimEnd().EndsWith(",") ? "," : "";
+                sb.Append(colon >= 0 ? line[..(colon + 1)] : line).Append(" \"（已省略）\"").Append(comma);
+            }
+            else sb.Append(line);
+            sb.Append('\n');
+        }
+        return sb.ToString();
     }
 
     /// <summary>默认落盘位置：桌面（取不到就用数据目录）。</summary>

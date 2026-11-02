@@ -81,6 +81,12 @@ internal static class ScrollSmooth
     /// <summary>速度"抽搐"容忍度：相邻两步的速度比超过它就算一次回跳。</summary>
     private const double VelocitySpikeRatio = 1.30;
 
+    /// <summary>算"末段速度"时，间隔短于它的步不参与（采样抖动会造出 0.5px/1ms 的假尖峰）。</summary>
+    private const double MinSpeedGapMs = 4.0;
+
+    /// <summary>算"末段速度"时，位移小于它的步不参与（亚像素步的比值没有物理意义）。</summary>
+    private const double MinSpeedPx = 1.0;
+
     private readonly record struct Sample(double AtMs, double Offset);
 
     public static int Run(MainWindow w)
@@ -223,9 +229,19 @@ internal static class ScrollSmooth
                 var d0 = tail[i - 1].AtMs;
                 var d1 = tail[i].AtMs;
                 var prevGap = i >= 2 ? tail[i - 1].AtMs - tail[i - 2].AtMs : 0;
-                if (prevGap <= 0 || d1 - d0 <= 0) continue;
+                var gap = d1 - d0;
+
+                /* 采样抖动过滤：渲染帧之间可能只隔 1~3ms（采样器自己在抢 CPU），
+                 * 而位移是 0.5px 的整数倍 —— 0.5px / 1ms 会被算成 0.5 px/ms 的假尖峰。
+                 * 这种"速度"不是用户看到的运动，是测量噪声：
+                 *   ① 间隔 < 4ms 的步不参与；
+                 *   ② 位移不到 1px 的步不参与（亚像素步的比值没有意义）。 */
+                if (prevGap < MinSpeedGapMs || gap < MinSpeedGapMs) continue;
+                if (tail[i].Px < MinSpeedPx || tail[i - 1].Px < MinSpeedPx) continue;
+                if (d1 - d0 <= 0) continue;
+
                 var vPrev = tail[i - 1].Px / prevGap;
-                var vNow = tail[i].Px / (d1 - d0);
+                var vNow = tail[i].Px / gap;
                 if (vNow > vPrev * VelocitySpikeRatio)
                 {
                     velSpikes++;

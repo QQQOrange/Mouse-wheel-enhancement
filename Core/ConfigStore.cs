@@ -31,6 +31,10 @@ public sealed class ConfigStore : IDisposable
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
+        /* 字段类型写错一个（"glideTauMs": 300.0、把 true 写成 1）会让整份配置
+         * 被当成损坏文件重置 —— Normalize 的逐项容错根本轮不到执行。
+         * 打开"从字符串读数字"能吃掉最常见的几种手改写法，剩下的再走 corrupt 分支。 */
+        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString,
         // 中文备注不要被转成 \uXXXX：配置文件是给人看的，也可能被人手改
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
@@ -41,7 +45,10 @@ public sealed class ConfigStore : IDisposable
     private bool _tokenLoaded;
 
     public string Dir { get; }
-    public string ConfigPath => Path.Combine(Dir, "config.json");    public AppConfig Config { get; private set; } = AppConfig.Default();
+
+    public string ConfigPath => Path.Combine(Dir, "config.json");
+
+    public AppConfig Config { get; private set; } = AppConfig.Default();
 
     /// <summary>配置发生**有效**变化时触发（已做防抖之外的即时通知）。</summary>
     public event Action<AppConfig>? Changed;

@@ -424,12 +424,35 @@ public partial class App : System.Windows.Application
         _mutex = AcquireSingleInstance(_elevateTried ? TimeSpan.FromSeconds(6) : TimeSpan.Zero);
         if (_mutex == null)
         {
+            var signaled = false;
             try
             {
                 if (EventWaitHandle.TryOpenExisting(ActivateEventName, out var other))
+                {
                     other.Set();
+                    signaled = true;
+                }
             }
-            catch { /* 叫不动就算了，至少不重复起一份 */ }
+            catch { /* 叫不动 —— 下面给用户一句人话，而不是"双击没反应" */ }
+
+            /* 叫不动已有实例，最常见的原因是**权限不对等**：常驻的那份是管理员
+             * （计划任务开机启动就会这样），而这次是普通权限双击。
+             * 两个命名对象的写权限都被 UIPI 拒了，于是老版本这里的表现是
+             * "双击图标毫无反应" —— 没有窗口、没有提示、日志里也没有（Log 还没初始化）。
+             * 至少要说清楚"为什么没反应、该怎么办"。 */
+            if (!signaled)
+            {
+                try
+                {
+                    MessageBox.Show(
+                        "「鼠标滚轮增强」已经在运行了（它可能是以管理员身份启动的）。\r\n\r\n" +
+                        "请在任务栏右下角的托盘里点它的图标打开设置；\r\n" +
+                        "如果托盘里看不到，打开任务管理器结束 MouseWheelEnhancement.App.exe 再试。",
+                        "鼠标滚轮增强", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch { /* 连弹窗都不行（无交互桌面）：安静退出 */ }
+            }
+
             Shutdown();
             return;
         }
@@ -1017,6 +1040,21 @@ public partial class App : System.Windows.Application
     {
         var code = 0;
         var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        /* 冒烟会**写配置**（假令牌、窗口位置、导入导出…）。
+         *
+         * 以前它直接用用户真实的数据目录：`Store.SetToken("ghp_smoketest…")`
+         * 是立即落盘的，只靠 finally 还原 —— 测试期间进程被强杀/杀软结束，
+         * 用户的 GitHub 令牌（DPAPI 密文）就被一个测试串永久覆盖了。
+         * 现在整个过程跑在临时目录里，用户的那份 config 一个字节都不碰。 */
+        try
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(),
+                $"mwe-smoke-{Environment.ProcessId}-{DateTime.Now:HHmmss}");
+            Environment.SetEnvironmentVariable("MWE_DATA_DIR", tempDir);
+        }
+        catch { /* 设不上就退回默认（至少不是静默失败，下面日志里有真实路径） */ }
+
         try
         {
             Services.Init();
@@ -1081,7 +1119,8 @@ public partial class App : System.Windows.Application
             var uiCode = CheckUpdatePageUi(w);
             if (uiCode != 0) code = uiCode;
 
-            ShotUpdatePage(w);
+            var shotCode = ShotUpdatePage(w);
+            if (shotCode != 0) code = shotCode;
 
             /* 最后再验一次托盘那条链路（会换掉当前窗口，所以放在所有取窗口的检查之后） */
             var trayCode = CheckTrayShowPath();
@@ -1301,8 +1340,9 @@ public partial class App : System.Windows.Application
     /// 「保存令牌」禁用），这正是本轮两处改动的对照面；用完把原令牌还回去。
     /// </para>
     /// </summary>
-    private static void ShotUpdatePage(MainWindow w)
+    private static int ShotUpdatePage(MainWindow w)
     {
+        var code = 0;
         var cfgMode = Theme.Normalize(Services.Config.Appearance.Theme);
         var origToken = Services.Store.CurrentToken();
         try
@@ -1315,13 +1355,28 @@ public partial class App : System.Windows.Application
             foreach (var (mode, name) in new[] { (Theme.Light, "light"), (Theme.Dark, "dark") })
             {
                 Theme.SetMode(mode);
-                w.UpdateLayout();
-                // DynamicResource 换字典要过一次渲染优先级才能落到新画刷上
-                w.Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
+
+                /* 换调色板会让 ContentPresenter 重新取模板资源。只 UpdateLayout 一遍 +
+                 * 一次 Render 优先级的空投递**不够**：实测第一张（浅色）会在内容
+                 * 呈现器还没真正画出来时被拍成一张空白页 —— 而第二张（深色）就正常。
+                 * 这里把布局和渲染都跑到 Idle 再截。 */
+                for (var i = 0; i < 3; i++)
+                {
+                    w.UpdateLayout();
+                    w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+                }
 
                 var path = Path.Combine(AppPaths.DataDir, $"smoke-update-{name}.png");
-                SaveWindowShot(w, path);
+                var blank = SaveWindowShot(w, path);
                 Log.Info($"smoke: 更新页截图（{name}）→ {path}");
+
+                /* 空白页不是"截图工具的小毛病"，它说明主题切换后内容没被画出来 ——
+                 * 用户看到的会是一整片空白。所以这条要当失败报。 */
+                if (blank)
+                {
+                    Log.Error($"smoke: {name} 主题的截图是空白页（内容区没有任何明暗变化）");
+                    code = 27;
+                }
             }
         }
         catch (Exception ex)
@@ -1336,21 +1391,55 @@ public partial class App : System.Windows.Application
             Theme.SetMode(cfgMode);
             w.UpdateLayout();
         }
+        return code;
     }
 
-    private static void SaveWindowShot(MainWindow w, string path)
+    /// <summary>
+    /// 把窗口渲染成 PNG，并报告"内容区是不是一片空白"。
+    /// 返回 true 表示空白（内容区像素几乎没有明暗变化）。
+    /// </summary>
+    private static bool SaveWindowShot(MainWindow w, string path)
     {
+        var width = Math.Max(1, (int)w.ActualWidth);
+        var height = Math.Max(1, (int)w.ActualHeight);
         var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
-            Math.Max(1, (int)w.ActualWidth),
-            Math.Max(1, (int)w.ActualHeight),
-            96, 96,
-            System.Windows.Media.PixelFormats.Pbgra32);
+            width, height, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
         rtb.Render(w);
 
         var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
         enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
-        using var fs = File.Create(path);
-        enc.Save(fs);
+        using (var fs = File.Create(path)) enc.Save(fs);
+
+        /* 取内容区（右半边、避开标题栏和底栏）算明暗跨度：
+         * 一整页的文字和卡片至少会有几十级灰度差，纯背景只有 1~2 级。 */
+        try
+        {
+            var stride = width * 4;
+            var pixels = new byte[stride * height];
+            rtb.CopyPixels(pixels, stride, 0);
+
+            var min = 255;
+            var max = 0;
+            var x0 = Math.Min(width - 1, (int)(width * 0.30));
+            var x1 = width;
+            var y0 = Math.Min(height - 1, 120);
+            var y1 = Math.Max(y0 + 1, Math.Min(height - 1, (int)(height * 0.85)));
+            for (var y = y0; y < y1; y += 4)
+            {
+                for (var x = x0; x < x1; x += 4)
+                {
+                    var i = y * stride + x * 4;
+                    var lum = (pixels[i + 1] * 30 + pixels[i + 2] * 59 + pixels[i + 3] * 11) / 100;
+                    if (lum < min) min = lum;
+                    if (lum > max) max = lum;
+                }
+            }
+            return max - min < 8;
+        }
+        catch
+        {
+            return false;   // 检测失败不算空白（别让测试工具自己误报）
+        }
     }
 
     /// <summary>
@@ -2218,6 +2307,15 @@ public partial class App : System.Windows.Application
 
             var now = Environment.TickCount64;
 
+            /* 动画线程死了必须单独重启 —— 光看钩子看不出来。
+             * 它一死，被接管的事件会"只吞不发"，整个系统的滚轮就不动了。
+             * 钩子那边已经改成"动画器不在了就原样放行"，所以这里慢一点也不会卡住滚动。 */
+            if (!engine.AnimatorAlive)
+            {
+                Log.Warn("看门狗：平滑动画线程不在了，正在重新拉起");
+                engine.EnsureAnimator();
+            }
+
             if (!engine.HookThreadAlive || !engine.IsRunning)
             {
                 /* 退避 30 秒。装钩子失败（比如被杀软挡着）时，每 5 秒一次 Restart
@@ -2271,6 +2369,23 @@ public partial class App : System.Windows.Application
     /// <summary>下载完更新后：先启动新版本，再退出自己。</summary>
     public static void RestartForUpdate()
     {
+        /* ⚠ 必须先放开单实例互斥体，再拉起新进程。
+         *
+         * 新进程抢的是同一个命名互斥体（超时 0），而旧进程要跑完
+         * Services.Shutdown（引擎、托盘、配置落盘、日志刷盘最多 500ms）才轮到
+         * ExitApp 里那句 ReleaseMutex —— 两边是几百毫秒的竞态。
+         * 输的那次：新进程看到"已有实例"，激活一下旧窗口就自己退出，
+         * 用户看到的是**图标和窗口一起消失、新版本根本没起来**。
+         *
+         * 这里先把互斥体交出去（并置空，避免 ExitApp 二次释放抛异常），
+         * 再启动新进程：新进程一定能拿到，之后旧进程安安静静退出。 */
+        if (Current is App app)
+        {
+            try { app._mutex?.ReleaseMutex(); } catch { /* 不是持有者 */ }
+            try { app._mutex?.Dispose(); } catch { }
+            app._mutex = null;
+        }
+
         if (!Services.Updater.RestartApp())
         {
             MessageBox.Show("新版本已经就位，但自动启动失败 —— 请手动重新打开程序。",

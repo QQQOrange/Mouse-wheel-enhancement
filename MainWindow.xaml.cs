@@ -117,6 +117,17 @@ public partial class MainWindow : Window
         };
 
         Log.Info($"主窗口构造完成：XAML {initMs} ms / 总计 {bootSw.ElapsedMilliseconds} ms");
+
+        /* 小屏兜底：默认 1120×830 在 1366×768 的笔记本上底部会被切掉
+         * （底栏和关于页最后一排按钮都在屏幕外）。第一次打开时按工作区收一下，
+         * 之后用户自己拉过的尺寸由 RestoreWindowPlacement 负责。 */
+        try
+        {
+            var wa = SystemParameters.WorkArea;
+            if (Width > wa.Width - 24) Width = Math.Max(MinWidth, wa.Width - 24);
+            if (Height > wa.Height - 24) Height = Math.Max(MinHeight, wa.Height - 24);
+        }
+        catch { /* 取不到工作区就按 XAML 的默认值 */ }
     }
 
     /// <summary>取画刷（带缓存）。</summary>
@@ -1673,12 +1684,19 @@ public partial class MainWindow : Window
     /// "诊断包已导出：xxx.zip"，版本号和权限提示再也看不到。
     /// </para>
     /// </summary>
-    private void SetFooterHint(string text)
+    private void SetFooterHint(string text) => SetFooterHint(text, true);
+
+    /// <summary>同上，但可以标出这是"成功"还是"失败"（只影响一行字的颜色，不弹窗）。</summary>
+    private void SetFooterHint(string text, bool success)
     {
         if (FooterRight == null) return;
 
         _footerHintOn = true;
         FooterRight.Text = text;
+        /* 用 SetResourceReference 而不是赋 Brush 对象：换主题时它自己会重新取值，
+         * 否则深色的成功绿会留在浅色底上（对比度 1.9:1，几乎看不见）。 */
+        FooterRight.SetResourceReference(TextBlock.ForegroundProperty,
+            success ? "TextSecondary" : "DangerBrush");
 
         _footerHintTimer?.Stop();
         _footerHintTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
@@ -1686,7 +1704,11 @@ public partial class MainWindow : Window
         {
             _footerHintTimer?.Stop();
             _footerHintOn = false;
-            if (FooterRight != null) FooterRight.Text = FooterInfo();
+            if (FooterRight != null)
+            {
+                FooterRight.Text = FooterInfo();
+                FooterRight.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
+            }
         };
         _footerHintTimer.Start();
     }
@@ -1740,21 +1762,24 @@ public partial class MainWindow : Window
         var name = AppRuleName.Normalize(raw);
         if (name.Length == 0)
         {
-            UpdateStatus.Text = "先填一个程序名，例如 chrome.exe";
+            /* 提示写在**底栏**（常驻、切页也看得见）。
+             * 以前写进「更新」页的 UpdateStatus —— 用户在名单页点「添加」，
+             * 屏幕上不会有任何变化，只能怀疑按钮坏了。 */
+            SetFooterHint("先填一个程序名，例如 chrome.exe");
             return;
         }
 
         var apps = Services.Config.Filter.Apps;
         if (apps.Any(a => string.Equals(a.Exe, name, StringComparison.OrdinalIgnoreCase)))
         {
-            UpdateStatus.Text = $"{name} 已经在名单里了";
+            SetFooterHint($"{name} 已经在名单里了");
             return;
         }
 
         apps.Add(new AppRule { Exe = name, Note = "手动添加" });
         AddAppBox.Text = "";
         Commit();
-        UpdateStatus.Text = $"已加入名单：{name}";
+        SetFooterHint($"已加入名单：{name}");
     }
 
     private void RemoveApp_Click(object sender, RoutedEventArgs e)
@@ -1765,7 +1790,7 @@ public partial class MainWindow : Window
         if (hit == null) return;
         apps.Remove(hit);
         Commit();
-        UpdateStatus.Text = $"已从名单移除：{exe}";
+        SetFooterHint($"已从名单移除：{exe}");
     }
 
     private void TitleRegex_Changed(object sender, TextChangedEventArgs e)
@@ -2128,7 +2153,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(AppPaths.DataDir);
             Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AppPaths.DataDir}\"") { UseShellExecute = true });
         }
-        catch (Exception ex) { UpdateStatus.Text = "打不开数据目录：" + ex.Message; }
+        catch (Exception ex) { SetFooterHint("打不开数据目录：" + ex.Message); }
     }
 
     private void OpenLog_Click(object sender, RoutedEventArgs e)
@@ -2141,7 +2166,7 @@ public partial class MainWindow : Window
             else
                 OpenDataDir_Click(sender, e);
         }
-        catch (Exception ex) { UpdateStatus.Text = "打不开日志：" + ex.Message; }
+        catch (Exception ex) { SetFooterHint("打不开日志：" + ex.Message); }
     }
 
     private void RestartHook_Click(object sender, RoutedEventArgs e)
@@ -2150,8 +2175,7 @@ public partial class MainWindow : Window
         try
         {
             var ok = Services.Engine.Restart();
-            UpdateStatus.Foreground = (Brush)FindResource(ok ? "SuccessBrush" : "DangerBrush");
-            UpdateStatus.Text = ok ? "钩子已重启。" : "钩子重启失败，看日志。";
+            SetFooterHint(ok ? "钩子已重启。" : "钩子重启失败，看日志。", ok);
             RefreshStats();
         }
         finally { RestartHookBtn.IsEnabled = true; }
@@ -2159,7 +2183,7 @@ public partial class MainWindow : Window
 
     private void ResetDefaults_Click(object sender, RoutedEventArgs e)
     {
-        var r = MessageBox.Show("把除 GitHub 令牌以外的所有设置恢复默认值？", Services.AppTitle,
+        var r = MessageBox.Show(this, "把除 GitHub 令牌以外的所有设置恢复默认值？", Services.AppTitle,
             MessageBoxButton.OKCancel, MessageBoxImage.Question);
         if (r != MessageBoxResult.OK) return;
 
@@ -2168,11 +2192,20 @@ public partial class MainWindow : Window
         RefreshApps();
         RefreshTokenUi();
         RedrawCurve();
-        UpdateStatus.Foreground = B("SuccessBrush");
-        UpdateStatus.Text = "已恢复默认设置。";
+        SetFooterHint("已恢复默认设置。");
     }
 
-    private void ExitApp_Click(object sender, RoutedEventArgs e) => App.ExitApp();
+    private void ExitApp_Click(object sender, RoutedEventArgs e)
+    {
+        /* 误点"退出"就等于把增强整个关掉（托盘图标也会消失），
+         * 而它就挨着"恢复默认设置"，值得问一句。 */
+        var r = MessageBox.Show(this,
+            "退出后滚轮增强会停止，托盘图标也会消失。\r\n确定要退出吗？",
+            Services.AppTitle, MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        if (r != MessageBoxResult.Yes) return;
+        _allowClose = true;
+        App.ExitApp();
+    }
 
     /// <summary>
     /// 「权限提示」卡片上的按钮：以管理员身份重启。
@@ -2320,6 +2353,10 @@ public partial class MainWindow : Window
 
         if (!Services.Config.Behavior.CloseToTray)
         {
+            /* 真退出这条路径也要先放行，和托盘路径（下面 _allowClose = true）对称：
+             * ExitApp 内部会 Shutdown，而 Shutdown 会再尝试关一次这个窗口，
+             * 那时 OnClosing 里的保存/弹层清理会被重复执行。 */
+            _allowClose = true;
             App.ExitApp();
             return;
         }

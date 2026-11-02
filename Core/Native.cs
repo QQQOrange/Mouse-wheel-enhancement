@@ -496,6 +496,46 @@ internal static class Native
         return n > 0 ? sb.ToString() : "";
     }
 
+    /* ══════════════ 带超时的标题读取 ══════════════
+     *
+     * GetWindowText 对**别的进程**的窗口是 SendMessage(WM_GETTEXT)：目标线程卡住
+     * （正在加载、正在弹 UAC、被调试器挂起），调用方就跟着卡住，而且没有超时。
+     * 这发生在滚轮钩子的热路径上时，后果是系统按 LowLevelHooksTimeout 把钩子
+     * **静默摘掉** —— 用户看到的是"用着用着突然不加速了"。
+     *
+     * 所以钩子里取标题一律走 SendMessageTimeout：超过 40ms 就放弃这次刷新，
+     * 沿用上一次的标题。 */
+
+    private const uint WM_GETTEXT = 0x000D;
+    private const uint SMTO_BLOCK = 0x0001;
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam,
+        StringBuilder lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+    /// <summary>
+    /// 取窗口标题，**最多等 <paramref name="timeoutMs"/> 毫秒**。
+    /// 超时/失败返回 null（调用方应沿用上一次的结果，而不是当成空标题）。
+    /// </summary>
+    public static string? TitleOfWithTimeout(IntPtr hwnd, int timeoutMs = 40)
+    {
+        if (hwnd == IntPtr.Zero) return "";
+        var sb = new StringBuilder(512);
+        try
+        {
+            var r = SendMessageTimeout(hwnd, WM_GETTEXT, (IntPtr)sb.Capacity, sb,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK, (uint)Math.Max(1, timeoutMs), out var len);
+            if (r == IntPtr.Zero) return null;          // 超时 / 目标已消失
+            var n = (int)Math.Min(len.ToInt64(), sb.Capacity - 1);
+            return n > 0 ? sb.ToString(0, n) : "";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>取窗口所属进程的 exe 文件名（小写、带 .exe）。取不到返回空串。</summary>
     /// <remarks>
     /// 用 <c>PROCESS_QUERY_LIMITED_INFORMATION</c> 而不是 <c>PROCESS_QUERY_INFORMATION</c>：

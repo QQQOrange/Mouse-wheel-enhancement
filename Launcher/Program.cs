@@ -41,6 +41,26 @@ namespace MouseWheelEnhancement.Launcher
         [STAThread]
         private static int Main(string[] args)
         {
+            /* 兜底：启动器是通往主程序的唯一入口，它自己出任何问题都不能变成
+             * "双击没反应"。以前只有探测/释放/启动三处有 try，对话框自己抛异常
+             * 会直接冒到 CLR（或者 WER 被关时静默退出），launcher.log 里一条都没有。 */
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+                Log("未处理异常：" + e.ExceptionObject);
+            Application.ThreadException += (_, e) => Log("UI 线程异常：" + e.Exception);
+
+            try
+            {
+                return Run(args);
+            }
+            catch (Exception ex)
+            {
+                Log("启动器异常，按放行处理：" + ex);
+                try { return Launch(args); } catch (Exception ex2) { Log("放行也失败了：" + ex2); return 6; }
+            }
+        }
+
+        private static int Run(string[] args)
+        {
             if (HasArg(args, "--runtimecheck")) return RuntimeCheckCli();
             if (HasArg(args, "--dialogtest")) return SelfTest();
 
@@ -112,7 +132,8 @@ namespace MouseWheelEnhancement.Launcher
                  * **区分大小写**的字典，而代理软件经常同时留下 HTTPS_PROXY 和 https_proxy
                  * —— 于是抛"已添加项。字典中的关键字…"，主程序根本起不来（实测踩到）。
                  * 设到当前进程上让子进程继承，就没有这个问题。 */
-                Environment.SetEnvironmentVariable("MWE_DATA_DIR", Path.Combine(dir, DataFolderName));
+                Environment.SetEnvironmentVariable("MWE_DATA_DIR",
+                    CanWrite(Path.Combine(dir, DataFolderName)) ? Path.Combine(dir, DataFolderName) : null);
 
                 /* 把**启动器自己的路径**也传给主程序。
                  *
@@ -177,6 +198,7 @@ namespace MouseWheelEnhancement.Launcher
         {
             "--selftest", "--frametrace", "--smoke", "--measure",
             "--taskcheck", "--checkupdate", "--apply-startup",
+            "--featurecheck", "--wheeltest", "--scrollsmooth",
         };
 
         private static bool IsSelfTerminating(string[] args)
@@ -273,12 +295,17 @@ namespace MouseWheelEnhancement.Launcher
 
                     sb.AppendLine("按钮数：" + buttons.Count +
                                   "（" + string.Join(" / ", buttons.ConvertAll(b => b.Text).ToArray()) + "）");
-                    if (buttons.Count != 3) { fail++; sb.AppendLine("  ✗ 期望 3 个按钮"); }
+                    /* 四个：去下载 / 重新检测 / 仍然启动试试 / 退出。
+                     * 「仍然启动」必须**首屏就在** —— 它只在重新检测后出现时，
+                     * 一次误判就能把用户堵死在这个对话框里。 */
+                    if (buttons.Count != 4) { fail++; sb.AppendLine("  ✗ 期望 4 个按钮（含首屏的「仍然启动」）"); }
 
                     var hasDownload = false;
+                    var hasForce = false;
                     foreach (var b in buttons)
                     {
                         if (b.Text.IndexOf("下载", StringComparison.Ordinal) >= 0) hasDownload = true;
+                        if (b.Text.IndexOf("仍然启动", StringComparison.Ordinal) >= 0) hasForce = true;
                         var r = b.Bounds;
                         if (r.Right > dlg.ClientSize.Width || r.Bottom > dlg.ClientSize.Height || r.Left < 0 || r.Top < 0)
                         {
@@ -287,6 +314,7 @@ namespace MouseWheelEnhancement.Launcher
                         }
                     }
                     if (!hasDownload) { fail++; sb.AppendLine("  ✗ 没有带「下载」字样的按钮"); }
+                    if (!hasForce) { fail++; sb.AppendLine("  ✗ 首屏没有「仍然启动试试」—— 误判时用户会被堵死"); }
 
                     // 两两检查重叠
                     for (var i = 0; i < buttons.Count; i++)
@@ -370,19 +398,37 @@ namespace MouseWheelEnhancement.Launcher
             Directory.CreateDirectory(root);
 
             var tmp = exe + ".tmp";
-            using (var src = asm.GetManifestResourceStream(AppExeName))
+            try
             {
-                if (src == null)
-                    throw new InvalidOperationException("这个 exe 里没有内嵌的主程序（打包不完整）。");
+                using (var src = asm.GetManifestResourceStream(AppExeName))
+                {
+                    if (src == null)
+                        throw new InvalidOperationException("这个 exe 里没有内嵌的主程序（打包不完整）。");
 
-                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-                    src.CopyTo(fs);
+                    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                        src.CopyTo(fs);
+                }
+            }
+            catch (IOException)
+            {
+                /* 另一个启动器（快速双击两下）正在写同一个 .tmp。
+                 * 等它写完：目标 exe 已经出现且版本够，就直接用那一份。 */
+                for (var i = 0; i < 10 && !File.Exists(exe); i++) System.Threading.Thread.Sleep(200);
+                if (File.Exists(exe))
+                {
+                    var v0 = ReadFileVersion(exe);
+                    if (v0 != null && v0 >= myVer) { try { File.Delete(tmp); } catch { } return exe; }
+                }
+                throw;
             }
 
             try
             {
-                File.Copy(tmp, exe, true);
-                File.Delete(tmp);
+                /* 同卷替换用 File.Replace：它是原子的（内部就是 MoveFileEx 的替换语义），
+                 * 断电最多留下 .tmp，不会留下一个"看起来正常、实际被截断"的 exe
+                 * （以前用 File.Copy，正好会）。.NET Framework 4.8 没有三参数 File.Move。 */
+                if (File.Exists(exe)) File.Replace(tmp, exe, null);
+                else File.Move(tmp, exe);
             }
             catch (IOException)
             {
@@ -422,6 +468,29 @@ namespace MouseWheelEnhancement.Launcher
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 这个目录能建、能写吗。
+        ///
+        /// <para>
+        /// 只给"要不要钉 MWE_DATA_DIR"用。装到 Program Files 且非管理员时它写不动，
+        /// 这时**不能**把环境变量设过去 —— 主程序会照单全收，于是"程序目录不可写就
+        /// 退到 %APPDATA%"这条保障被绕过，设置每次重启全丢（连日志都写不出来）。
+        /// 不设变量，主程序自己的 AppPaths 会挑一个真能写的地方。
+        /// </para>
+        /// </summary>
+        private static bool CanWrite(string dir)
+        {
+            try
+            {
+                Directory.CreateDirectory(dir);
+                var probe = Path.Combine(dir, ".write-probe-" + System.Diagnostics.Process.GetCurrentProcess().Id);
+                File.WriteAllText(probe, "ok");
+                File.Delete(probe);
+                return true;
+            }
+            catch { return false; }
         }
 
         private static string BaseDir()

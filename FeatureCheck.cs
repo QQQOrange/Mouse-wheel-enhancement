@@ -114,6 +114,33 @@ internal static class FeatureCheck
             var empty = engine.SettingsFor("");
             bad += Line(sb, Math.Abs(empty.MaxMultiplier - cfg.Boost.MaxMultiplier) < 0.01,
                 "未知应用（空 exe）不炸且回落全局");
+
+            /* ── 名单模式 × 覆盖：覆盖是"正向声明"，两种模式下都要增强 ──
+             *
+             * 这一条以前是反的：默认的黑名单模式里，"名单里的不增强" 会把设了覆盖的
+             * 程序一起排掉 —— 用户右键给自己的程序设了 2×，结果那个程序连滚轮
+             * 都不经过本程序，覆盖参数一次都用不上。 */
+            cfg.Filter.Mode = FilterMode.Blacklist;
+            engine.Apply(cfg);
+            var inBlack = engine.SettingsFor("code.exe");
+            bad += Line(sb, inBlack.IsAppEnabled("code.exe", ""),
+                "黑名单模式下，设了覆盖的程序仍然被增强（覆盖是正向声明）");
+
+            var other = engine.SettingsFor("elsewhere.exe");
+            bad += Line(sb, !other.IsAppEnabled("mstsc.exe", ""),
+                "黑名单模式下，没设覆盖的名单项照旧不增强");
+
+            cfg.Filter.Mode = FilterMode.Whitelist;
+            engine.Apply(cfg);
+            bad += Line(sb, engine.SettingsFor("code.exe").IsAppEnabled("code.exe", ""),
+                "白名单模式下，设了覆盖的程序同样增强");
+
+            /* ── 覆盖的「平滑关」必须真的改变出帧 ──
+             *
+             * 只断言"快照里的 SmoothEnabled=false"是不够的（v1.8.0 就只做到这一步）：
+             * 动画器当时只认全局快照，于是覆盖里的「平滑关」在真实滚动里毫无作用。
+             * 这里用 FrameSink 真跑一遍动画线程，比"一帧发完"和"摊成多帧"两种形态。 */
+            bad += Line(sb, CheckOverrideSmoothing(engine, inBlack, other, out var smoothDetail), smoothDetail);
         }
         catch (Exception ex)
         {
@@ -125,8 +152,64 @@ internal static class FeatureCheck
         return bad == 0 ? 0 : RcOverride;
     }
 
-    /* ══════════════ ② 钩子生命周期与轮换 ══════════════ */
+    /// <summary>
+    /// 覆盖里的「平滑」开关在**出帧层面**真的生效吗？
+    ///
+    /// <para>
+    /// 只断言"快照字段是 false"不够（v1.8.0 就只做到那一步）：动画器当时只认
+    /// 全局快照，于是覆盖里的「平滑关」在真实滚动里毫无作用 —— 界面写着关了，
+    /// 那个程序里照样是摊帧 + 滑行。这里用 FrameSink 真跑一遍动画线程：
+    /// 同样的 360 单位，带 Smooth=false 的快照应该一两帧发完，
+    /// 全局快照（Smooth=true）应该摊成多帧。
+    /// </para>
+    /// </summary>
+    private static bool CheckOverrideSmoothing(WheelEngine engine, RuntimeSettings noSmooth,
+        RuntimeSettings smooth, out string detail)
+    {
+        detail = "";
+        var frames = 0;
+        long emitted = 0;
+        try
+        {
+            var anim = engine.Animator;
+            anim.FrameSink = (units, _, _) =>
+            {
+                Interlocked.Increment(ref frames);
+                Interlocked.Add(ref emitted, units);
+            };
+            anim.Start();
+            Thread.Sleep(80);   // 等动画线程进空闲
 
+            Interlocked.Exchange(ref frames, 0);
+            Interlocked.Exchange(ref emitted, 0);
+            anim.Push(360, noSmooth);
+            Thread.Sleep(160);
+            var offFrames = Volatile.Read(ref frames);
+            var offUnits = Volatile.Read(ref emitted);
+
+            Interlocked.Exchange(ref frames, 0);
+            anim.Push(360, smooth);
+            Thread.Sleep(160);
+            var onFrames = Volatile.Read(ref frames);
+
+            detail = $"覆盖关平滑 → {offFrames} 帧发 {offUnits} 单位；全局开平滑 → {onFrames} 帧";
+
+            /* 关平滑：应当一帧发完（≤2 帧留给线程被唤醒的边缘）。
+             * 开平滑：160ms / 6.25ms 一帧 ≈ 25 帧，给一个宽松的下限 4。 */
+            return offFrames is > 0 and <= 2 && offUnits == 360 && onFrames >= 4;
+        }
+        catch (Exception ex)
+        {
+            detail = "出帧对比异常：" + ex.Message;
+            return false;
+        }
+        finally
+        {
+            engine.Animator.FrameSink = null;
+        }
+    }
+
+    /* ══════════════ ② 钩子生命周期与轮换 ══════════════ */
     private static int CheckHookRotation(StringBuilder sb)
     {
         sb.AppendLine("【② 钩子轮换通道】");

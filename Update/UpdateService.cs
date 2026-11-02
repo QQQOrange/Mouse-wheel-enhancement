@@ -410,6 +410,7 @@ public sealed class UpdateService
         var url = "";
         var assetApi = "";
         long size = 0;
+        var assetDigest = "";
 
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
@@ -422,6 +423,17 @@ public sealed class UpdateService
                 size = a.TryGetProperty("size", out var sz) && sz.TryGetInt64(out var l) ? l : 0;
                 var id = a.TryGetProperty("id", out var i) && i.TryGetInt64(out var lid) ? lid : 0;
                 if (id > 0) assetApi = AssetApiUrl(id);
+
+                /* GitHub 现在会直接给资产摘要（"sha256:<64 hex>"），比从发版说明里
+                 * 抠文本可靠得多：说明是人手写的，漏一行就退化成"只比体积"。
+                 * 两个来源都取，说明里的优先（发版人可以复用已有的校验值）。 */
+                if (a.TryGetProperty("digest", out var dg) && dg.ValueKind == JsonValueKind.String)
+                {
+                    var s = (dg.GetString() ?? "").Trim();
+                    const string prefix = "sha256:";
+                    if (s.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        assetDigest = s[prefix.Length..].Trim().ToUpperInvariant();
+                }
                 break;
             }
         }
@@ -431,6 +443,7 @@ public sealed class UpdateService
             throw new ApiException(ApiErrorKind.Other,
                 $"{tag} 这个版本里没有 {AssetName} 更新包（发版时资产名必须叫这个）");
 
+        var notesSha = ShaFromNotes(notes);
         return new UpdateInfo
         {
             Version = version,
@@ -441,7 +454,7 @@ public sealed class UpdateService
             Url = url,
             AssetApiUrl = assetApi,
             Size = size,
-            Sha256 = ShaFromNotes(notes),
+            Sha256 = notesSha.Length == 64 ? notesSha : (assetDigest.Length == 64 ? assetDigest : ""),
             Page = page,
             Authed = authed,
         };
@@ -767,8 +780,8 @@ public sealed class UpdateService
         var staged = StagedPath;
         if (!File.Exists(staged)) throw new InvalidOperationException("还没有下载好更新包");
 
-        var old = OldPath;
-        TryDelete(old); // 上一轮如果更新过两次，先清掉旧的；清不掉也无妨
+        var old = ExePath + ".old-" + DateTime.UtcNow.Ticks;
+        TryDelete(OldPath); // 早版本留下的固定名备份，顺手清掉（清不掉也无妨）
 
         // ⚠ 顺序：**先给正在运行的自己改名**，再把新的搬进来。反过来一定失败。
         if (!Native.MoveFileEx(exe, old, Native.MOVEFILE_REPLACE_EXISTING | Native.MOVEFILE_WRITE_THROUGH))
@@ -781,24 +794,42 @@ public sealed class UpdateService
         if (!Native.MoveFileEx(staged, exe, Native.MOVEFILE_REPLACE_EXISTING | Native.MOVEFILE_WRITE_THROUGH))
         {
             var code = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
-            Native.MoveFileEx(old, exe, Native.MOVEFILE_REPLACE_EXISTING | Native.MOVEFILE_WRITE_THROUGH);
-            throw new InvalidOperationException($"替换失败（已回滚到旧版本）：错误码 {code}");
+
+            /* 回滚的**结果必须检查**：以前不管有没有放回去都说"已回滚"，
+             * 真失败时 exe 已经不存在了，用户再点桌面图标只会得到"找不到文件"。 */
+            var rolledBack = Native.MoveFileEx(old, exe,
+                Native.MOVEFILE_REPLACE_EXISTING | Native.MOVEFILE_WRITE_THROUGH);
+            throw new InvalidOperationException(rolledBack
+                ? $"替换失败（已回滚到旧版本）：错误码 {code}"
+                : $"替换失败，而且旧版本没能放回去（错误码 {code}）：程序文件已被移走。" +
+                  "请从安装目录里的 MouseWheelEnhancement.exe 重新启动一次。");
         }
 
         Log.Info($"update: 已替换程序（旧版留在 {old}，下次启动清理）");
         return old;
     }
 
-    /// <summary>启动时清理上次更新留下的 <c>.old</c> / <c>.new</c>。删不掉只是留个文件，绝不影响启动。</summary>
+    /// <summary>启动时清理上次更新留下的 <c>.old*</c> / <c>.new</c>。删不掉只是留个文件，绝不影响启动。</summary>
     public static int SweepLeftovers()
     {
         var n = 0;
         try
         {
-            foreach (var p in new[] { OldPath, StagedPath })
+            // .old 现在带时间戳（同一个会话里可能更新过两次），按前缀扫
+            var dir = ExeDir;
+            var stem = Path.GetFileName(ExePath);
+            try
             {
-                if (File.Exists(p) && TryDelete(p)) n++;
+                foreach (var p in Directory.EnumerateFiles(dir, stem + ".old*"))
+                    if (TryDelete(p)) n++;
             }
+            catch { /* 目录读不动就跳过 */ }
+
+            if (File.Exists(OldPath) && TryDelete(OldPath)) n++;
+
+            /* .new 不删：下载中断时会保留断点，下次点下载能续传
+             * （以前每次启动都删，等于把"接着下"这句话变成空头承诺）。
+             * 内容对不对由体积 + SHA256 兜底。 */
         }
         catch { }
         if (n > 0) Log.Info($"update: 清理了 {n} 个更新残留文件");

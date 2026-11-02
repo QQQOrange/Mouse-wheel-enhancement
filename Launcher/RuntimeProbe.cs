@@ -177,15 +177,41 @@ namespace MouseWheelEnhancement.Launcher
             return string.IsNullOrEmpty(a) ? null : Path.Combine(a, b);
         }
 
+        /// <summary>
+        /// 有没有**至少一个**可信的结论来源。
+        ///
+        /// <para>
+        /// 以前的判据是"某个 root 目录存在且能枚举"。可干净 Windows 上
+        /// <c>C:\Program Files\dotnet</c> 这类目录**根本不存在** —— 于是一台
+        /// 「从没装过 .NET」的机器被判成 Unknown，启动器直接放行，
+        /// 用户看到的是 apphost 的英文报错，而那个手写的中文「缺运行时」对话框
+        /// 一次都不会出现（它存在的唯一理由就是这个场景）。
+        /// </para>
+        /// <para>
+        /// 现在把"不存在"和"读不动"分开：root 不存在，但它的**父目录**能枚举 →
+        /// 说明我们确实看得到那个位置，里面没有就是没有（Missing）；
+        /// 只有父目录都读不动（权限/异常）才退回 Unknown。
+        /// </para>
+        /// </summary>
         private static bool AtLeastOneReadable(List<string> roots)
         {
             foreach (var r in roots)
             {
                 try
                 {
-                    if (!Directory.Exists(r)) continue;
-                    Directory.GetDirectories(r);
-                    return true;
+                    if (Directory.Exists(r))
+                    {
+                        Directory.GetDirectories(r);
+                        return true;
+                    }
+
+                    // root 不存在：看父目录能不能枚举（能枚举就说明"这里确实没有"）
+                    var parent = Path.GetDirectoryName(r);
+                    if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                    {
+                        Directory.GetDirectories(parent);
+                        return true;
+                    }
                 }
                 catch { }
             }

@@ -136,6 +136,13 @@ namespace MouseWheelEnhancement.Launcher
 
             CancelButton = quit;
             AcceptButton = _download;
+
+            /* 「仍然启动试试」**首屏就给**。
+             *
+             * 以前它只在点过「重新检测」之后才出现 —— 于是任何一次误判（运行时装在非常规
+             * 位置、自包含包、DOTNET_ROOT 没生效）都会把用户**挡死**在这个对话框里，
+             * 而文案完全没提还有这条出路。它放在左边空出来的位置，四个按钮不重叠。 */
+            ShowForceLaunch();
         }
 
         private Button MakeButton(string text, int x, int width, bool primary)

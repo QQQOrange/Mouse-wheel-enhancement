@@ -4,6 +4,7 @@
         Title="鼠标滚轮增强" Height="830" Width="1120" MinHeight="680" MinWidth="1000"
         Background="{DynamicResource WindowGradient}" WindowStartupLocation="CenterScreen"
         FontFamily="{StaticResource UiFont}" UseLayoutRounding="True" SnapsToDevicePixels="True"
+        TextElement.Foreground="{DynamicResource TextPrimary}"
         TextOptions.TextFormattingMode="Display">
 
     <!--

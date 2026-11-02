@@ -119,8 +119,31 @@ if gap > 12ms  →  直接结束（丢下剩余 ≤8 单位 ≈ 4px），不再�
 `MouseWheelEnhancement.exe`（约 0.60 MB）/ `.zip` / `.App.exe`。需要 .NET 10 桌面运行时。
 """
 
-REL = api("POST", "/repos/%s/releases" % REPO, {
-    "tag_name": TAG,
+pkg = os.path.join(ROOT, "bin", "package")
+app_exe = os.path.join(ROOT, "bin", "publish-stage", "MouseWheelEnhancement.App.exe")
+
+# ── SHA256 必须进发版说明 ──
+# 客户端（UpdateService）从说明里解析 "SHA256: <64 hex>" 来校验下载到的主程序；
+# 说明里没有就等于只比体积。而 publish.ps1 已经把**主程序**（不是启动器！）的
+# 哈希写进 bin/package/SHA256.txt —— 这里读它、核对、再拼进 body。
+sha_file = os.path.join(pkg, "SHA256.txt")
+if not os.path.exists(sha_file):
+    sys.exit("缺少 %s —— 先跑 tools/publish.ps1（它会同时算出主程序的 SHA256）" % sha_file)
+
+expected = open(sha_file).read().strip().upper()
+if len(expected) != 64:
+    sys.exit("SHA256.txt 内容不是 64 位十六进制：%r" % expected)
+if not os.path.exists(app_exe):
+    sys.exit("找不到主程序产物：%s" % app_exe)
+
+import hashlib
+actual = hashlib.sha256(open(app_exe, "rb").read()).hexdigest().upper()
+if actual != expected:
+    sys.exit("主程序哈希与 SHA256.txt 不一致：\n  文件 %s\n  记录 %s" % (actual, expected))
+
+BODY += "\n## 校验\n\n`MouseWheelEnhancement.App.exe` 的 SHA256：\n\n```\nSHA256: %s\n```\n" % actual
+
+REL = api("POST", "/repos/%s/releases" % REPO, {    "tag_name": TAG,
     "target_commitish": "main",
     "name": "%s — 不再爬行" % TAG,
     "body": BODY,
@@ -132,5 +155,5 @@ print("Release 已创建：%s" % REL["html_url"])
 pkg = os.path.join(ROOT, "bin", "package")
 upload("MouseWheelEnhancement.exe", os.path.join(pkg, "MouseWheelEnhancement.exe"))
 upload("MouseWheelEnhancement-win-x64.zip", os.path.join(ROOT, "bin", "MouseWheelEnhancement-win-x64.zip"))
-upload("MouseWheelEnhancement.App.exe", os.path.join(ROOT, "bin", "publish-stage", "MouseWheelEnhancement.App.exe"))
+upload("MouseWheelEnhancement.App.exe", app_exe)
 print("\n完成：%s" % REL["html_url"])

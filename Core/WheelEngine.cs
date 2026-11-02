@@ -46,6 +46,21 @@ public sealed class WheelEngine : IDisposable
     private Native.LowLevelMouseProc? _proc;
     private volatile bool _running;
 
+    /// <summary>
+    /// Start / Stop 的串行化闸。
+    ///
+    /// <para>
+    /// 没有它的时候，看门狗（按 <see cref="IsRunning"/> 判重启）和界面上的「重启钩子」
+    /// 可以同时通过"没在跑、线程为空"的检查，然后各装一个 WH_MOUSE_LL ——
+    /// 每个滚轮事件被两套钩子各接管一次（**滚动速度直接翻倍**），旧句柄永久泄漏。
+    /// 这正是 <see cref="Start"/> 里那条注释担心的状态，只是当时没上锁。
+    /// </para>
+    /// </summary>
+    private readonly object _lifecycle = new();
+
+    /// <summary>钩子线程里 SetWindowsHookEx 失败时的真实错误码（在钩子线程上取，才不是残留值）。</summary>
+    private int _hookError;
+
     private long _events;
     private long _boosted;
     private long _passed;
@@ -58,6 +73,9 @@ public sealed class WheelEngine : IDisposable
 
     /// <summary>UIPI 放行的日志只打一次，别在钩子里刷屏。</summary>
     private int _uipiWarned;
+
+    /// <summary>"动画线程没了，本次放行"的日志只打一次。</summary>
+    private int _animatorWarned;
 
     /// <summary>已经为哪个 exe 打过"整格加速"日志（每程序一次）。</summary>
     private string _notchLogged = "";
@@ -153,6 +171,14 @@ public sealed class WheelEngine : IDisposable
 
     public bool Start()
     {
+        lock (_lifecycle)
+        {
+            return StartCore();
+        }
+    }
+
+    private bool StartCore()
+    {
         if (_running) return IsRunning;
 
         /* 上一个钩子线程还没退出时**绝不**再装一个。
@@ -167,6 +193,7 @@ public sealed class WheelEngine : IDisposable
 
         _animator.Start();
         _running = true;
+        _hookError = 0;
         _hookReady.Reset();
 
         _thread = new Thread(HookThread)
@@ -183,7 +210,9 @@ public sealed class WheelEngine : IDisposable
         if (!IsRunning)
         {
             _running = false;
-            Log.Error($"滚轮钩子安装失败，错误码 {Marshal.GetLastWin32Error()}");
+            // 错误码必须用钩子线程记下来的那个：在这里读 GetLastWin32Error 拿到的是
+            // 本线程上一次无关调用的残留，会把人带偏。
+            Log.Error($"滚轮钩子安装失败，错误码 {_hookError}");
             return false;
         }
         Log.Info("滚轮钩子已安装");
@@ -191,6 +220,14 @@ public sealed class WheelEngine : IDisposable
     }
 
     public void Stop()
+    {
+        lock (_lifecycle)
+        {
+            StopCore();
+        }
+    }
+
+    private void StopCore()
     {
         if (!_running && _thread == null) return;
         _running = false;
@@ -237,6 +274,25 @@ public sealed class WheelEngine : IDisposable
 
     /// <summary>钩子线程还活着吗（线程死了要重启，光换钩子没用）。</summary>
     public bool HookThreadAlive => _thread is { IsAlive: true };
+
+    /// <summary>平滑动画线程还活着吗。死了会让"被接管的事件"永远发不出去，必须单独盯着。</summary>
+    public bool AnimatorAlive => _animator.IsAlive;
+
+    /// <summary>
+    /// 看门狗用：动画线程意外退出后就地拉起来（<see cref="ScrollAnimator.IsAlive"/> 为 false 时）。
+    ///
+    /// <para>
+    /// 这条以前没有，而后果很严重：默认「所有滚动」都接管的情况下，动画器一死，
+    /// 钩子还在把每一个滚轮事件吞下来交给它 —— 吞了就再也没人发，
+    /// 用户看到的是**整个系统的滚轮完全不动**，只能重启进程。
+    /// </para>
+    /// </summary>
+    public void EnsureAnimator()
+    {
+        if (_animator.IsAlive) return;
+        Log.Warn("平滑动画线程不在了，正在重新拉起（看门狗）");
+        _animator.Start();
+    }
 
     /// <summary>最近一次滚轮事件的时刻（毫秒）。看门狗用它判断"是不是空闲"。</summary>
     public long LastEventTicks => Interlocked.Read(ref _lastEventTicks);
@@ -338,8 +394,10 @@ public sealed class WheelEngine : IDisposable
             _hook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, _proc, Native.GetModuleHandle(null), 0);
             if (_hook == IntPtr.Zero)
             {
+                // 在**这个**线程上取错误码才对（调用方线程读到的是无关的残留值）
+                _hookError = Marshal.GetLastWin32Error();
                 _hookReady.Set();
-                Faulted?.Invoke($"钩子安装失败（错误码 {Marshal.GetLastWin32Error()}）");
+                SafeFaulted($"钩子安装失败（错误码 {_hookError}）");
                 return;
             }
             _hookReady.Set();
@@ -357,7 +415,7 @@ public sealed class WheelEngine : IDisposable
         catch (Exception ex)
         {
             Log.Error("钩子线程异常", ex);
-            Faulted?.Invoke("钩子线程异常：" + ex.Message);
+            SafeFaulted("钩子线程异常：" + ex.Message);
             _hookReady.Set();
         }
         finally
@@ -368,6 +426,20 @@ public sealed class WheelEngine : IDisposable
                 _hook = IntPtr.Zero;
             }
         }
+    }
+
+    /// <summary>
+    /// 抛 <see cref="Faulted"/> 但不让订阅方的异常穿出去。
+    ///
+    /// <para>
+    /// 这两个调用点都在**钩子线程**上。订阅方（界面）只要抛一次，
+    /// 异常就会把整条输入链路的回调带崩 —— 这跟 <see cref="NotifyBoosted"/> 里
+    /// 那条 try/catch 是同一个理由。
+    /// </para>
+    /// </summary>
+    private void SafeFaulted(string message)
+    {
+        try { Faulted?.Invoke(message); } catch (Exception ex) { Log.Error("Faulted 订阅方异常", ex); }
     }
 
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
@@ -516,6 +588,20 @@ public sealed class WheelEngine : IDisposable
             Interlocked.Increment(ref _events);
             Volatile.Write(ref _lastRate, decision.RatePerSec);
 
+            /* ── 动画线程不在了 → 一律原样放行 ──
+             *
+             * 接管的前提是"有人负责把量发出去"。动画线程异常退出之后（Loop 的 finally
+             * 会把 IsAlive 落下来），如果我们还照常吞事件，就等于把用户的滚轮**吃掉**：
+             * 吞下去的量没有人发，整个系统的滚动会完全不动，只能重启进程。
+             * 这里宁可这一次不加速，也要保证滚动本身是通的；看门狗会负责把线程拉起来。 */
+            if (!_animator.IsAlive)
+            {
+                if (Interlocked.Exchange(ref _animatorWarned, 1) == 0)
+                    Log.Warn("平滑动画线程已停止，本次滚动原样放行（看门狗会重新拉起它）");
+                Interlocked.Increment(ref _passed);
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
             /* ── 按"事件次数"滚动的框架（WPF / WinForms）：只发整格，绝不摊帧 ──
              *
              * 这类框架**只看向号、不看 delta 大小**：一个 WM_MOUSEWHEEL 就滚固定一档。
@@ -568,7 +654,7 @@ public sealed class WheelEngine : IDisposable
                 if (sign == 0) sign = Math.Sign(delta);
 
                 _animator.WholeNotch = true;
-                _animator.PushWholeNotches(sign * notches);
+                _animator.PushWholeNotches(sign * notches, s);
 
                 /* 每个程序只记一次"整格加速"的判定依据。
                  * 排查"某个软件里加速没反应"时，这条日志能立刻回答两个问题：
@@ -608,7 +694,7 @@ public sealed class WheelEngine : IDisposable
             var flick = FlickExtraNotches(s, decision);
             if (flick > 0) outUnits += Math.Sign(outUnits) * flick * Native.WHEEL_DELTA;
 
-            _animator.Push(outUnits);
+            _animator.Push(outUnits, s);
             Interlocked.Increment(ref _boosted);
             NotifyBoosted(decision.Multiplier, s);
 

@@ -55,7 +55,22 @@ public static class AutoStart
                 return false;
             }
 
-            if (on) k.SetValue(ValueName, CommandLine);
+            if (on)
+            {
+                /* 指向版本目录的自启项是**定时炸弹**：启动器下次 CleanOldVersions
+                 * 会把这个目录删掉，注册表里那行还在、开关还显示"开"，但开机什么都不
+                 * 发生 —— 和 AdminStart 里那条守卫是同一个坑，这条路径以前漏了。
+                 * 正常从启动器启动时 StableEntryPath 就是启动器，不会命中这里。 */
+                var target = AdminStart.StableEntryPath;
+                if (AdminStart.IsVersionedBody(target))
+                {
+                    error = "当前不是从安装目录的启动器启动的，写进去的开机自启会在下次升级后失效。" +
+                            "请双击安装目录里的 MouseWheelEnhancement.exe 启动一次，再打开这个开关。";
+                    Log.Warn("拒绝把版本目录写进开机自启：" + target);
+                    return false;
+                }
+                k.SetValue(ValueName, CommandLine);
+            }
             else if (k.GetValue(ValueName) != null) k.DeleteValue(ValueName, false);
 
             return true;

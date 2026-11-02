@@ -95,6 +95,17 @@ public sealed record RuntimeSettings
     public IReadOnlyDictionary<string, RuntimeSettings> PerApp { get; init; } =
         new Dictionary<string, RuntimeSettings>(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 这一份快照是不是"按应用覆盖"派生出来的。
+    ///
+    /// <para>
+    /// 不用 <c>PerApp.ContainsKey</c> 判断：覆盖快照是在 <see cref="PerApp"/> 填好
+    /// **之前**派生的，它们手里那份字典是空的（派生完才把字典塞进全局快照）。
+    /// 用它判断会得出"没有覆盖"的错误结论 —— 这正是 v1.8.0 覆盖在名单里不生效的一半原因。
+    /// </para>
+    /// </summary>
+    public bool HasOverride { get; init; }
+
     public FilterMode FilterMode { get; init; }
     public IReadOnlySet<string> FilterApps { get; init; } = new HashSet<string>();
     public Regex? TitleRegex { get; init; }
@@ -312,7 +323,7 @@ public sealed record RuntimeSettings
     public RuntimeSettings WithOverride(AppOverride? o)
     {
         if (o == null) return this;
-        var s = this;
+        var s = this with { HasOverride = true };
 
         if (o.MaxMultiplier is double raw)
         {
@@ -363,6 +374,15 @@ public sealed record RuntimeSettings
             try { listed = TitleRegex.IsMatch(title); }
             catch (RegexMatchTimeoutException) { listed = false; }
         }
+
+        /* 「按应用覆盖」是**正向声明**：用户给某个程序单独设了倍率上限/平滑开关，
+         * 意思显然是"这个程序要增强，按这些参数来"。所以它在两种模式下都算启用 ——
+         * 否则默认的黑名单模式（名单里的不增强）里，覆盖设了也永远不生效：
+         * 那个程序连滚动都不经过本程序，覆盖参数根本没机会被用到。
+         *
+         * 判据用 HasOverride（这份快照就是按覆盖派生的），不能用
+         * PerApp.ContainsKey —— 覆盖快照手里的 PerApp 是空的，见 HasOverride 的说明。 */
+        if (listed && HasOverride) return true;
 
         return FilterMode == FilterMode.Whitelist ? listed : !listed;
     }

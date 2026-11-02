@@ -42,10 +42,16 @@
         </Setter>
     </Style>
 
-    <!-- ══════════════════════ 文字 ══════════════════════ -->
+    <!-- ══════════════════════ 文字 ══════════════════════
+
+         ⚠ 这里**不能**给 TextBlock 的隐式样式设 Foreground。
+         隐式样式的 Setter 优先级高于属性继承，而 ContentPresenter 渲染字符串 Content 时
+         会生成内部 TextBlock 并被隐式样式命中 —— 结果 Button/RadioButton/ListBoxItem/
+         MenuItem 上设的 Foreground（危险色、次级灰、选中色）全被顶成 TextPrimary。
+         默认前景色改由窗口根上的 TextElement.Foreground 提供（见 MainWindow.xaml），
+         普通 TextBlock 照样继承到它，控件自己的 Foreground 则按预期生效。 -->
 
     <Style TargetType="TextBlock">
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
         <Setter Property="FontSize" Value="13.5" />
         <Setter Property="TextOptions.TextFormattingMode" Value="Ideal" />
@@ -825,7 +831,10 @@
         </Setter>
     </Style>
 
-    <!-- 菜单项：默认模板是直角的，这里自己画一个圆角的 -->
+    <!-- 菜单项：默认模板是直角的，这里自己画一个圆角的。
+         ⚠ 必须带 PART_Popup / ItemsPresenter：MenuItem 的子菜单就是靠它们承载的，
+         少了这两个元素，`Items.Add(...)` 加进去的子菜单**永远不会显示**（名单页的
+         「倍率上限」「平滑」两级菜单就是这么整段失效的）。 -->
     <Style TargetType="MenuItem">
         <Setter Property="Padding" Value="10,7" />
         <Setter Property="Cursor" Value="Hand" />
@@ -833,18 +842,71 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="MenuItem">
-                    <Border x:Name="Bd" Background="Transparent" CornerRadius="7"
-                            Padding="{TemplateBinding Padding}">
-                        <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
-                    </Border>
+                    <Grid>
+                        <Border x:Name="Bd" Background="Transparent" CornerRadius="7"
+                                Padding="{TemplateBinding Padding}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter Grid.Column="0" ContentSource="Header" VerticalAlignment="Center"
+                                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+                                <!-- 勾选（IsCheckable 项，例如「上限 3×」当前选中的那个） -->
+                                <TextBlock x:Name="Check" Grid.Column="1" Text="&#xE73E;" Margin="12,0,0,0"
+                                           FontFamily="{StaticResource IconFont}" FontSize="12"
+                                           VerticalAlignment="Center" Visibility="Collapsed"
+                                           Foreground="{DynamicResource AccentBrush}" />
+                                <!-- 子菜单箭头 -->
+                                <TextBlock x:Name="Arrow" Grid.Column="2" Text="&#xE76C;" Margin="12,0,0,0"
+                                           FontFamily="{StaticResource IconFont}" FontSize="10"
+                                           VerticalAlignment="Center" Visibility="Collapsed"
+                                           Foreground="{DynamicResource TextSecondary}" />
+                            </Grid>
+                        </Border>
+
+                        <Popup x:Name="PART_Popup" Placement="Right"
+                               IsOpen="{TemplateBinding IsSubmenuOpen}"
+                               AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
+                            <Border Background="{DynamicResource CardBg}"
+                                    BorderBrush="{DynamicResource BorderBrushStrong}" BorderThickness="1"
+                                    CornerRadius="10" Padding="4" Margin="2,0,0,0"
+                                    MinWidth="120">
+                                <ScrollViewer CanContentScroll="True" MaxHeight="420">
+                                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" />
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">
                             <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBg}" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Check" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="Role" Value="SubmenuHeader">
+                            <Setter TargetName="Arrow" Property="Visibility" Value="Visible" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Foreground" Value="{DynamicResource TextMuted}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 菜单分隔线：默认是系统浅灰，深色菜单里会成一条刺眼的白线 -->
+    <Style TargetType="Separator">
+        <Setter Property="Height" Value="1" />
+        <Setter Property="Margin" Value="6,5" />
+        <Setter Property="Background" Value="{DynamicResource BorderBrushSoft}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Separator">
+                    <Border Height="1" Background="{TemplateBinding Background}" />
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

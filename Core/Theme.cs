@@ -274,7 +274,9 @@ public static class Theme
         Log.Info($"系统主题变化 → {(light ? "浅色" : "深色")}");
 
         // 标题栏也要跟着变，交给订阅方（窗口）处理
-        Changed?.Invoke();
+        // 订阅方一旦抛，这里就变成"定时器线程上的未处理异常" → 进程结束，必须兜住
+        try { Changed?.Invoke(); }
+        catch (Exception ex) { Log.Error("主题变化回调异常", ex); }
     }
 
     /// <summary>

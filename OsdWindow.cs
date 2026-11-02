@@ -79,9 +79,14 @@ internal sealed class OsdWindow : Window
             var gen = _generation;
             Fade(0, 180, () =>
             {
-                if (gen == _generation && Opacity <= 0.01) Hide();
+                /* 先判代次再判可见：窗口可能已经被关闭（退出时 OSD 恰好还亮着），
+                 * 对已关闭窗口调 Hide() 会抛 InvalidOperationException。 */
+                if (gen == _generation && Opacity <= 0.01 && IsVisible) Hide();
             });
         };
+
+        /* 关窗后必须把定时器停掉：否则它还会在已关闭的窗口上跑一次收尾。 */
+        Closed += (_, _) => _hide.Stop();
 
         SourceInitialized += (_, _) =>
         {

@@ -154,7 +154,26 @@ public sealed class TargetResolver
         public bool Elevated;
         /// <summary>标题懒加载：null = 还没取过。</summary>
         public string? Title;
+
+        /// <summary>上一次取标题的时刻（毫秒）。标题会变（浏览器切标签页、编辑器换文件），
+        /// 所以不能一个窗口只取一次 —— 见 <see cref="TitleTtlMs"/>。</summary>
+        public long TitleAtMs;
     }
+
+    /// <summary>
+    /// 标题的缓存时长（毫秒）。
+    ///
+    /// <para>
+    /// 以前是"同一个 hwnd 只取一次，取到就永远用那一份"。浏览器、编辑器这类
+    /// 一个窗口换内容的程序，标题会变 —— 于是"只在标题匹配 xxx 时启用"的正则
+    /// 会一直按上一次的标题判断，切了标签页就不准了。
+    /// </para>
+    /// <para>
+    /// 1 秒是折中：切标签页之后最多 1 秒就跟上，而每秒最多一次跨进程取标题
+    /// （带 40ms 超时，见 <see cref="Native.TitleOfWithTimeout"/>）不会拖慢滚动。
+    /// </para>
+    /// </summary>
+    private const long TitleTtlMs = 1000;
 
     /// <summary>滚轮事件用：只有这一下真的需要判标题时才解析标题。</summary>
     public TargetInfo ResolveForWheel(bool needTitle)
@@ -202,7 +221,22 @@ public sealed class TargetResolver
         }
 
         var title = "";
-        if (needTitle) title = e.Title ??= Native.TitleOf(hwnd);
+        if (needTitle)
+        {
+            var nowMs = Environment.TickCount64;
+            if (e.Title == null || nowMs - e.TitleAtMs > TitleTtlMs)
+            {
+                /* 带超时地取：目标线程卡住时不能把钩子一起卡死（会被系统摘掉）。
+                 * 取不到就沿用上一份 —— 空标题会让我们错误地"放行"或"接管"。 */
+                var fresh = Native.TitleOfWithTimeout(hwnd);
+                if (fresh != null)
+                {
+                    e.Title = fresh;
+                    e.TitleAtMs = nowMs;
+                }
+            }
+            title = e.Title ?? "";
+        }
 
         return new TargetInfo(hwnd, pid, e.Exe, title, e.Class, e.Elevated);
     }

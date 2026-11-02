@@ -46,8 +46,15 @@ public static class AppPaths
         if (!string.IsNullOrWhiteSpace(env))
         {
             var d = env.Trim();
-            TryEnsure(d);
-            return d;
+            /* ⚠ 环境变量不能无条件相信。
+             *
+             * 启动器会把数据目录钉在"安装目录"下（装到 Program Files 时那里不可写）。
+             * 以前这里只看请求、不看结果，于是"程序目录不可写就退到 %APPDATA%"
+             * 这条保障在**唯一正常的启动入口**上被完全绕过：设置每次重启都归零，
+             * 而日志目录同样不可写 —— 连一条错误都留不下来。
+             * 写不动时继续走下面的候选链，让 TryEnsure 去挑一个真能写的地方。 */
+            if (TryEnsure(d)) return d;
+            Log.Warn($"MWE_DATA_DIR 指向的目录不可写（{d}），改按默认规则挑选数据目录");
         }
 
         /* 主程序被放在版本目录 <安装目录>\app\<版本>\ 里时，数据目录必须在
@@ -144,7 +151,9 @@ public static class AppPaths
         try
         {
             Directory.CreateDirectory(dir);
-            var probe = Path.Combine(dir, ".write-probe");
+            /* 探测文件名带进程和线程，避免两个进程同时探测同一目录时
+             * 撞共享冲突 → 把可写目录误判成不可写（然后静默换到 %APPDATA%）。 */
+            var probe = Path.Combine(dir, $".write-probe-{Environment.ProcessId}-{Environment.CurrentManagedThreadId}");
             File.WriteAllText(probe, "ok");
             File.Delete(probe);
             return true;

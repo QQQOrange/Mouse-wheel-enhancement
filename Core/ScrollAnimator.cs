@@ -70,9 +70,8 @@ namespace MouseWheelEnhancement.Core;
 ///   · <see cref="Quantize"/>：小数零头跨帧累积，攒够 1 才发，间隔自然拉长；
 ///   · 落地段：剩不到 1/10 格（12 单位）时把 τ 插值到 <see cref="LandingTauMs"/>，
 ///     最后 2~3 个单位摊到 ~80~110 ms 里；
-///   · **收尾上界**（v1.7.5）：松手之后整段收尾不超过 <see cref="MaxFinishMs"/>。
-///     用户把「惯性长度」调短到 100 ms 之后，落地段还要再软着陆一大截，
-///     总时长 390 ms —— 这就是"每滚完最后一下都有一段延迟"。
+///   · **收尾时长**（v1.8.8）：松手之后的 τ 由这一次的手速反解（见 <see cref="StopTau"/>），
+///     滚得越快尾巴越长、越慢收得越干脆 —— 以前那条固定的 150 ms 硬上界已经删掉。
 ///
 /// 实测（`--frametrace`，160 Hz、滑行 300 ms、滚一格）：
 /// v1.7.4：落地段 175 ms、末帧间隔 75 ms、中段步长起伏 5.3×。
@@ -110,7 +109,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// 太宽（40）让松手后手里还有 1/3 格时就开始软着陆，单格收尾拖到 390 ms；
     /// 太窄（10）让落地段只影响最后 1~2 个单位，"渐停"的效果几乎看不到。
     /// 12 单位让落地段影响 2~3 个单位、最后一步落在 ~30 单位/秒（0.25 格/秒）
-    /// 的"渐停"上，配合 <see cref="MaxFinishMs"/> 让整段收尾不拖。
+    /// 的"渐停"上，配合 <see cref="MaxLandTauMs"/> 让整段收尾不拖。
     /// </para>
     /// </summary>
     internal const int LandingStartUnits = Native.WHEEL_DELTA / 10;   // 12 单位 ≈ 1/10 格
@@ -139,7 +138,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// 这个上限是 v1.7.5"滚完最后一下像还有延迟"那条结论的边界，不能为了平滑而突破。
     /// </para>
     /// </summary>
-    private const double MaxLandTauMs = 50.0;
+    internal const double MaxLandTauMs = 50.0;
 
     /// <summary>收尾总时长的上下限（毫秒）。目标值由"这一次的滚动速度"决定。</summary>
     private const double MinStopMs = 90.0;
@@ -213,38 +212,14 @@ internal sealed class ScrollAnimator : IDisposable
     private const double MinGlideTauMs = 12.0;
     private const double MaxGlideTauMs = 400.0;
 
-
-    /// <summary>
-    /// 松手后额外滑行多久（毫秒）——**给"收尾"整体加一个上界**。
-    ///
-    /// <para>
-    /// 用户的「惯性长度」（<see cref="RuntimeSettings.GlideMs"/>）说的是
-    /// "这一段滚动还要飘多久"，但落地段是叠加在它之上的：用户把它调到 100 ms
-    /// 之后，最后 1/10 格还要再按 <see cref="LandingTauMs"/> 软着陆一大截。
-    /// 这里给松手之后的整段收尾一个硬上界（默认 150 ms），
-    /// 超出部分按剩余量**等比收紧 τ**（只压不抬），让收尾在上界内走完。
-    /// </para>
-    /// <para>
-    /// <b>只压不抬</b>是关键：收尾上界的本意是"别拖"，不是"催它快点走完"。
-    /// 把 τ 抬高会让末段从"渐停"变成"匀速小步走完"（末 6 帧速度从 30 涨到 144），
-    /// 那是另一种顿挫。压 τ 只会让收尾更利落。
-    /// </para>
-    /// <para>
-    /// <b>落地段期间不参与</b>：软着陆只影响最后 2~3 个单位，
-    /// 这时候收紧 τ 反而会打断软着陆、让末段变硬。落地段由 LandingTauMs
-    /// 单独管；MaxFinishMs 只管"落地段之前"的中段。
-    /// </para>
-    /// <para>
-    /// 170 → 260 → 110 → <b>150（v1.7.5）</b>：
-    /// 260 ms 太松，3 格 / 6 格连甩时 v1.7.4 的 390 ms 仍然能延续到 280+ ms；
-    /// 110 ms 在 60 Hz 上把收尾压得太快，末段出现"1 单位 → 2 单位"的轻微回升
-    /// （量化零头被 MaxFinishMs 加速后追上整帧）；150 ms 是扫参找到的甜点：
-    /// ⑥ 4 个场景（1 格 60Hz、1 格 144Hz、3 格 60Hz、6 格 144Hz）末尾单调 + 末帧 ≤ 2；
-    /// ⑦ 4 个场景（1 格 60Hz、1 格 160Hz、3 格 160Hz、6 格 144Hz）的落地段都在
-    /// 100~119 ms 之间、末 6 帧速度 50~65 单位/秒（渐停）、中段步长起伏 ≤ 3.5×。
-    /// </para>
-    /// </summary>
-    internal const double MaxFinishMs = 150.0;
+    /* 这里原本有一个 MaxFinishMs（150 ms）的"整段收尾硬上界"。
+     *
+     * v1.7.5 加的，v1.8.8 删的：收尾时长改成由**这一次的手速**决定之后
+     * （见 <see cref="StopTau"/>），硬上界会把快滚本该更长的尾巴一刀切短 ——
+     * 那正是用户报的"停得很突兀"。现在收尾只有两个边界：
+     *   · <see cref="MaxStopMs"/> —— 单次收尾总时长（由 StopTau 夹）；
+     *   · <see cref="MaxLandTauMs"/> —— 落地段的 τ。
+     * 自检与 --frametrace 都按这两个口径验收。 */
 
     /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（ UnitsPerFrame 已含倍率容量，
     /// 见 <see cref="RuntimeSettings.UnitsPerFrameFor"/>）。</summary>
@@ -335,13 +310,26 @@ internal sealed class ScrollAnimator : IDisposable
 
     private RuntimeSettings _settings = RuntimeSettings.From(AppConfig.Default());
 
+    /// <summary>
+    /// **这一轮滚动**的有效设置（含按应用覆盖），null = 跟随全局快照。
+    ///
+    /// <para>
+    /// 按应用覆盖（v1.8.0）只改「倍率上限」和「平滑开关」两项，而这两项都会影响
+    /// 出帧：倍率上限决定单帧容量与积压上限，平滑开关决定要不要摊帧、要不要滑行。
+    /// 钩子那一侧早就算好了覆盖后的快照，但动画器以前只认 <see cref="_settings"/>
+    /// 里的全局值 —— 于是覆盖里的「平滑关」在这个程序里仍然被平滑，
+    /// 覆盖调高倍率时积压又被全局上限截断。
+    /// </para>
+    /// <para>
+    /// 用"每次投递带上有效设置"而不是直接改 <see cref="_settings"/>：后者会让
+    /// A 程序的覆盖一直污染到下一次 Apply，B 程序跟着用错参数。
+    /// 一轮滚动只属于一个目标程序，所以按投递记下来正好。
+    /// </para>
+    /// </summary>
+    private RuntimeSettings? _burstSettings;
+
     private long _nextFrameTicks;
     private long _lastFrameTicks;
-
-    /// <summary>
-    /// 松手那一刻（进入滑行/落地）手里还剩多少单位。收尾上界按它反解 τ。
-    /// </summary>
-    private double _finishFromUnits;
 
     /* 出帧用的高精度可等待定时器；0 表示创建失败，退回"事件超时 + 1ms 计时精度" */
     private IntPtr _frameTimer;
@@ -360,6 +348,16 @@ internal sealed class ScrollAnimator : IDisposable
 
     /// <summary>是不是走的高精度定时器（诊断用）。</summary>
     public bool UsingHighResolutionTimer => _frameTimer != IntPtr.Zero;
+
+    /// <summary>
+    /// 动画线程还活着吗。
+    ///
+    /// <para>
+    /// 钩子必须先问这一句再决定要不要接管：线程没了还照常吞事件，
+    /// 就等于让整个系统的滚轮停摆（吞下去的量没人发）。看门狗也靠它决定重启。
+    /// </para>
+    /// </summary>
+    public bool IsAlive => _alive;
 
     /// <summary>
     /// 诊断口：设上之后，每摊好一帧就交给它，**不再真的注入**。
@@ -453,11 +451,20 @@ internal sealed class ScrollAnimator : IDisposable
             Interlocked.Exchange(ref _carryMilli, 0);
             /* 让下一档立刻发出去，别被上一轮的时间戳拖住。 */
             Interlocked.Exchange(ref _lastWholeMs, 0);
-            _finishFromUnits = 0;
         }
     }
 
-    public void UpdateSettings(RuntimeSettings s) => Volatile.Write(ref _settings, s);
+    public void UpdateSettings(RuntimeSettings s)
+    {
+        Volatile.Write(ref _settings, s);
+        /* 新一轮配置生效之后，"上一轮滚动用的那份覆盖"就过期了：
+         * 用户刚改了参数，正在滑的尾巴应该按新参数收，而不是继续用旧的。 */
+        Volatile.Write(ref _burstSettings, null);
+    }
+
+    /// <summary>这一帧该用的设置：这一轮滚动带来的覆盖优先，否则就是全局快照。</summary>
+    private RuntimeSettings EffectiveSettings()
+        => Volatile.Read(ref _burstSettings) ?? Volatile.Read(ref _settings);
 
     public void Start()
     {
@@ -481,11 +488,14 @@ internal sealed class ScrollAnimator : IDisposable
     ///
     /// <para>给"按比例滚动"的目标用（浏览器、Qt、Office、本程序自己的页面）。</para>
     /// </summary>
-    public void Push(int units)
+    /// <param name="effective">
+    /// 这一下的有效设置（钩子里按应用覆盖替换过的那一份）。null = 用全局快照。
+    /// </param>
+    public void Push(int units, RuntimeSettings? effective = null)
     {
         if (units == 0) return;
-        var s = Volatile.Read(ref _settings);
-        PushCore(units, s.MaxBacklogUnits, s.FlushOnReverse);
+        var s = effective ?? Volatile.Read(ref _settings);
+        PushCore(units, s, s.MaxBacklogUnits);
     }
 
     /// <summary>
@@ -504,19 +514,23 @@ internal sealed class ScrollAnimator : IDisposable
     /// 最坏也只是积压 16 档，而动画器每秒能发 80 多档，实际根本追不满。
     /// </para>
     /// </summary>
-    public void PushWholeNotches(int notches)
+    public void PushWholeNotches(int notches, RuntimeSettings? effective = null)
     {
         if (notches == 0) return;
 
         var n = Math.Clamp(Math.Abs(notches), 1, MaxWholeNotches);
-        var s = Volatile.Read(ref _settings);
-        PushCore(Math.Sign(notches) * n * Native.WHEEL_DELTA,
-            Math.Max(s.MaxBacklogUnits, MaxWholeNotches * (double)Native.WHEEL_DELTA), s.FlushOnReverse);
+        var s = effective ?? Volatile.Read(ref _settings);
+        PushCore(Math.Sign(notches) * n * Native.WHEEL_DELTA, s,
+            Math.Max(s.MaxBacklogUnits, MaxWholeNotches * (double)Native.WHEEL_DELTA));
     }
 
     /// <param name="capUnits">积压上限（单位，不是格）。</param>
-    private void PushCore(int units, double capUnits, bool flushOnReverse)
+    /// <param name="effective">这一下生效的设置（同时决定滑行/反向过渡等行为）。</param>
+    private void PushCore(int units, RuntimeSettings effective, double capUnits)
     {
+        /* 先记下"这一轮滚动属于哪份设置"，动画线程从这一刻起按它出帧。 */
+        Volatile.Write(ref _burstSettings, effective);
+
         TrackPushRate(units);
 
         var sign = Math.Sign(units);
@@ -525,7 +539,7 @@ internal sealed class ScrollAnimator : IDisposable
         /* 反向输入：把还没发完的旧方向积压直接丢掉。
          * 不丢的话，用户往回滚的那一瞬间会先继续往前冲一小段（积压还在往外发），
          * 手感就是"往回想滚却滚不动"。 */
-        if (flushOnReverse && sign != 0 && Math.Sign(total) != sign)
+        if (effective.FlushOnReverse && sign != 0 && Math.Sign(total) != sign)
         {
             total = Interlocked.Exchange(ref _pendingMilli, (long)units * (long)Milli);
             /* 零头是"上一个方向还没凑满一单位的那一点点"，换方向之后必须丢掉：
@@ -540,7 +554,7 @@ internal sealed class ScrollAnimator : IDisposable
              * 快滚中途回拨时会有一下顿挫。这里插 45ms 的停顿当作过渡，
              * 让方向翻转有个"收—再起步"的呼吸感。
              * 只在用户显式打开 ReverseEase 时生效，且不影响同向连滚。 */
-            if (Volatile.Read(ref _settings).ReverseEase)
+            if (effective.ReverseEase)
                 Interlocked.Exchange(ref _reverseHoldTicks, _clock.ElapsedTicks + MsToTicks(ReverseHoldMs));
         }
 
@@ -568,7 +582,6 @@ internal sealed class ScrollAnimator : IDisposable
         Interlocked.Exchange(ref _pendingMilli, 0);
         Interlocked.Exchange(ref _glideStartTicks, 0);
         Interlocked.Exchange(ref _carryMilli, 0);
-        _finishFromUnits = 0;
     }
 
     /// <summary>
@@ -850,7 +863,9 @@ internal sealed class ScrollAnimator : IDisposable
 
             while (_alive)
             {
-                var s = Volatile.Read(ref _settings);
+                /* 这一帧按"这一轮滚动"的设置出帧：按应用覆盖时钩子会带着覆盖后的
+                 * 快照投递进来，见 _burstSettings。没有覆盖就是全局快照。 */
+                var s = EffectiveSettings();
                 var frameTicks = MsToTicks(s.FrameIntervalMs);
 
                 var pendingMilli = Interlocked.Read(ref _pendingMilli);
@@ -865,11 +880,14 @@ internal sealed class ScrollAnimator : IDisposable
                     /* 顺手丢掉不到 1 单位的零头：留着也没东西可加了，
                      * 意义只有 1/120 格（亚像素）。 */
                     Interlocked.Exchange(ref _carryMilli, 0);
-                    _finishFromUnits = 0;
                     _slowFrames = 0;
                     _degraded = false;
                     Interlocked.Exchange(ref _reverseHoldTicks, 0);
                     Interlocked.Exchange(ref _tailEmitTicks, 0);
+
+                    /* 这一轮真的结束了：把按应用覆盖带进来的那份快照放掉，
+                     * 下一次没有覆盖的投递就自动回到全局设置。 */
+                    Volatile.Write(ref _burstSettings, null);
 
                     /* **等醒来的这一刻才算"上一帧"**。
                      *
@@ -892,7 +910,7 @@ internal sealed class ScrollAnimator : IDisposable
                     if (now < _nextFrameTicks) continue;
                 }
 
-                s = Volatile.Read(ref _settings);
+                s = EffectiveSettings();
                 pendingMilli = Interlocked.Read(ref _pendingMilli);
                 if (pendingMilli == 0) continue;
 
@@ -997,7 +1015,6 @@ internal sealed class ScrollAnimator : IDisposable
                             }
 
                             _glideTauMs = StopTau(releaseRate, pendingUnits, s.GlideMs, s.TauMs);
-                            _finishFromUnits = Math.Abs(pendingUnits);
 
                             /* 落地 τ 跟着滑行 τ 走（0.75×）：滚得越快，最后几个单位之间也越疏。
                              * 固定 35ms 会让快滚的尾巴"突然加速收掉"，正是这次的症状。 */
@@ -1041,16 +1058,14 @@ internal sealed class ScrollAnimator : IDisposable
                             tau = tau + (landTarget - tau) * k;
                         }
 
-                        /* ── 收尾上界：松手之后整段收尾不超过 MaxFinishMs ──
+                        /* ⚠ 这里**没有**"整段收尾不超过 N 毫秒"的硬上界。
                          *
-                         * 用户把「惯性长度」调到 100ms 之后，落地段还要再软着陆
-                         * 一大截 —— "每滚完最后一下都有一段延迟"。
-                         * 这里按"已经过了多久 / 还剩多少"反解一个更短的 τ，让收尾
-                         * 在 MaxFinishMs 内走完。仍然是指数曲线（没有到点倾泻）。
-                         *
-                         * **只压不抬**：收尾上界的本意是"别拖"，不是"催它快点走完"。
-                         * 把 τ 抬高会让末段从"渐停"变成"匀速小步走完"（末 6 帧速度
-                         * 从 30 涨到 144），那是另一种顿挫。 */
+                         * v1.7.5 曾经有一条 MaxFinishMs=150ms 的上界（按"已经过了多久 /
+                         * 还剩多少"反解一个更短的 τ）。v1.8.8 把收尾时长改成**由这一次的
+                         * 手速决定**之后，那条上界就成了反作用：它会把快滚本该更长的尾巴
+                         * 一刀切短，正是"停得很突兀"本身。所以代码删掉了 —— 收尾的边界
+                         * 现在只有两个：<see cref="MaxStopMs"/>（单次收尾总时长上限）
+                         * 和落地段的 <see cref="MaxLandTauMs"/>。 */
                     }
                 }
 
@@ -1086,16 +1101,18 @@ internal sealed class ScrollAnimator : IDisposable
 
                 if (units != 0)
                 {
-                    // 别把方向发反，也别超过自己手里有的量
-                    if (Math.Sign(units) != Math.Sign(pendingUnits))
-                        units = Math.Sign(pendingUnits);
-                    if (Math.Abs(units) > Math.Abs(pendingUnits))
-                        units = (int)Math.Sign(pendingUnits) * (int)Math.Floor(Math.Abs(pendingUnits));
-
+                    /* 原子扣减，且**绝不扣成负数**。
+                     *
+                     * units 是用"这一帧开始时读到的那份积压"算出来的，而扣减发生在几百
+                     * 纳秒之后。这段时间里钩子线程完全可能 Clear()（换方向、命中黑名单、
+                     * 动画器被停）或切换整格模式。以前是直接 Interlocked.Add，
+                     * 于是积压会变成负数：
+                     *   · 按比例模式下一帧按负积压**反向**发一点（"快滚之后回退一下"）；
+                     *   · 整格模式下负积压不是 120 的倍数，WholeNotchFrame 永远返回 0，
+                     *     排不空、动画线程每帧空转到切窗口为止。 */
+                    units = TakePending(units);
                     if (units != 0)
                     {
-                        Interlocked.Add(ref _pendingMilli, -(long)units * (long)Milli);
-
                         /* 诊断口：只交出帧、不注入（--frametrace）。 */
                         var sink = FrameSink;
                         if (sink != null)
@@ -1130,7 +1147,45 @@ internal sealed class ScrollAnimator : IDisposable
                 Native.CloseHandle(_frameTimer);
                 _frameTimer = IntPtr.Zero;
             }
+
+            /* ⚠ 线程没了就必须把"活着"的标记落下来。
+             *
+             * 以前只有 Dispose() 会置 false，于是动画线程异常退出之后：
+             *   · Start() 看到 _alive 直接返回，**永远不会重启**；
+             *   · 钩子那边还在照常把滚轮事件吞下来交给动画器（SmoothScope=Always 时
+             *     是**每一个**事件），而动画器已经不在了 —— 现象是"全系统滚轮完全不动"，
+             *     只能重启进程。现在钩子会检查 IsAlive 并改为原样放行，
+             *     看门狗也会把它拉起来（见 WheelEngine.EnsureAnimator）。 */
+            _alive = false;
         }
+    }
+
+    /// <summary>
+    /// 从积压里原子地扣掉 <paramref name="units"/>，返回**真正扣掉的量**。
+    ///
+    /// <para>
+    /// 夹在"当前积压"以内、且方向必须一致：另一个线程可能在这之前把积压清零
+    /// （Clear / 切整格模式 / 反向投递），那时直接返回 0，绝不把积压扣成负数。
+    /// 负数积压会让比例模式反向发一点、整格模式永远凑不满一格（空转到切窗口）。
+    /// </para>
+    /// </summary>
+    private int TakePending(int units)
+    {
+        var want = units;
+        for (var guard = 0; guard < 8; guard++)
+        {
+            var cur = Interlocked.Read(ref _pendingMilli);
+            if (cur == 0 || Math.Sign(cur) != Math.Sign(want)) return 0;
+
+            /* 只按整单位扣（剩下的亚单位零头留给下一帧）。 */
+            var curUnits = (long)(Math.Abs(cur) / Milli);
+            if (curUnits <= 0) return 0;
+            if (Math.Abs(want) > curUnits) want = (int)Math.Sign(cur) * (int)curUnits;
+
+            var next = cur - (long)want * (long)Milli;
+            if (Interlocked.CompareExchange(ref _pendingMilli, next, cur) == cur) return want;
+        }
+        return 0;
     }
 
     /// <summary>等到某个绝对时间点。返回 false 表示线程要退出了。</summary>

@@ -728,7 +728,11 @@ internal static class SelfTest
          *
          * 同时钉住"最后一帧不拖"和"落地段不长"：用户报的
          * "每次滚完最后一下，真的有一种延迟"，形态是收尾的最后 1~2 单位拖到
-         * 80~94 ms 才发、走完 95% 之后还要再磨 180 ms。 */
+         * 80~94 ms 才发、走完 95% 之后还要再磨 180 ms。
+         *
+         * ⚠ "落地段不长"的阈值随 v1.8.8 改过：收尾时长现在由手速决定
+         * （见 ScrollAnimator.StopTau），固定的 150ms 硬上界已经删掉，
+         * 所以判据换成"≤250ms 且不超过整段 62%"，与 --frametrace 同一口径。 */
         foreach (var (start, fps, glideMs) in new[]
                  {
                      (120.0, 60.0, 100), (120.0, 160.0, 100),
@@ -745,8 +749,17 @@ internal static class SelfTest
                 rate <= 72, $"{rate:0} 单位/秒");
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：走完 95% 之后仍有 ≥ 40 ms 的落地段",
                 land >= 40, $"{land:0} ms");
-            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：落地段 ≤ 150 ms（收尾不拖）",
-                land <= 150, $"{land:0} ms");
+            /* 落地段的上限是**跟着收尾设计走的**，不是拍脑袋的 150：
+             * v1.8.8 之前有一条固定的 150ms 收尾硬上界，落地段自然 ≤150；
+             * 那条上界删掉之后，收尾时长由这一次的手速决定（FastStop/StopTau），
+             * 6 格猛甩的落地段实测 167ms —— 这就是"快滚尾巴更长"的应有形态。
+             * 这里改用 --frametrace 同一条口径：绝对上限 250ms，
+             * 同时"落地段不超过整段收尾的 62%"（防止它变成长时间爬行）。 */
+            var drainMs = fr.Count == 0 ? 0 : fr[^1].AtMs;
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：落地段 ≤ 250 ms（收尾不拖）",
+                land <= 250, $"{land:0} ms");
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：落地段不超过整段的 62%",
+                drainMs <= 0 || land <= Math.Max(40, drainMs * 0.62), $"{land:0} / {drainMs:0} ms");
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末帧间隔 ≤ 70 ms（最后一帧不拖）",
                 maxGap <= 70, $"{maxGap:0.#} ms");
             Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：总量守恒", sent == (int)start, $"{sent}");
@@ -796,6 +809,7 @@ internal static class SelfTest
         var t = 0.0;
         var glideStart = -1.0;
         var glideTau = 0.0;
+        var landTau = ScrollAnimator.LandingTauMs;
         var carry = 0.0;
 
         while (p > 0 && fr.Count < 4000)
@@ -807,35 +821,24 @@ internal static class SelfTest
                 if (glideStart < 0)
                 {
                     glideStart = t;
-                    glideTau = ScrollAnimator.GlideTau(p, glideMs, Tau);
+                    /* 和线上一致：收尾 τ 由**这一次的手速**反解（v1.8.8 的 StopTau），
+                     * 不是按积压摊完的 GlideTau。单次推送没有速度样本，
+                     * 主循环会退回"1 格/秒"的保守值 —— 这里照抄。 */
+                    glideTau = ScrollAnimator.StopTau(Native.WHEEL_DELTA, p, glideMs, Tau);
+                    landTau = Math.Clamp(glideTau * 0.75, ScrollAnimator.LandingTauMs,
+                        ScrollAnimator.MaxLandTauMs);
                 }
                 var w = Math.Clamp((t - glideStart) / Ramp, 0, 1);
                 w = w * w * (3 - 2 * w);
                 tau = Tau + (glideTau - Tau) * w;
 
-                /* 落地段：手里不足 LandingStartUnits 时把 τ 平滑**插值**到 LandingTauMs。
-                 * v1.7.5 起用纯插值（不再 Math.Max）—— LandingTauMs 比滑行 τ 小的时候
-                 * Math.Max 会让落地段失效。 */
-                var inLanding = p < ScrollAnimator.LandingStartUnits;
-                if (inLanding)
+                /* 落地段：手里不足 LandingStartUnits 时把 τ 平滑**插值**到落地 τ。
+                 * 落地 τ 跟着滑行 τ 走（0.75×，夹在 35~50ms）—— 快滚的尾巴更疏，
+                 * 固定 35ms 会让快滚"突然加速收掉"。 */
+                if (p < ScrollAnimator.LandingStartUnits)
                 {
                     var k = 1.0 - p / ScrollAnimator.LandingStartUnits;
-                    tau = tau + (ScrollAnimator.LandingTauMs - tau) * k;
-                }
-
-                /* 收尾上界：松手之后整段收尾不超过 MaxFinishMs（v1.7.5）。
-                 * 与 ScrollAnimator 主循环完全一致，否则这里测的就不是线上跑的那条路径。
-                 * 落地段期间不收紧 —— 软着陆由 LandingTauMs 单独管。 */
-                if (glideStart >= 0 && start > 1 && !inLanding)
-                {
-                    var spent = t - glideStart;
-                    if (spent > 0)
-                    {
-                        var remainMs = Math.Max(20.0, ScrollAnimator.MaxFinishMs - spent);
-                        var span = Math.Log(Math.Max(start / Math.Max(p, 1.0), 1.5));
-                        var capTau = remainMs / Math.Max(span, 0.2);
-                        if (capTau < tau) tau = Math.Max(6.0, capTau);
-                    }
+                    tau = tau + (landTau - tau) * k;
                 }
             }
 
@@ -1483,6 +1486,30 @@ internal static class SelfTest
         Check("exe 名归一：去路径、补扩展名、转小写",
             AppRuleName.Normalize(@"C:\Program Files\App\Foo.EXE") == "foo.exe");
         Check("exe 名归一：没扩展名也补上", AppRuleName.Normalize("Foo") == "foo.exe");
+
+        /* ── 「覆盖」是正向声明：名单里的程序设了覆盖 → 两种模式下都要增强 ──
+         *
+         * 以前只看"在不在名单里"，于是默认的黑名单模式下，用户给某个程序设的
+         * 专属倍率/平滑永远用不上（那个程序连滚轮都不经过本程序）。 */
+        var ov = AppConfig.Default();
+        ov.Filter.Mode = FilterMode.Blacklist;
+        ov.Filter.Apps.Clear();
+        ov.Filter.Apps.Add(new AppRule { Exe = "wechat.exe", Override = new AppOverride { MaxMultiplier = 2 } });
+        ov.Filter.Apps.Add(new AppRule { Exe = "game.exe" });
+        var os = RuntimeSettings.From(ov);
+        /* 引擎命中覆盖时用的是**派生出来的那份快照**，所以断言也要走它
+         * （全局快照里没有覆盖标记，见 RuntimeSettings.HasOverride）。 */
+        var ovs = os.PerApp.TryGetValue("wechat.exe", out var derived) ? derived : os;
+        Check("覆盖派生出独立快照（带覆盖标记）", ovs.HasOverride && !os.HasOverride);
+        Check("黑名单：设了覆盖的程序仍然增强", ovs.IsAppEnabled("wechat.exe", ""));
+        Check("黑名单：没设覆盖的名单项照旧不增强", !os.IsAppEnabled("game.exe", ""));
+        Check("黑名单：名单外照旧增强", os.IsAppEnabled("notepad.exe", ""));
+
+        ov.Filter.Mode = FilterMode.Whitelist;
+        var os2 = RuntimeSettings.From(ov);
+        var ovs2 = os2.PerApp.TryGetValue("wechat.exe", out var derived2) ? derived2 : os2;
+        Check("白名单：设了覆盖的程序也增强", ovs2.IsAppEnabled("wechat.exe", ""));
+        Check("白名单：名单外仍然不增强", !os2.IsAppEnabled("notepad.exe", ""));
     }
 
     private static void TestRepoNormalize()
