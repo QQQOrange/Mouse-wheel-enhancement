@@ -115,7 +115,7 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 > 更新器的资产名固定是 **`MouseWheelEnhancement.App.exe`**（主程序本体，约 0.5 MB）。
 > 发版时必须把这个文件按此名上传，**不能**上传启动器整包（`MouseWheelEnhancement.exe`，约 505 KB）——
 > 否则更新完"主程序"会变成一个启动器，两个程序互相拉起。见 DESIGN 第 21 节。
-> Release 说明里写一行 `SHA256: <64 位十六进制>`，客户端下载后会做校验。
+> **发布说明按版本写在 `tools\release-notes\<tag>.md`**（第一行是标题，其余是正文），脚本不再硬编码文案 —— 上一版就是写死的，结果新版本的 release 里挂着上一版的更新内容。`tools\publish.ps1` 会算好**主程序**的 SHA256，`make-release.py` 复核后自动把它拼进说明（客户端就是从这里解析的）。
 
 ## 自检
 
