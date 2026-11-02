@@ -615,7 +615,7 @@ internal static class SelfTest
             $"{ScrollAnimator.ReleaseTau(Tau, 60):0.0} ms");
         Check("收尾 τ 有下限（不会小到一帧发完）", ScrollAnimator.ReleaseTau(Tau, 1) >= 12,
             $"{ScrollAnimator.ReleaseTau(Tau, 1):0.0} ms");
-        Check("收尾 τ 有上限（不会拖到几百毫秒）", ScrollAnimator.ReleaseTau(Tau, 400) <= 90,
+        Check("收尾 τ 有上限（不会拖到几百毫秒）", ScrollAnimator.ReleaseTau(Tau, 400) <= 140,
             $"{ScrollAnimator.ReleaseTau(Tau, 400):0.0} ms");
         Check("惯性为 0 时直接用跟手 τ", Math.Abs(ScrollAnimator.ReleaseTau(Tau, 0) - Tau) < 1e-9);
 

@@ -201,11 +201,18 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>死区（单位）：这一帧该走的量小于它，就认为已经收敛。1 单位 ≈ 0.5px。</summary>
     private const double DeadZoneUnits = 1.0;
 
-    /// <summary>收尾时一次补齐的残量上限（单位）。4 单位 = 2px，肉眼不可分辨。</summary>
+    /// <summary>收尾时一次补齐的残量上限（单位）。2 单位 = 1px，肉眼不可分辨。</summary>
     private const int MaxSnapUnits = 2;
 
+    /// <summary>
+    /// 亚单位节拍：最多隔几帧才发 1 单位。
+    /// 2 帧（160Hz 下 12.5ms）把终端速度从 80px/s 拉到 40px/s；
+    /// 再大就跨进"读作已停住"的区间（v1.8.11 的实测边界是 12ms 附近）。
+    /// </summary>
+    private const int MaxTailIdleFrames = 2;
+
     /// <summary>收尾 τ 的封顶（毫秒）。见 Loop 里那段"只允许比跟手值慢一点点"。</summary>
-    private const double MaxGlideTauMsSoft = 90.0;
+    private const double MaxGlideTauMsSoft = 140.0;
 
     /// <summary>「惯性长度」的基准值（默认 180ms）：等于它时收尾 τ 与跟手值相同。</summary>
     private const double GlideReferenceMs = 180.0;
@@ -295,6 +302,15 @@ internal sealed class ScrollAnimator : IDisposable
     private IntPtr _frameTimer;
     private IntPtr _wakeHandle;
     private IntPtr[]? _waitHandles;
+
+    /// <summary>尾段已经连着多少帧没发（见 MaxTailIdleFrames）。</summary>
+    private int _tailIdleFrames;
+
+    /// <summary>最近一次推送的速度（单位/秒，EMA）。决定松手之后给多少惯性。</summary>
+    private long _pushRateMilli;
+
+    /// <summary>上一次推送的时刻（QPC）。</summary>
+    private long _lastPushTicks;
     private bool _timerPrecision;
     private bool _waitFailedLogged;
 
@@ -490,6 +506,10 @@ internal sealed class ScrollAnimator : IDisposable
     {
         /* 先记下"这一轮滚动属于哪份设置"，动画线程从这一刻起按它出帧。 */
         Volatile.Write(ref _burstSettings, effective);
+        /* 新输入 = 这一轮滚动重新开始，节拍计数必须归零，
+         * 否则上一轮尾巴的"已经等了 1 帧"会带进来，让第一单位晚发。 */
+        Volatile.Write(ref _tailIdleFrames, 0);
+        TrackPushRate(units);
 
         var sign = Math.Sign(units);
         var total = Interlocked.Add(ref _pendingMilli, (long)units * (long)Milli);
@@ -664,7 +684,7 @@ internal sealed class ScrollAnimator : IDisposable
     public static double ReleaseTau(double gripTauMs, double glideMs)
     {
         if (glideMs <= 0) return gripTauMs;
-        var scale = Math.Clamp(glideMs / GlideReferenceMs, 0.6, 2.2);
+        var scale = Math.Clamp(glideMs / GlideReferenceMs, 0.6, 3.0);
         return Math.Clamp(gripTauMs * scale, MinGlideTauMs, MaxGlideTauMsSoft);
     }
 
@@ -839,10 +859,17 @@ internal sealed class ScrollAnimator : IDisposable
                         {
                             Interlocked.Exchange(ref _glideStartTicks, now);
 
-                            /* 收尾 τ：按「惯性长度」反解，但**只允许比跟手值慢一点点**
-                             * （≤1.6×，且封顶 90ms）。以前允许到 400ms —— 那正是
-                             * "停的过程很慢"的来源。 */
-                            _glideTauMs = ReleaseTau(s.TauMs, s.GlideMs);
+                            /* 松手后的惯性**按这一次的手速缩放** —— 这是"触控板感"的另一半：
+                             *   · 慢慢拨一格（<5 格/秒）→ τ 只取基线的 50%，60~90ms 就落地，
+                             *     读作跟手、利落，而不是每滚一格都飘一下；
+                             *   · 连甩（≥40 格/秒）→ 给满基线 τ，尾巴才够长。
+                             * 以前 τ 只由「惯性长度」决定、与手速无关，所以"慢慢滚"也被拖出
+                             * 200ms 的尾巴 —— 这正是发飘/橡胶感的来源。 */
+                            var rateUnits = Interlocked.Read(ref _pushRateMilli);           // 单位/秒
+                            var notchesPerSec = rateUnits / 1000.0 / Native.WHEEL_DELTA;
+                            var speedFactor = Math.Clamp(0.5 + 0.5 * notchesPerSec / 40.0, 0.5, 1.0);
+                            _glideTauMs = Math.Clamp(ReleaseTau(s.TauMs, s.GlideMs) * speedFactor,
+                                MinGlideTauMs, MaxGlideTauMsSoft);
                         }
 
                         /* τ 不许一步跳变（55ms smoothstep），否则速率会"咔"一下。 */
@@ -858,43 +885,51 @@ internal sealed class ScrollAnimator : IDisposable
 
                 int units;
                 var want = FrameAmount(pendingUnits, effDtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+                var residualUnits = Math.Round(Math.Abs(pendingUnits));
 
-                if (Math.Abs(want) < DeadZoneUnits)
+                if (residualUnits < 1)
                 {
-                    /* 曲线算出来这一帧已经不到 1 单位（=0.5px）—— 收敛了。
-                     *
-                     * ⚠ 这里**不能**顺手清空积压：空闲后的第一帧 dt≈0.2ms，
-                     * 算出来的 want 自然也小于 1 单位，那时积压还有一整格。
-                     * 判据必须是"**剩余量**也已经很小"：
-                     *   · 剩余 ≤ 4 单位（2px）→ 一次补齐，然后停（Mos 的死区收尾）；
-                     *   · 剩余还多 → 只发这 1 单位，让曲线继续收敛（最慢也只是
-                     *     每 1~2 帧 1 单位，不会再出现"0.5px 爬几十毫秒"的长尾）。 */
-                    var residual = (int)Math.Round(Math.Abs(pendingUnits));
-                    if (residual == 0)
-                    {
-                        /* 只剩不到半个单位（亚像素零头）：直接丢掉，否则会永远卡在这里 ——
-                         * TakePending 只能扣整单位，剩下的 0.4 单位每帧都算出"该发 1 单位"、
-                         * 又扣不掉，动画线程就会以帧率空转到天荒地老。 */
-                        units = 0;
-                        Interlocked.Exchange(ref _pendingMilli, 0);
-                        Interlocked.Exchange(ref _carryMilli, 0);
-                    }
-                    else if (residual <= MaxSnapUnits)
-                    {
-                        units = Math.Sign(pendingUnits) * residual;
-                        Interlocked.Exchange(ref _carryMilli, 0);
-                    }
-                    else
-                    {
-                        units = Math.Sign(pendingUnits);
-                        Interlocked.Exchange(ref _carryMilli, 0);
-                    }
+                    /* 只剩不到半个单位（亚像素零头）：直接丢掉。
+                     * 留着它每帧都算出"该发 1 单位"、却永远凑不够（TakePending 只扣整单位），
+                     * 线程会以帧率空转到天荒地老。 */
+                    units = 0;
+                    Interlocked.Exchange(ref _pendingMilli, 0);
+                    Interlocked.Exchange(ref _carryMilli, 0);
+                    Volatile.Write(ref _tailIdleFrames, 0);
                 }
                 else
                 {
                     units = Quantize(want, Interlocked.Read(ref _carryMilli) / Milli, out var carry);
                     Interlocked.Exchange(ref _carryMilli, (long)Math.Round(carry * Milli));
+
+                    if (units != 0)
+                    {
+                        Volatile.Write(ref _tailIdleFrames, 0);
+                    }
+                    else if (s.SmoothEnabled)
+                    {
+                        /* ── 亚单位节拍（v1.8.16）──
+                         *
+                         * 曲线这一帧算出来不到 1 单位（说明进了最后几十像素）。以前这里
+                         * **强制每帧发 1 单位**，终端速度被钉死在 1 单位/帧 ≈ 80px/s，
+                         * 再往下只能"啪"一下停 —— 这就是和触控板之间最后一段的生硬来源。
+                         *
+                         * 现在允许攒到下一帧（最多 2 帧发 1 单位，160Hz 下 12.5ms），
+                         * 终端速度自然降到 ~40px/s；再慢（要等 3 帧以上）就直接收尾，
+                         * 因为那已经跨进"眼睛读作停住"的区间（v1.8.11 实测边界 12ms）。 */
+                        var idle = Volatile.Read(ref _tailIdleFrames) + 1;
+                        if (idle >= MaxTailIdleFrames)
+                        {
+                            units = Math.Sign(pendingUnits);
+                            Volatile.Write(ref _tailIdleFrames, 0);
+                        }
+                        else
+                        {
+                            Volatile.Write(ref _tailIdleFrames, idle);
+                        }
+                    }
                 }
+
                 if (units != 0)
                 {
                     /* 原子扣减，且绝不扣成负数（钩子线程可能同时 Clear / 换方向）。
@@ -943,6 +978,30 @@ internal sealed class ScrollAnimator : IDisposable
              *     看门狗也会把它拉起来（见 WheelEngine.EnsureAnimator）。 */
             _alive = false;
         }
+    }
+
+    /// <summary>
+    /// 记一次推送的速度（EMA，单位/秒）。只用来决定"松手后给多少惯性"，
+    /// 不参与限幅 —— 钩子线程调用，必须够快（两次 Interlocked + 几次算术）。
+    /// </summary>
+    private void TrackPushRate(int units)
+    {
+        var now = _clock.ElapsedTicks;
+        var last = Interlocked.Exchange(ref _lastPushTicks, now);
+        if (last == 0) return;
+
+        var dtMs = TicksToMs(now - last);
+        if (dtMs <= 0 || dtMs > 250)
+        {
+            /* 停手超过 250ms 就算"新的一段"，别让上一段的速度污染这一次。 */
+            Interlocked.Exchange(ref _pushRateMilli, 0);
+            return;
+        }
+
+        var rate = Math.Abs(units) / dtMs * 1000.0;
+        var cur = Interlocked.Read(ref _pushRateMilli);
+        var ema = cur <= 0 ? rate : cur + (rate - cur) * 0.4;
+        Interlocked.Exchange(ref _pushRateMilli, (long)ema);
     }
 
     /// <summary>
