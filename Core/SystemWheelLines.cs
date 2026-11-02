@@ -182,15 +182,30 @@ public static class SystemWheelLines
             return 0;
         }
 
+        /* 关机 / 断电兜底：下一次登录时由 RunOnce 把行数改回去。
+         * 正常退出会把它删掉；只有"没走正常退出"的场合它才会真的跑。 */
+        WriteRunOnceRestore(current);
+
         Log.Info($"细腻模式已启用：系统滚动行数 {current} → {FineLines}（退出时还原为 {current}）");
         return current;
     }
 
-    /// <summary>退出细腻模式：按备份还原并删掉备份。返回是否真的写过系统设置。</summary>
+    /// <summary>
+    /// 退出细腻模式：按备份还原，删掉备份和 RunOnce。返回是否真的写过系统设置。
+    ///
+    /// <para>
+    /// **只在"当前值还是我们改的 1 行"时才写回**。如果用户在细腻模式运行期间
+    /// 自己又去系统设置里改成了别的值，就尊重用户的选择，只清理备份。
+    /// </para>
+    /// </summary>
     public static bool LeaveFine()
     {
         var path = FineBackupPath;
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path))
+        {
+            DeleteRunOnceRestore();     // 备份没了，残留的 RunOnce 也一起清掉
+            return false;
+        }
 
         var original = 0;
         try
@@ -203,21 +218,32 @@ public static class SystemWheelLines
             return false;
         }
 
+        var wrote = false;
         if (original > 0)
         {
-            if (Native.GetWheelScrollLines() != original && !Native.SetWheelScrollLines(original))
+            var now = Native.GetWheelScrollLines();
+            if (now == FineLines)
             {
-                Log.Warn($"细腻模式还原失败（目标 {original} 行），下次启动会再试");
-                return false;
+                if (Native.SetWheelScrollLines(original))
+                {
+                    wrote = true;
+                    Log.Info($"细腻模式已关闭：系统滚动行数还原为 {original}");
+                }
+                else
+                {
+                    Log.Warn($"细腻模式还原失败（目标 {original} 行），下次启动/下次登录会再试");
+                    return false;       // 备份和 RunOnce 都留着，等下次机会
+                }
             }
-
-            TryDeleteFineBackup();
-            Log.Info($"细腻模式已关闭：系统滚动行数还原为 {original}");
-            return true;
+            else
+            {
+                Log.Info($"细腻模式已关闭：检测到系统行数已被改成 {now}，按用户的值保留（不覆盖）");
+            }
         }
 
         TryDeleteFineBackup();
-        return false;
+        DeleteRunOnceRestore();
+        return wrote;
     }
 
     /// <summary>
@@ -226,10 +252,69 @@ public static class SystemWheelLines
     /// </summary>
     public static void CleanupFine()
     {
-        if (!HasFineBackup()) return;
+        if (!HasFineBackup())
+        {
+            /* 备份没了但 RunOnce 还在（比如上次刚好还原成功、删备份后崩溃）：
+             * 留着它会让下次登录多跑一次 reg，虽然结果一样，但没必要。 */
+            DeleteRunOnceRestore();
+            return;
+        }
+
         var current = Current();
         if (LeaveFine() || !HasFineBackup())
             Log.Warn($"发现上次细腻模式没退干净（当前 {current} 行），已按备份还原");
+    }
+
+    /* ── 关机 / 断电兜底：下一次登录时自动还原 ──
+     *
+     * 用户可能不是在软件里点"退出"，而是直接关机 —— 那样 ProcessExit / SessionEnding
+     * 都可能来不及跑（快速启动、蓝屏、长按电源）。真正稳的是把还原动作登记到
+     * <c>HKCU\...\RunOnce</c>：下一次登录由系统执行一次，跑完自动删除。
+     * 正常退出时我们会把这个键删掉，所以平时它不存在。
+     */
+
+    private const string RunOnceKey = @"Software\Microsoft\Windows\CurrentVersion\RunOnce";
+    private const string RunOnceName = "MouseWheelEnhancement.FineRestore";
+
+    /// <summary>登记"下次登录时把行数改回 <paramref name="lines"/> 行"。</summary>
+    private static void WriteRunOnceRestore(int lines)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunOnceKey);
+            if (key == null) return;
+
+            /* 直接用 reg.exe：任何 Windows 上都有，不依赖本程序的安装路径
+             * （升级/移动目录之后 path 会失效，但 reg.exe 永远在）。 */
+            /* 先写注册表，再让系统广播一次 WM_SETTINGCHANGE：
+             * 只写注册表的话，已经启动、缓存了行数的程序（浏览器、资源管理器）
+             * 会继续按 1 行算，直到重启 —— 那样"还原"就等于没还原。 */
+            var cmd = "cmd.exe /c reg.exe add \"HKCU\\Control Panel\\Desktop\" " +
+                      $"/v WheelScrollLines /t REG_SZ /d {lines} /f & " +
+                      "rundll32.exe user32.dll,UpdatePerUserSystemParameters";
+            key.SetValue(RunOnceName, cmd, Microsoft.Win32.RegistryValueKind.String);
+            Log.Info($"已登记下次登录时的还原动作（RunOnce → {lines} 行）");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("登记 RunOnce 还原失败（不影响本次退出时的还原）：" + ex.Message);
+        }
+    }
+
+    /// <summary>删掉 RunOnce 还原项（正常退出时调用）。</summary>
+    private static void DeleteRunOnceRestore()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunOnceKey, writable: true);
+            if (key?.GetValue(RunOnceName) == null) return;
+            key.DeleteValue(RunOnceName, throwOnMissingValue: false);
+            Log.Info("已撤销 RunOnce 还原登记");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("撤销 RunOnce 还原失败：" + ex.Message);
+        }
     }
 
     private static void TryDeleteFineBackup()

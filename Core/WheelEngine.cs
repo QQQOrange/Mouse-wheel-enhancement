@@ -662,6 +662,12 @@ public sealed class WheelEngine : IDisposable
                 if (Interlocked.Exchange(ref _uipiWarned, 1) == 0)
                     Log.Warn($"目标程序权限更高（{target.Exe}），注入会被系统拦截，" +
                              "已改为原样放行（想要加速请以管理员身份运行本程序）");
+
+                /* 细腻模式下的额外代价：这个窗口收不到注入，而系统行数已经被改成 1 行，
+                 * 它的滚动会慢 N 倍 —— 只提示一次，免得日志刷屏。 */
+                if (Volatile.Read(ref _fineScale) > 1 && Interlocked.Exchange(ref _fineUipiWarned, 1) == 0)
+                    Log.Warn($"细腻模式：{target.Exe} 权限更高，无法注入，它的滚动会偏慢" +
+                             "（以管理员身份运行本程序，或关掉细腻模式）");
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }

@@ -810,6 +810,29 @@
 
     <!-- ══════════════════════ 菜单与提示 ══════════════════════ -->
 
+    <!-- ══════════════ TabControl / TabItem：内容区的文字颜色 ══════════════
+
+         v1.8.18 修：深色主题下"整页文字是黑的、背景也是黑的"。
+
+         根因不是调色板，而是**继承链断了**：页面内容挂在
+         `TabControl` 模板里的 `ContentPresenter` 下，而 Foreground 是从
+         **TabControl** 继承的（不是从 Window）。TabControl 自己没设 Foreground，
+         默认取 `SystemColors.ControlTextBrush`（浅色主题是黑、深色主题也是黑），
+         于是整页 TextBlock 都继承到黑色 —— 左侧导航（不在 TabControl 里）却是白的，
+         正好就是用户看到的"有的地方白、有的地方黑"。
+
+         这里把它接到主题色上，TabItem（标题）同理。 -->
+    <Style TargetType="TabControl">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+    </Style>
+
+    <Style TargetType="TabItem">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
     <Style TargetType="ContextMenu">
         <Setter Property="Background" Value="{DynamicResource CardBg}" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />

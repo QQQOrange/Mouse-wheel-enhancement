@@ -110,6 +110,20 @@ internal static class Services
             try { SystemWheelLines.LeaveFine(); } catch { }
         };
 
+        /* 关机 / 注销：系统会先发 SessionEnding，给几秒钟。这里立刻还原，
+         * 不指望 ProcessExit（快速启动/强制关机时它可能根本不来）。 */
+        try
+        {
+            Microsoft.Win32.SystemEvents.SessionEnding += (_, _) =>
+            {
+                try { SystemWheelLines.LeaveFine(); } catch { }
+            };
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("订阅关机事件失败（RunOnce 兜底仍然有效）：" + ex.Message);
+        }
+
         Engine = new WheelEngine();
         Engine.Apply(Store.Config);
 

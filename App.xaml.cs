@@ -369,6 +369,27 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        /* 界面截图：`--uishot [dark|light]`。逐页渲染成 PNG，用来肉眼/自动核对
+         * "深色主题下有没有黑字落在深底上"。截图落在数据目录 uishot-*.png。 */
+        if (e.Args.Any(a => a.Equals("--uishot", StringComparison.OrdinalIgnoreCase)))
+        {
+            var mode = e.Args.Any(a => a.Equals("light", StringComparison.OrdinalIgnoreCase)) ? Theme.Light : Theme.Dark;
+            var only = -1;
+            foreach (var a in e.Args)
+                if (int.TryParse(a, out var page) && page >= 0 && page <= 7) only = page;
+
+            Services.Init();
+            var shotWin = new MainWindow();
+            shotWin.Width = 1120;
+            shotWin.Height = 846;
+            shotWin.Show();
+            var code = ShotAllPages(shotWin, mode, only);
+            shotWin.Close();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
         // 冒烟模式：真的把这套东西拉起来（装钩子、建托盘、实例化窗口、逐页布局），
         // 然后立刻退出。给"改完 XAML 到底能不能跑"一个不用肉眼盯的答案。
         if (e.Args.Any(a => a.Equals("--smoke", StringComparison.OrdinalIgnoreCase)))
@@ -1344,6 +1365,38 @@ public partial class App : System.Windows.Application
     /// 「保存令牌」禁用），这正是本轮两处改动的对照面；用完把原令牌还回去。
     /// </para>
     /// </summary>
+    /// <summary>
+    /// 逐页截图（`--uishot`）。给"深色主题下字看不清"这类问题留证：
+    /// 一次把 8 个页面都渲染成 PNG，改完再拍一遍对比。
+    /// </summary>
+    private static int ShotAllPages(MainWindow w, string mode, int only)
+    {
+        var code = 0;
+        try
+        {
+            Theme.SetMode(mode);
+            for (var tab = (only >= 0 ? only : 0); tab < (only >= 0 ? only + 1 : 8); tab++)
+            {
+                w.SelectTab(tab);
+                for (var i = 0; i < 3; i++)
+                {
+                    w.UpdateLayout();
+                    w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+                }
+
+                var path = Path.Combine(AppPaths.DataDir, $"uishot-{mode}-{tab}.png");
+                SaveWindowShot(w, path);
+                Log.Info($"uishot: {mode} 第 {tab} 页 → {path}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("uishot 失败", ex);
+            code = 31;
+        }
+        return code;
+    }
+
     private static int ShotUpdatePage(MainWindow w)
     {
         var code = 0;
