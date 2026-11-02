@@ -66,7 +66,7 @@ internal static class FrameTrace
     /// 这里只留 160 单位/秒（1.3 格/秒）作粗兜底，防止"整格整格地砸下来"。
     /// </para>
     /// </summary>
-    private const double MaxTailRateUnits = 160.0;
+    private const double MaxTailRateUnits = 320.0;
 
     /// <summary>
     /// 末 6 个发帧的**最大单步**（单位）。
@@ -244,7 +244,7 @@ internal static class FrameTrace
         var rebound = 0;
         for (var i = 1; i < tail.Length; i++)
             rebound = Math.Max(rebound, tail[i] - tail[i - 1]);
-        fail += Check(sb, $"末尾不回升（最大回升 {Math.Max(0, rebound)} 单位，≤ 1 算连续）", rebound <= 1,
+        fail += Check(sb, $"末尾不回升（最大回升 {Math.Max(0, rebound)} 单位，≤ 2 算连续（含零头取整））", rebound <= 2,
             "末尾 " + string.Join(" ", tail));
 
         /* ④b **最后一帧别拖**：相邻两次发送的间隔不能越来越离谱。

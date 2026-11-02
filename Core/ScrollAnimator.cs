@@ -235,6 +235,15 @@ internal sealed class ScrollAnimator : IDisposable
     /// </para>
     private const double MaxCatchUpFactor = 4.0;
 
+    /// <summary>死区（单位）：这一帧该走的量小于它，就认为已经收敛。1 单位 ≈ 0.5px。</summary>
+    private const double DeadZoneUnits = 1.0;
+
+    /// <summary>收尾时一次补齐的残量上限（单位）。4 单位 = 2px，肉眼不可分辨。</summary>
+    private const int MaxSnapUnits = 2;
+
+    /// <summary>收尾 τ 的封顶（毫秒）。见 Loop 里那段"只允许比跟手值慢一点点"。</summary>
+    private const double MaxGlideTauMsSoft = 90.0;
+
     private readonly AutoResetEvent _wake = new(false);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly object _lifecycle = new();
@@ -272,17 +281,6 @@ internal sealed class ScrollAnimator : IDisposable
     private int _slowFrames;
     private bool _degraded;
 
-    /// <summary>
-    /// 本次收尾落到哪个 τ（v1.8.8）。跟着 <see cref="_glideTauMs"/> 一起算出来：
-    /// `0.75 × 滑行 τ`，夹在 [LandingTauMs, MaxLandTauMs]。
-    ///
-    /// <para>
-    /// 以前这里是**固定** 35 ms —— 于是不管这一次滚得多快，最后几个单位都按
-    /// 35 ms 的节奏发完，快滚的尾巴被硬生生截断，读作"停得很突兀"。
-    /// 现在它跟滑行 τ 成比例：滚得越快，最后一个单位之间也越疏。
-    /// </para>
-    /// </summary>
-    private double _landTauMs = LandingTauMs;
 
     /// <summary>
     /// 近几次推送的速度（单位/秒 × 1000）。
@@ -970,150 +968,87 @@ internal sealed class ScrollAnimator : IDisposable
                  * 松手后不再"另换一套曲线"，只是把 τ 从跟手值平滑挪到滑行值：
                  * 滑行 τ 由 GlideMs 反解（到点只剩 1 个单位），过渡用 55ms 的
                  * smoothstep —— τ 一步跳变会让速率瞬间掉一半，听起来就是"咔"。 */
+                /* ══════════════ 出帧：一级低通 + 死区收尾（Mos 模型） ══════════════
+                 *
+                 * 参考 Caldis/Mos 的做法：目标量（积压）累积，每帧只走
+                 * `(target - emitted) * k`（k 由时间常数 τ 决定，见 FrameAmount）；
+                 * 当**这一帧的步长**已经小于死区（1 单位 ≈ 0.5px）时，
+                 * 把剩下的零头一次补齐（≤4 单位 = 2px）或者直接丢弃并结束。
+                 *
+                 * 旧实现是四层叠加：跟手 τ → 滑行 τ（更大）→ 落地 τ（更大）→
+                 * 尾段再按 τ·ln(p/(p-1)) 逐个排空。每一层都在**减速的末端把速度再压一次**，
+                 * 于是尾巴长达 100~150ms、每步只有 0.5px（读作"又慢又黏"），
+                 * 而终止那一刻仍是从非零速度归零 —— 于是又慢又突兀。
+                 * 现在只有一个 τ、一条曲线，结束时是"步长收敛到看不见 → 补齐/丢弃 → 停"。
+                 */
+
                 var tau = s.TauMs;
                 if (s.SmoothEnabled && s.GlideMs > 0)
                 {
                     var idleMs = TicksToMs(now - Interlocked.Read(ref _lastInputTicks));
-
-                    /* 速度停手（v1.8.0）：甩得越猛手里积压越多，就多等一会儿再收尾。
-                     * 上限 +80%（30ms → 54ms），慢滚完全不受影响。 */
-                    var glideDelay = s.GlideDelayMs;
-                    if (s.VelocityStop)
-                    {
-                        glideDelay += Math.Clamp(
-                            Math.Abs(pendingUnits) / Native.WHEEL_DELTA * 4.0, 0, s.GlideDelayMs * 0.8);
-                    }
-
-                    if (idleMs > glideDelay)
+                    if (idleMs > s.GlideDelayMs)
                     {
                         if (Interlocked.Read(ref _glideStartTicks) == 0)
                         {
                             Interlocked.Exchange(ref _glideStartTicks, now);
 
-                            /* 收尾的 τ **随这一次的手速变化**（v1.8.8）。
-                             *
-                             * 以前这里传的是 `GlideTau(积压, GlideMs)` —— 只看积压，
-                             * 不看速度；再叠上 v1.8.5 那个"τ 下限固定 35ms"的补丁，
-                             * 结果就是**任何速度收尾都是 35ms**：快甩之后尾巴被硬截断，
-                             * 用户读作"停得很突兀"。
-                             *
-                             * 现在：手速定总时长，积压定 τ 的陡峭程度，快慢自然不同。
-                             * 速度优先用 EMA；EMA 还没建立（比如整格模式刚上）时，
-                             * 用"积压 / 松手判定延迟"兜底。 */
-                            var releaseRate = Interlocked.Read(ref _pushRateMilli) / 1000.0;
-                            if (releaseRate < 1)
-                            {
-                                /* 没有任何速度样本（最常见：只滚了一下，两次推送间隔
-                                 * 远超 EMA 的 250ms 窗口）→ 按**最慢的一档**处理。
-                                 *
-                                 * 这里绝不能拿"积压 / 松手判定延迟"当速度：
-                                 * 单格 120 单位会在 30ms 内被算成 33 格/秒，
-                                 * 于是"轻轻滚一下"也按快滚给长尾巴 —— 那正是
-                                 * 第一版实测里尾巴被拉到 410ms 的原因。
-                                 * 未知就取保守值：宁可短一点，也不要莫名拖长。 */
-                                releaseRate = Native.WHEEL_DELTA;   // 1 格/秒
-                            }
-
-                            _glideTauMs = StopTau(releaseRate, pendingUnits, s.GlideMs, s.TauMs);
-
-                            /* 落地 τ 跟着滑行 τ 走（0.75×）：滚得越快，最后几个单位之间也越疏。
-                             * 固定 35ms 会让快滚的尾巴"突然加速收掉"，正是这次的症状。 */
-                            _landTauMs = Math.Clamp(_glideTauMs * 0.45, LandingTauMs, MaxLandTauMs);
+                            /* 收尾 τ：按「惯性长度」反解，但**只允许比跟手值慢一点点**
+                             * （≤1.6×，且封顶 90ms）。以前允许到 400ms —— 那正是
+                             * "停的过程很慢"的来源。 */
+                            var rate = Interlocked.Read(ref _pushRateMilli) / 1000.0;
+                            if (rate < 1) rate = Native.WHEEL_DELTA;
+                            var slow = StopTau(rate, pendingUnits, s.GlideMs, s.TauMs);
+                            _glideTauMs = Math.Min(slow, Math.Min(MaxGlideTauMsSoft, s.TauMs * 1.6));
                         }
 
+                        /* τ 不许一步跳变（55ms smoothstep），否则速率会"咔"一下。 */
                         var w = Math.Clamp(
                             TicksToMs(now - Interlocked.Read(ref _glideStartTicks)) / GlideRampMs, 0, 1);
                         w = w * w * (3 - 2 * w);
                         tau = s.TauMs + (_glideTauMs - s.TauMs) * w;
 
-                        /* 掉帧降级只做一件事：**别再额外变慢**（τ 不高于跟手值）。
-                         *
-                         * v1.8.0 原本是"整块跳过滑行 + 落地"，结果是降级一触发
-                         * τ 就从滑行值（60~70ms）掉回跟手值（45ms），而落地段的
-                         * 软着陆也一起没了 —— 末段直接"砸停"。这正是用户报的
-                         * "快停的时候卡一下、然后猛地跳一段"。
-                         * 落地段是防砸停的，任何时候都不能跳过。 */
+                        /* 掉帧时别再加长尾巴。 */
                         if (_degraded) tau = Math.Min(tau, s.TauMs);
-
-                        /* ── 落地段：手里已经不到 LandingStartUnits 时，把 τ 平滑插值到 LandingTauMs ──
-                         *
-                         * 这是"结尾砸停"的第二层修法（第一层是零头累积）。
-                         * 原因是量化的物理下限：最小可发单位就是 1 单位（约 0.8 px），
-                         * 而 τ=30ms 的曲线在剩 5 单位时速度还有 100~160 单位/秒 ——
-                         * 最后这 4 px 会在一两帧内冲过去，然后归零，所以看着像撞停。
-                         * 把 τ 平滑插到 LandingTauMs（35），最后几个单位的发送间隔
-                         * 落在 10~25 ms，末段速度保持在 50~65 单位/秒
-                         * （0.4~0.55 格/秒）的"渐停"区间。
-                         *
-                         * **插值而非 Math.Max**（v1.7.5）：Math.Max 在 LandingTauMs
-                         * 比滑行 τ 小的时候会取外层 τ，落地段根本没生效。
-                         * 纯插值让 τ 平滑走到 LandingTauMs，无论它比滑行 τ 大还是小。
-                         *
-                         * 只在**松手之后**生效：手还在滚的时候抬 τ 会变成拖影。 */
-                        var left = Math.Abs(pendingUnits);
-                        if (left < LandingStartUnits)
-                        {
-                            var k = 1.0 - left / LandingStartUnits;
-                            var landTarget = _degraded ? Math.Min(_landTauMs, s.TauMs) : _landTauMs;
-                            tau = tau + (landTarget - tau) * k;
-                        }
-
-                        /* ⚠ 这里**没有**"整段收尾不超过 N 毫秒"的硬上界。
-                         *
-                         * v1.7.5 曾经有一条 MaxFinishMs=150ms 的上界（按"已经过了多久 /
-                         * 还剩多少"反解一个更短的 τ）。v1.8.8 把收尾时长改成**由这一次的
-                         * 手速决定**之后，那条上界就成了反作用：它会把快滚本该更长的尾巴
-                         * 一刀切短，正是"停得很突兀"本身。所以代码删掉了 —— 收尾的边界
-                         * 现在只有两个：<see cref="MaxStopMs"/>（单次收尾总时长上限）
-                         * 和落地段的 <see cref="MaxLandTauMs"/>。 */
                     }
                 }
 
                 int units;
-                if (_wholeNotch)
+                var want = FrameAmount(pendingUnits, effDtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+
+                if (Math.Abs(want) < DeadZoneUnits)
                 {
-                    /* 整格模式：一帧最多一档，两档之间固定隔 WholeStepMs。
-                     * 固定步长是刻意的 —— 自适应会让末尾的节奏变慢，听起来就是"顿一下"。 */
-                    var nowMsWhole = TicksToMs(now);
-                    units = nowMsWhole - Interlocked.Read(ref _lastWholeMs) >= WholeStepMs
-                        ? WholeNotchFrame(pendingUnits)
-                        : 0;
-                    if (units != 0) Interlocked.Exchange(ref _lastWholeMs, (long)nowMsWhole);
-                }
-                else if (s.SmoothEnabled && Math.Abs(pendingUnits) <= TailScheduleUnits)
-                {
-                    /* 尾段：按指数曲线**直接算下一次该在什么时候发**（v1.8.9）。
-                     * 一次固定 1 单位，间隔 τ·ln(p/(p-1)) 并封顶 —— 见 TailScheduleUnits。 */
-                    Interlocked.Exchange(ref _carryMilli, 0);
-                    units = ScheduleTailUnit(pendingUnits, tau, now);
+                    /* 曲线算出来这一帧已经不到 1 单位（=0.5px）—— 收敛了。
+                     *
+                     * ⚠ 这里**不能**顺手清空积压：空闲后的第一帧 dt≈0.2ms，
+                     * 算出来的 want 自然也小于 1 单位，那时积压还有一整格。
+                     * 判据必须是"**剩余量**也已经很小"：
+                     *   · 剩余 ≤ 4 单位（2px）→ 一次补齐，然后停（Mos 的死区收尾）；
+                     *   · 剩余还多 → 只发这 1 单位，让曲线继续收敛（最慢也只是
+                     *     每 1~2 帧 1 单位，不会再出现"0.5px 爬几十毫秒"的长尾）。 */
+                    var residual = (int)Math.Round(Math.Abs(pendingUnits));
+                    if (residual > 0 && residual <= MaxSnapUnits)
+                    {
+                        units = Math.Sign(pendingUnits) * residual;
+                        Interlocked.Exchange(ref _carryMilli, 0);
+                    }
+                    else
+                    {
+                        units = Math.Sign(pendingUnits);
+                        Interlocked.Exchange(ref _carryMilli, 0);
+                    }
                 }
                 else
                 {
-                    Interlocked.Exchange(ref _tailEmitTicks, 0);
-
-                    /* 曲线给"这一帧该发多少"（小数），零头跨帧累积 —— 见 Quantize。
-                     * 这一帧可能什么都不发（units == 0），那不代表卡住：
-                     * 下帧接着攒，两次发送的间隔会越来越长，收尾才是渐停而不是砸停。 */
-                    var want = FrameAmount(pendingUnits, effDtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
                     units = Quantize(want, Interlocked.Read(ref _carryMilli) / Milli, out var carry);
                     Interlocked.Exchange(ref _carryMilli, (long)Math.Round(carry * Milli));
                 }
-
                 if (units != 0)
                 {
-                    /* 原子扣减，且**绝不扣成负数**。
-                     *
-                     * units 是用"这一帧开始时读到的那份积压"算出来的，而扣减发生在几百
-                     * 纳秒之后。这段时间里钩子线程完全可能 Clear()（换方向、命中黑名单、
-                     * 动画器被停）或切换整格模式。以前是直接 Interlocked.Add，
-                     * 于是积压会变成负数：
-                     *   · 按比例模式下一帧按负积压**反向**发一点（"快滚之后回退一下"）；
-                     *   · 整格模式下负积压不是 120 的倍数，WholeNotchFrame 永远返回 0，
-                     *     排不空、动画线程每帧空转到切窗口为止。 */
+                    /* 原子扣减，且绝不扣成负数（钩子线程可能同时 Clear / 换方向）。
+                     * 见 TakePending 的说明。 */
                     units = TakePending(units);
                     if (units != 0)
                     {
-                        /* 诊断口：只交出帧、不注入（--frametrace）。 */
                         var sink = FrameSink;
                         if (sink != null)
                         {
@@ -1121,15 +1056,12 @@ internal sealed class ScrollAnimator : IDisposable
                         }
                         else if (!InputInjector.SendWheel(units))
                         {
-                            /* 注入失败（被 UIPI 拦下、桌面锁了、目标进程更高权限）。
-                             * 丢掉这份积压，否则它会一直重试、越积越多。 */
                             Interlocked.Exchange(ref _pendingMilli, 0);
                             Log.Warn("SendInput 失败（错误码 " +
                                      Marshal.GetLastWin32Error() + "），已丢弃积压");
                         }
                     }
                 }
-
                 // 绝对时间推进：不累积漂移；落后太多就重新对齐，而不是"追帧"猛发
                 _nextFrameTicks += frameTicks;
                 if (_nextFrameTicks < now) _nextFrameTicks = now + frameTicks;
