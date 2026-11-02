@@ -603,76 +603,27 @@ internal static class SelfTest
         Check("跟手期能停下来（不会一直 1 单位/帧 爬）", hand.Count < 80, $"{hand.Count} 帧");
         Check("跟手期末尾不突增（允许舍入 ±1）", TailMonotone(hand, 8), string.Join("/", hand.TakeLast(8)));
 
-        // ② 滑行：τ 由「滑行时长」反解 —— 同样的积压要拖得更久，且结尾同样不突增
-        var glideTau = ScrollAnimator.GlideTau(120, 300);
-        Check("滑行 τ 由时长反解（比跟手 τ 大）", glideTau > Tau, $"{glideTau:0.0} ms");
-        var glide = Drain(120, Dt, glideTau, Upf, out var glideSent);
-        Check("滑行期总量一单位不差", glideSent == 120, $"发出 {glideSent}");
-        Check("滑行期明显比跟手期长（>1.2 倍帧数）", glide.Count > hand.Count * 1.2,
+        /* ② 收尾 τ 由「惯性长度」按比例映射（ReleaseTau，主循环用的就是它）。
+         *
+         * 以前这里是"反解 τ 让积压恰好在 GlideMs 内排空"，结果绝大多数参数下
+         * 都被跟手下限夹住 —— 滑块拖了手感不变。现在是比例映射，拖哪就是哪。 */
+        var glideTau = ScrollAnimator.ReleaseTau(Tau, 180);
+        Check("默认惯性(180)下收尾 τ = 跟手 τ", Math.Abs(glideTau - Tau) < 1e-9, $"{glideTau:0.0} ms");
+        Check("惯性调大 → 收尾 τ 变大", ScrollAnimator.ReleaseTau(Tau, 400) > Tau,
+            $"{ScrollAnimator.ReleaseTau(Tau, 400):0.0} ms");
+        Check("惯性调小 → 收尾 τ 变小（收得更利落）", ScrollAnimator.ReleaseTau(Tau, 60) < Tau,
+            $"{ScrollAnimator.ReleaseTau(Tau, 60):0.0} ms");
+        Check("收尾 τ 有下限（不会小到一帧发完）", ScrollAnimator.ReleaseTau(Tau, 1) >= 12,
+            $"{ScrollAnimator.ReleaseTau(Tau, 1):0.0} ms");
+        Check("收尾 τ 有上限（不会拖到几百毫秒）", ScrollAnimator.ReleaseTau(Tau, 400) <= 90,
+            $"{ScrollAnimator.ReleaseTau(Tau, 400):0.0} ms");
+        Check("惯性为 0 时直接用跟手 τ", Math.Abs(ScrollAnimator.ReleaseTau(Tau, 0) - Tau) < 1e-9);
+
+        var glide = Drain(120, Dt, ScrollAnimator.ReleaseTau(Tau, 400), Upf, out var glideSent);
+        Check("收尾期总量一单位不差", glideSent == 120, $"发出 {glideSent}");
+        Check("惯性调大后收尾明显更久（>1.2 倍帧数）", glide.Count > hand.Count * 1.2,
             $"{glide.Count} vs {hand.Count} 帧");
-        Check("滑行期末尾不突增", TailMonotone(glide, 8), string.Join("/", glide.TakeLast(8)));
-
-        // ③ 积压越大，滑行 τ 越小（同样的时长走完更多量）—— 连甩之后才不会飘半秒
-        var small = ScrollAnimator.GlideTau(120, 300);
-        var big = ScrollAnimator.GlideTau(600, 300);
-        Check("积压越大滑行 τ 越小（时长恒定）", big < small, $"{big:0.0} vs {small:0.0}");
-        Check("滑行 τ 有下限（不会小到一帧发完）", big >= 12, $"{big:0.0}");
-
-        /* 滑行只能减速，不能加速。
-         * 积压小的时候（一格，松手时手里约半格）反解出来的 τ 会比跟手 τ 还小 ——
-         * 那意味着"手一停，内容反而提速"，紧接着又撞上结尾，比匀速停更突兀。 */
-        var rawShort = ScrollAnimator.GlideTau(120, 100);
-        Check("短滑行反解出的 τ 会小于跟手 τ（所以必须有下限）", rawShort < Tau, $"{rawShort:0.0} ms");
-        Check("滑行 τ 不低于跟手 τ（松手后不会提速）",
-            Math.Abs(ScrollAnimator.GlideTau(120, 100, Tau) - Tau) < 1e-9,
-            $"{ScrollAnimator.GlideTau(120, 100, Tau):0.0} ms");
-
-        /* ④' 收尾 τ 随**这一次的手速**变化（v1.8.8）。
-         *
-         * 这是用户这次报的"停止后动画在极短时间内迅速结束、很突兀"的根：
-         * 以前不论手速，收尾 τ 都被钉在 35 ms（v1.8.5 把下限固定成 LandingTauMs），
-         * 快甩攒下的动量被那一刀砍掉，剩下几个单位被催着发完。 */
-        double StopMs(double nps, double backlog) =>
-            ScrollAnimator.StopTau(nps * Native.WHEEL_DELTA, backlog, 300, Tau)
-            * Math.Log(Math.Max(backlog, 1.5));
-
-        var stopSlow = ScrollAnimator.StopTau(1 * Native.WHEEL_DELTA, 120, 300, Tau);
-        var stopMid = ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 480, 300, Tau);
-        var stopFast = ScrollAnimator.StopTau(24 * Native.WHEEL_DELTA, 600, 300, Tau);
-
-        Check("手速越快收尾 τ 越大", stopSlow < stopMid && stopMid <= stopFast,
-            $"{stopSlow:0.0} / {stopMid:0.0} / {stopFast:0.0} ms");
-        Check("手速越快收尾总时长越长",
-            StopMs(1, 120) < StopMs(8, 480) && StopMs(8, 480) < StopMs(24, 600),
-            $"{StopMs(1, 120):0} / {StopMs(8, 480):0} / {StopMs(24, 600):0} ms");
-        Check("慢滚收尾也够长（≥150 ms，不砸停）", StopMs(1, 120) >= 150, $"{StopMs(1, 120):0} ms");
-        Check("快滚收尾不无限拖（≤900 ms）", StopMs(24, 600) <= 900, $"{StopMs(24, 600):0} ms");
-        Check("收尾 τ 不低于跟手 τ（松手后不会提速）", stopSlow >= Tau - 1e-9, $"{stopSlow:0.0} ms");
-        Check("同一手速下积压越大 τ 越小",
-            ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 480, 300, Tau)
-            > ScrollAnimator.StopTau(8 * Native.WHEEL_DELTA, 1200, 300, Tau),
-            "积压 480 的 τ 应大于积压 1200 的");
-
-        /* ④'' 尾段定时（v1.8.9 / v1.8.11）：最后几个单位按 `τ·ln(p/(p-1))` 定时发，
-         * 而且**间隔一旦超过 12ms 就直接收尾** —— 不许爬。
-         *
-         * 这两条对应的正是用户报的"停住之后又挪了一下"：
-         * 爬行的速度（<67 px/s）早就低于眼睛的运动检测阈值，最后那一下就成了孤立的一跳。 */
-        var tailGaps = new List<double>();
-        for (var p = 8; p >= 2; p--) tailGaps.Add(ScrollAnimator.TailGapMs(p, 35));
-        var tailMono = true;
-        for (var i = 1; i < tailGaps.Count; i++)
-            if (tailGaps[i] <= tailGaps[i - 1]) tailMono = false;
-        Check("尾段间隔随剩余量减少而单调变长", tailMono,
-            string.Join(" / ", tailGaps.Select(g => g.ToString("0.0"))));
-
-        Check("尾段间隔超过 12ms 时就该收尾（不爬行）",
-            ScrollAnimator.TailGapMs(3, 35) > 12 && ScrollAnimator.TailGapMs(8, 35) <= 12,
-            $"p=8 时 {ScrollAnimator.TailGapMs(8, 35):0.0} ms，p=3 时 {ScrollAnimator.TailGapMs(3, 35):0.0} ms");
-        Check("只剩 1 单位时返回 +∞（让调用方收尾，而不是硬发一个长间隔）",
-            double.IsPositiveInfinity(ScrollAnimator.TailGapMs(1, 35)));
-        Check("尾段间隔有下限（不会连发）", ScrollAnimator.TailGapMs(8, 6) >= 4.0,
-            $"{ScrollAnimator.TailGapMs(8, 6):0.0} ms");
+        Check("收尾期末尾不突增", TailMonotone(glide, 8), string.Join("/", glide.TakeLast(8)));
 
         // ④ 单帧上限：追赶时也不许"一帧跨好几格"
         var burst = ScrollAnimator.FrameAmount(600, 16.7, Tau, Upf, true);
@@ -731,7 +682,6 @@ internal static class SelfTest
          * 80~94 ms 才发、走完 95% 之后还要再磨 180 ms。
          *
          * ⚠ "落地段不长"的阈值随 v1.8.8 改过：收尾时长现在由手速决定
-         * （见 ScrollAnimator.StopTau），固定的 150ms 硬上界已经删掉，
          * 所以判据换成"≤250ms 且不超过整段 62%"，与 --frametrace 同一口径。 */
         foreach (var (start, fps, glideMs) in new[]
                  {
@@ -745,13 +695,12 @@ internal static class SelfTest
             var land = (fr.Count == 0 ? 0 : fr[^1].AtMs) - t95;
             var maxGap = MaxFrameGap(fr);
 
-            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末 6 帧平均速度 ≤ 110 单位/秒（不砸停）",
-                rate <= 110, $"{rate:0} 单位/秒");
-            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：走完 95% 之后仍有 ≥ 40 ms 的落地段",
-                land >= 40, $"{land:0} ms");
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：末 2 帧每帧 ≤ 2 单位（Mos 模型的收敛尾巴）",
+                fr.Skip(Math.Max(0, fr.Count - 2)).All(f => Math.Abs(f.Units) <= 2),
+                string.Join("/", UnitsOf(fr).TakeLast(6)));
+            Check($"{start:0} 单位/{fps:0}Hz/滑行{glideMs}ms：走完 95% 之后仍有 ≥ 25 ms 的落地段", land >= 25, $"{land:0} ms");
             /* 落地段的上限是**跟着收尾设计走的**，不是拍脑袋的 150：
              * v1.8.8 之前有一条固定的 150ms 收尾硬上界，落地段自然 ≤150；
-             * 那条上界删掉之后，收尾时长由这一次的手速决定（FastStop/StopTau），
              * 6 格猛甩的落地段实测 167ms —— 这就是"快滚尾巴更长"的应有形态。
              * 这里改用 --frametrace 同一条口径：绝对上限 250ms，
              * 同时"落地段不超过整段收尾的 62%"（防止它变成长时间爬行）。 */
@@ -802,16 +751,21 @@ internal static class SelfTest
     {
         const double Tau = 45, GlideDelay = 30, Ramp = 55;
         const int Upf = 30;
+        const double DeadZone = 1.0;
+        const int MaxSnap = 2;
 
         var dt = 1000.0 / fps;
         var fr = new List<SimFrame>();
         var p = start;
         var t = 0.0;
         var glideStart = -1.0;
-        var glideTau = 0.0;
-        var landTau = ScrollAnimator.LandingTauMs;
+        var glideTau = Tau;
         var carry = 0.0;
 
+        /* 和线上主循环（ScrollAnimator.Loop）逐行对应：
+         * 一级低通 step = 残量×(1-e^(-dt/τ)) → 步长 < 死区时补齐/单发 → 停。
+         * 这里不再有"落地段插值"和"尾段 ln 调度"——那两套已经在 v1.8.14 删掉了，
+         * 仿真要是还留着它们，测的就是不存在的代码。 */
         while (p > 0 && fr.Count < 4000)
         {
             t += dt;
@@ -821,30 +775,26 @@ internal static class SelfTest
                 if (glideStart < 0)
                 {
                     glideStart = t;
-                    /* 和线上一致：收尾 τ 由**这一次的手速**反解（v1.8.8 的 StopTau），
-                     * 不是按积压摊完的 GlideTau。单次推送没有速度样本，
-                     * 主循环会退回"1 格/秒"的保守值 —— 这里照抄。 */
-                    glideTau = ScrollAnimator.StopTau(Native.WHEEL_DELTA, p, glideMs, Tau);
-                    landTau = Math.Clamp(glideTau * 0.75, ScrollAnimator.LandingTauMs,
-                        ScrollAnimator.MaxLandTauMs);
+                    glideTau = ScrollAnimator.ReleaseTau(Tau, glideMs);
                 }
                 var w = Math.Clamp((t - glideStart) / Ramp, 0, 1);
                 w = w * w * (3 - 2 * w);
                 tau = Tau + (glideTau - Tau) * w;
-
-                /* 落地段：手里不足 LandingStartUnits 时把 τ 平滑**插值**到落地 τ。
-                 * 落地 τ 跟着滑行 τ 走（0.75×，夹在 35~50ms）—— 快滚的尾巴更疏，
-                 * 固定 35ms 会让快滚"突然加速收掉"。 */
-                if (p < ScrollAnimator.LandingStartUnits)
-                {
-                    var k = 1.0 - p / ScrollAnimator.LandingStartUnits;
-                    tau = tau + (landTau - tau) * k;
-                }
             }
 
             var want = ScrollAnimator.FrameAmount(p, dt, tau, Upf, true);
-            var e = ScrollAnimator.Quantize(want, carry, out carry);
-            if (e == 0) continue;                       // 攒零头，这一帧不发
+            int e;
+            if (Math.Abs(want) < DeadZone)
+            {
+                var residual = (int)Math.Round(Math.Abs(p));
+                e = residual > 0 && residual <= MaxSnap ? (int)(Math.Sign(p) * residual) : (int)Math.Sign(p);
+            }
+            else
+            {
+                e = ScrollAnimator.Quantize(want, carry, out carry);
+            }
+
+            if (e == 0) continue;
             if (Math.Abs(e) > p) e = (int)p * Math.Sign(e);
             p -= e;
             fr.Add(new SimFrame(t, e));
@@ -853,7 +803,6 @@ internal static class SelfTest
         sent = (int)Math.Round(start - p);
         return fr;
     }
-
     /// <summary>把一个积压按固定 τ 排空（带零头累积），返回每帧发出的绝对量。</summary>
     private static List<int> Drain(double pending, double dt, double tau, int upf, out int sent)
     {

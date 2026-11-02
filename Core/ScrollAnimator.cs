@@ -36,7 +36,7 @@ namespace MouseWheelEnhancement.Core;
 ///     输入还在来，τ 小一点才跟得上手；
 ///   · **松手后** τ 由「滑行时长」反解：<c>τ = GlideMs / ln(积压 / 1)</c>，
 ///     保证到 GlideMs 时只剩最后 1 个单位，自然停住；下限是跟手 τ
-///     （滑行只能让收尾更慢，不能更快，见 <see cref="GlideTau"/>）；
+///     （收尾只能让 τ 变大、不能更小，见 <see cref="StopTau"/>）；
 ///   · **落地段**（手里不足 1/10 格时）τ 平滑插值到 <see cref="LandingTauMs"/>，
 ///     让最后那几个像素慢慢落地，见下面"收尾为什么会砸停"；
 ///   · 各段之间都用 smoothstep 过渡。**τ 不能一步跳变** ——
@@ -101,45 +101,8 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>只剩这么多就一次收掉（单位）。1 单位 = 1/120 格，亚像素。</summary>
     private const double CloseUnits = 1.0;
 
-    /// <summary>
-    /// 「落地段」的宽度（单位）。
-    ///
-    /// <para>
-    /// 40（1/3 格，v1.7.4）→ 10（1/12 格，v1.7.5 中间版）→ <b>12（1/10 格，v1.7.5）</b>：
-    /// 太宽（40）让松手后手里还有 1/3 格时就开始软着陆，单格收尾拖到 390 ms；
-    /// 太窄（10）让落地段只影响最后 1~2 个单位，"渐停"的效果几乎看不到。
-    /// 12 单位让落地段影响 2~3 个单位、最后一步落在 ~30 单位/秒（0.25 格/秒）
-    /// 的"渐停"上，配合 <see cref="MaxLandTauMs"/> 让整段收尾不拖。
-    /// </para>
-    /// </summary>
-    internal const int LandingStartUnits = Native.WHEEL_DELTA / 10;   // 12 单位 ≈ 1/10 格
-
-    /// <summary>
-    /// 落地段的目标 τ（毫秒）。松手后手里不足 <see cref="LandingStartUnits"/> 时，
-    /// 把 τ 平滑**插值**到这个值，让最后几个单位按"渐停"节奏发完。
-    ///
-    /// <para>
-    /// 70 → 90（v1.7.4）→ 20（v1.7.5 中间版）→ <b>35（v1.7.5）</b>：
-    /// 中间版的 20 比跟手 τ（45）和滑行 τ（~35-45）**还小**，于是
-    /// <c>Math.Max(tau, tau + (LandingTauMs - tau)·k)</c> 里的内层值比外层小，
-    /// 取 Max 之后落地段**根本没生效** —— 末段仍是原速衰减的 1 单位小步。
-    /// 改成纯插值（去掉 Math.Max）后，35 让落地段的 τ 平滑插到 35 附近，
-    /// 末 6 帧速度保持在 50~65 单位/秒（0.4~0.55 格/秒）的"渐停"区间。
-    /// </para>
-    /// </summary>
-    internal const double LandingTauMs = 22.0;
-
-    /// <summary>
-    /// 落地段 τ 的上限：收尾最后那几个单位再慢，也不该超过它（否则读作"拖"）。
-    ///
-    /// <para>
-    /// 50ms 是按"最后两次发送的间隔"倒推的：实测间隔 ≈ 1.3 × τ，所以 50 → 约 65ms，
-    /// 仍在 <c>--frametrace</c> 的"末帧间隔 ≤ 70ms（最后一帧不拖）"之内。
-    /// 这个上限是 v1.7.5"滚完最后一下像还有延迟"那条结论的边界，不能为了平滑而突破。
-    /// </para>
-    /// </summary>
-    internal const double MaxLandTauMs = 30.0;
-
+    
+    
     /// <summary>收尾总时长的上下限（毫秒）。目标值由"这一次的滚动速度"决定。</summary>
     private const double MinStopMs = 70.0;
     private const double MaxStopMs = 450.0;
@@ -244,6 +207,9 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>收尾 τ 的封顶（毫秒）。见 Loop 里那段"只允许比跟手值慢一点点"。</summary>
     private const double MaxGlideTauMsSoft = 90.0;
 
+    /// <summary>「惯性长度」的基准值（默认 180ms）：等于它时收尾 τ 与跟手值相同。</summary>
+    private const double GlideReferenceMs = 180.0;
+
     private readonly AutoResetEvent _wake = new(false);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly object _lifecycle = new();
@@ -292,13 +258,9 @@ internal sealed class ScrollAnimator : IDisposable
     /// 跨线程读写，用 long 走互锁。
     /// </para>
     /// </summary>
-    private long _pushRateMilli;
 
-    /// <summary>上一次推送的时刻（QPC），配合 <see cref="_pushRateMilli"/> 算瞬时速度。</summary>
-    private long _lastPushTicks;
 
     /// <summary>尾段里"下一次允许发送"的时刻（QPC）。0 = 没在尾段模式里。</summary>
-    private long _tailEmitTicks;
 
     /// <summary>
     /// 本轮滑行的时间常数（毫秒）。松手那一刻按「滑行时长」反解一次，
@@ -529,8 +491,6 @@ internal sealed class ScrollAnimator : IDisposable
         /* 先记下"这一轮滚动属于哪份设置"，动画线程从这一刻起按它出帧。 */
         Volatile.Write(ref _burstSettings, effective);
 
-        TrackPushRate(units);
-
         var sign = Math.Sign(units);
         var total = Interlocked.Add(ref _pendingMilli, (long)units * (long)Milli);
 
@@ -689,137 +649,25 @@ internal sealed class ScrollAnimator : IDisposable
     }
 
     /// <summary>
-    /// 由「松手后滑行多久」反解时间常数：<c>pending · e^(−glideMs/τ) = CloseUnits</c>。
+    /// 松手之后的收尾 τ：把「惯性长度」(GlideMs) **直接映射**成 τ 的倍数。
     ///
     /// <para>
-    /// 于是 <c>glideMs</c> 是**真的时长** —— 到那一刻只剩最后 1 个单位，
-    /// 不会被截断，也就不会在结尾倒出一坨。积压越大，τ 越小（同样的时长里
-    /// 走完更多的量），这正是"连甩之后不能飘半秒"想要的效果。
+    /// 180ms（默认）→ τ 保持跟手值；400ms → 约 2.2 倍（尾巴更长更飘）；
+    /// 60ms 以下 → 0.6 倍（收得更利落，但不会"加速收尾"到一帧发完）。
     /// </para>
     /// <para>
-    /// <paramref name="minTauMs"/> 是**下限**，调用方传跟手期的 τ。
-    /// 滑行是"减速段"，它的 τ 绝不能比跟手期更小 —— 否则把滑行调短反而让
-    /// 收尾变得更快更硬（积压小的时候会算出比跟手 τ 还小的值，实测确实如此）。
-    /// 想要"一点都不拖"，正确做法是把滑行调成 0，而不是让它加速。
+    /// 以前这里按"反解 τ 让积压恰好在 GlideMs 内排空"来算，结果是**绝大多数参数下
+    /// 都被跟手下限（45ms）夹住** —— 用户拖「惯性长度」滑块，手感一点变化都没有。
+    /// 现在改成比例映射：滑块拖到哪，尾巴就多长，所见即所得。
     /// </para>
     /// </summary>
-    /// <summary>
-    /// 尾段的一次发送决策：到点了就发 1 单位，并把下一次的时刻按指数曲线推后。
-    ///
-    /// <para>
-    /// 间隔用 `τ·ln(p/(p-1))`：这正是"指数衰减从 p 单位走到 p-1 单位"所需的时间，
-    /// 所以尾段的**每个单位**都落在曲线上，而不是"凑满就算"。
-    /// 于是间隔天然单调变长，且被 <see cref="MaxFinalGapMs"/> 封顶 ——
-    /// 不会出现"画面已经停住 50ms，再补一下"的抽搐。
-    /// </para>
-    /// </summary>
-    private int ScheduleTailUnit(double pendingUnits, double tauMs, long now)
+    public static double ReleaseTau(double gripTauMs, double glideMs)
     {
-        var gate = Interlocked.Read(ref _tailEmitTicks);
-        if (gate != 0 && now < gate) return 0;
-
-        var p = Math.Abs(pendingUnits);
-
-        /* ── 不再爬（v1.8.11）──
-         *
-         * 剩不到 2 单位就直接结束：那一截只有 1.6px，发出去也不会被读作"还在动"，
-         * 只会变成"停住之后又挪了一下"。宁可少走这 1.6px，也不要那一下孤立的小步。 */
-        if (p <= TailFinishUnits)
-        {
-            Interlocked.Exchange(ref _pendingMilli, 0);
-            Interlocked.Exchange(ref _tailEmitTicks, 0);
-            Interlocked.Exchange(ref _carryMilli, 0);
-            return 0;
-        }
-
-        var gapMs = TailGapMs(p, tauMs);
-
-        /* 下一步会慢到"看起来已经停了"（间隔 > 12ms）→ 干脆在这里收尾。
-         * 继续发只会多出一下孤立的小步，正是用户报的"停住之后又挪了一下"。 */
-        if (gapMs > TailStopGapMs)
-        {
-            Interlocked.Exchange(ref _pendingMilli, 0);
-            Interlocked.Exchange(ref _tailEmitTicks, 0);
-            Interlocked.Exchange(ref _carryMilli, 0);
-            return 0;
-        }
-
-        Interlocked.Exchange(ref _tailEmitTicks, now + MsToTicks(gapMs));
-        return (int)Math.Sign(pendingUnits);
+        if (glideMs <= 0) return gripTauMs;
+        var scale = Math.Clamp(glideMs / GlideReferenceMs, 0.6, 2.2);
+        return Math.Clamp(gripTauMs * scale, MinGlideTauMs, MaxGlideTauMsSoft);
     }
 
-    /// <summary>
-    /// 尾段**下一个单位**该等多久（毫秒）。纯函数，便于自检直接断言。
-    ///
-    /// <para>
-    /// 指数衰减从 p 单位走到 p-1 单位所需的时间就是 `τ·ln(p/(p-1))`，
-    /// 所以按它来发，尾段的每个单位都精确落在曲线上。
-    /// 上下限的作用：`p→1` 时这个式子趋于无穷（指数永远到不了 0），
-    /// 所以用 <see cref="MaxFinalGapMs"/> 封顶；下限防止极端 τ 下连发把曲线打断。
-    /// </para>
-    /// </summary>
-    public static double TailGapMs(double pendingUnits, double tauMs)
-    {
-        var p = Math.Abs(pendingUnits);
-        /* p = 1 时这个式子发散（指数永远到不了 0）→ 返回 +∞，
-         * 调用方据此判定"该收尾了"，而不是硬发一个特别长的间隔。 */
-        if (p <= 1.0) return double.PositiveInfinity;
-        return Math.Max(MinTailGapMs, tauMs * Math.Log(p / (p - 1.0)));
-    }
-
-    /// <summary>记一次推送的速度（EMA）。只用于"收尾时长"这一个判断，不参与加速决策。</summary>
-    private void TrackPushRate(int units)
-    {
-        var t = _clock.ElapsedTicks;
-        var dtMs = TicksToMs(t - Interlocked.Read(ref _lastPushTicks));
-        Interlocked.Exchange(ref _lastPushTicks, t);
-
-        /* 间隔太短（同一帧里的连发）、太长（隔了很久又滚一下）都不算"这一次的手速"。 */
-        if (units == 0 || dtMs < 0.3 || dtMs > 250) return;
-
-        var instantMilli = Math.Abs(units) / dtMs * 1000.0 * 1000.0;
-        var prev = Interlocked.Read(ref _pushRateMilli) / 1000.0;
-        /* EMA 系数按间隔走：两次推送隔得越久，越该相信新的这一下。 */
-        var a = Math.Clamp(dtMs / 40.0, 0.15, 0.85);
-        var next = prev + (instantMilli / 1000.0 - prev) * a;
-        Interlocked.Exchange(ref _pushRateMilli, (long)Math.Clamp(next * 1000.0, 0, 20_000_000));
-    }
-
-    /// <summary>
-    /// 收尾时间常数：**随这一次的滚动速度变化**（v1.8.8）。
-    ///
-    /// <para>
-    /// 设计目标（用户原话）："速度越快，停止过渡的时长与减速节奏相应变化；
-    /// 速度越慢，收尾更加平缓柔和"。
-    /// </para>
-    /// <list type="bullet">
-    /// <item>先由手速定**总时长**：`glideMs × (0.40 + 0.22 × log2(1 + 格/秒))`。
-    /// 1 格/秒 ≈ 0.62×滑行（慢滚收得干脆但不砸），8 格/秒 ≈ 1.1×，24 格/秒 ≈ 1.4×。</item>
-    /// <item>再把时长反解成 τ：`τ = 时长 / ln(积压/1单位)` —— 同样的时长，
-    /// 积压越大 τ 越小，收尾才不会飘。</item>
-    /// <item>下限跟手 τ：**滑行只能更慢，绝不能更快**。否则"把滑行调短"会让结尾更硬。</item>
-    /// </list>
-    /// </summary>
-    /// <param name="releaseRatePerSec">松手时的推送速度（单位/秒，可正可负）。</param>
-    /// <param name="backlogUnits">松手时手里还没发完的量（单位，绝对值的语义）。</param>
-    public static double StopTau(double releaseRatePerSec, double backlogUnits,
-        double glideMs, double gripTauMs = 0)
-    {
-        var notchesPerSec = Math.Abs(releaseRatePerSec) / Native.WHEEL_DELTA;
-
-        /* 时长倍数：慢滚 0.63×，正常连滚 ~1.0×，猛甩封顶 1.35×。
-         *
-         * 封顶很关键 —— 不加的话 66 格/秒（快甩）会算到 1.7×，
-         * 用户把"惯性长度"调成 300ms 却看到 500ms 的尾巴，
-         * 会觉得那个滑块失效了。上限 1.35× 既让快滚明显更缓，又不越权。 */
-        var shape = Math.Clamp(0.45 + 0.18 * Math.Log2(1 + Math.Clamp(notchesPerSec, 0, 60)),
-            0.45, 1.35);
-        var targetMs = Math.Clamp(glideMs * shape, MinStopMs, MaxStopMs);
-
-        var span = Math.Log(Math.Max(Math.Abs(backlogUnits) / CloseUnits, 1.5));
-        var floor = Math.Max(MinGlideTauMs, gripTauMs);
-        return Math.Clamp(targetMs / Math.Max(span, 0.2), floor, MaxGlideTauMs);
-    }
 
     public static double GlideTau(double pendingUnits, double glideMs, double minTauMs = 0)
     {
@@ -881,7 +729,6 @@ internal sealed class ScrollAnimator : IDisposable
                     _slowFrames = 0;
                     _degraded = false;
                     Interlocked.Exchange(ref _reverseHoldTicks, 0);
-                    Interlocked.Exchange(ref _tailEmitTicks, 0);
 
                     /* 这一轮真的结束了：把按应用覆盖带进来的那份快照放掉，
                      * 下一次没有覆盖的投递就自动回到全局设置。 */
@@ -995,10 +842,7 @@ internal sealed class ScrollAnimator : IDisposable
                             /* 收尾 τ：按「惯性长度」反解，但**只允许比跟手值慢一点点**
                              * （≤1.6×，且封顶 90ms）。以前允许到 400ms —— 那正是
                              * "停的过程很慢"的来源。 */
-                            var rate = Interlocked.Read(ref _pushRateMilli) / 1000.0;
-                            if (rate < 1) rate = Native.WHEEL_DELTA;
-                            var slow = StopTau(rate, pendingUnits, s.GlideMs, s.TauMs);
-                            _glideTauMs = Math.Min(slow, Math.Min(MaxGlideTauMsSoft, s.TauMs * 1.6));
+                            _glideTauMs = ReleaseTau(s.TauMs, s.GlideMs);
                         }
 
                         /* τ 不许一步跳变（55ms smoothstep），否则速率会"咔"一下。 */
@@ -1026,7 +870,16 @@ internal sealed class ScrollAnimator : IDisposable
                      *   · 剩余还多 → 只发这 1 单位，让曲线继续收敛（最慢也只是
                      *     每 1~2 帧 1 单位，不会再出现"0.5px 爬几十毫秒"的长尾）。 */
                     var residual = (int)Math.Round(Math.Abs(pendingUnits));
-                    if (residual > 0 && residual <= MaxSnapUnits)
+                    if (residual == 0)
+                    {
+                        /* 只剩不到半个单位（亚像素零头）：直接丢掉，否则会永远卡在这里 ——
+                         * TakePending 只能扣整单位，剩下的 0.4 单位每帧都算出"该发 1 单位"、
+                         * 又扣不掉，动画线程就会以帧率空转到天荒地老。 */
+                        units = 0;
+                        Interlocked.Exchange(ref _pendingMilli, 0);
+                        Interlocked.Exchange(ref _carryMilli, 0);
+                    }
+                    else if (residual <= MaxSnapUnits)
                     {
                         units = Math.Sign(pendingUnits) * residual;
                         Interlocked.Exchange(ref _carryMilli, 0);
