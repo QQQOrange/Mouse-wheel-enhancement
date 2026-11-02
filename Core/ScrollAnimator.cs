@@ -127,7 +127,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// 末 6 帧速度保持在 50~65 单位/秒（0.4~0.55 格/秒）的"渐停"区间。
     /// </para>
     /// </summary>
-    internal const double LandingTauMs = 35.0;
+    internal const double LandingTauMs = 22.0;
 
     /// <summary>
     /// 落地段 τ 的上限：收尾最后那几个单位再慢，也不该超过它（否则读作"拖"）。
@@ -138,11 +138,11 @@ internal sealed class ScrollAnimator : IDisposable
     /// 这个上限是 v1.7.5"滚完最后一下像还有延迟"那条结论的边界，不能为了平滑而突破。
     /// </para>
     /// </summary>
-    internal const double MaxLandTauMs = 50.0;
+    internal const double MaxLandTauMs = 30.0;
 
     /// <summary>收尾总时长的上下限（毫秒）。目标值由"这一次的滚动速度"决定。</summary>
-    private const double MinStopMs = 90.0;
-    private const double MaxStopMs = 900.0;
+    private const double MinStopMs = 70.0;
+    private const double MaxStopMs = 450.0;
 
     /// <summary>
     /// 尾段进入"逐个定时发送"的阈值（单位）。
@@ -159,7 +159,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// 并封顶 <see cref="MaxFinalGapMs"/>，保证不会出现"停住之后再补一下"。
     /// </para>
     /// </summary>
-    private const double TailScheduleUnits = 8.0;
+    private const double TailScheduleUnits = 12.0;
 
     /// <summary>
     /// 尾段单步间隔的上下限（毫秒）。
@@ -184,7 +184,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// 读作"一直在动，然后停住"，而不是"停住之后又补一下"。
     /// </para>
     /// </summary>
-    private const double TailStopGapMs = 12.0;
+    private const double TailStopGapMs = 9.0;
 
     /// <summary>
     /// 收尾"不再爬"的门槛（单位）—— 剩这么点就直接结束，不再逐单位发送。
@@ -199,7 +199,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// **尾部没有孤立的小步**：最后一跳落在 16ms 内，和前一跳连成一段。
     /// </para>
     /// </summary>
-    private const double TailFinishUnits = 2.0;
+    private const double TailFinishUnits = 1.0;
     private const double MinTailGapMs = 4.0;
 
     /// <summary>跟手 τ → 滑行 τ 的过渡时长（毫秒）。</summary>
@@ -1018,7 +1018,7 @@ internal sealed class ScrollAnimator : IDisposable
 
                             /* 落地 τ 跟着滑行 τ 走（0.75×）：滚得越快，最后几个单位之间也越疏。
                              * 固定 35ms 会让快滚的尾巴"突然加速收掉"，正是这次的症状。 */
-                            _landTauMs = Math.Clamp(_glideTauMs * 0.75, LandingTauMs, MaxLandTauMs);
+                            _landTauMs = Math.Clamp(_glideTauMs * 0.45, LandingTauMs, MaxLandTauMs);
                         }
 
                         var w = Math.Clamp(

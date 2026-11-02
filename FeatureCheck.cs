@@ -285,7 +285,7 @@ internal static class FeatureCheck
             using var store = new ConfigStore(dir);
 
             bad += Line(sb, store.Config.Enabled, "暂停态被抹平成启用");
-            bad += Line(sb, store.Config.SchemaVersion >= 6, "schema 被推到当前版本",
+            bad += Line(sb, store.Config.SchemaVersion >= 7, "schema 被推到当前版本",
                 store.Config.SchemaVersion.ToString());
             bad += Line(sb, Math.Abs(store.Config.Boost.MaxMultiplier - 5) < 0.01,
                 "已知字段保留（倍率 5）", store.Config.Boost.MaxMultiplier.ToString());

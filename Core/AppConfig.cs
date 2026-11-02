@@ -152,7 +152,7 @@ public sealed class SmoothConfig
     /// </para>
     /// </summary>
     [JsonPropertyName("glideTauMs")]
-    public int GlideMs { get; set; } = 300;
+    public int GlideMs { get; set; } = 180;
 
     /// <summary>
     /// 停止输入多少毫秒算"松手"、可以开始滑行。
@@ -494,7 +494,19 @@ public sealed class AppConfig
          * 不需要改写用户已有设置。只把版本号推上去。 */
         if (SchemaVersion < 6) SchemaVersion = 6;
 
-        SchemaVersion = Math.Max(6, SchemaVersion);
+        /* ── v7 迁移：收尾默认从 300ms 收到 180ms ──
+         *
+         * 用户反馈"停止的过程很慢，而且很突兀"：300ms 的滑行在 160Hz 上是
+         * 二十多帧，末尾一大段都是 0.5px 的小步（读作"还在慢慢挪"），
+         * 然后停住。180ms 足够保留惯性感，尾巴短一半，收得更干脆。
+         * **只改老默认值**：用户自己调过的（0 或 200/400 之类）一律不动。 */
+        if (SchemaVersion < 7)
+        {
+            if (Smooth.GlideMs == 300) Smooth.GlideMs = 180;
+            SchemaVersion = 7;
+        }
+
+        SchemaVersion = Math.Max(7, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* 窗口大小/位置：0 表示"没记录"（首次启动），按默认居中。
