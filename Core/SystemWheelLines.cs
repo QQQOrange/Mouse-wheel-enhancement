@@ -127,6 +127,117 @@ public static class SystemWheelLines
         return wrote;
     }
 
+    /* ══════════════ 细腻模式（v1.8.17）══════════════
+     *
+     * 运行期间把系统行数临时压到 1 行，注入侧按原行数补偿，退出时按备份还原。
+     *
+     * 备份文件在**改系统之前**就写好：中途崩溃/断电的话，下次启动
+     * （<see cref="CleanupFine"/>）也能把用户原来的行数还回去。
+     * 这一点是硬要求 —— 用户明确说过"关掉软件必须还原"。
+     */
+
+    /// <summary>细腻模式使用的行数。</summary>
+    public const int FineLines = 1;
+
+    private const string FineBackupName = "wheellines.fine.backup";
+
+    private static string FineBackupPath => Path.Combine(AppPaths.DataDir, FineBackupName);
+
+    /// <summary>细腻模式的备份还在不在（崩溃恢复用）。</summary>
+    public static bool HasFineBackup() => File.Exists(FineBackupPath);
+
+    /// <summary>
+    /// 进入细腻模式。
+    /// </summary>
+    /// <returns>
+    /// 补偿倍数（进入前的行数）；<c>0</c> = 没进入（读不到当前值 / 写入失败）。
+    /// 进入前本来就是 1 行时返回 1（不需要补偿，也不需要改）。
+    /// </returns>
+    public static int EnterFine()
+    {
+        var current = Current();
+        if (!IsUsable(current))
+        {
+            Log.Warn($"细腻模式未启用：当前系统滚动行数是 {current}，无法作为基准");
+            return 0;
+        }
+
+        if (current == FineLines) return 1;      // 已经是 1 行：天然细腻，不用动系统设置
+
+        try
+        {
+            /* 顺序很重要：**先备份、再改**。反过来的话，改完到写备份之间崩溃就还原不回去了。 */
+            File.WriteAllText(FineBackupPath, current.ToString(), new UTF8Encoding(false));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("细腻模式写入备份失败，已放弃启用：" + ex.Message);
+            return 0;
+        }
+
+        if (!Native.SetWheelScrollLines(FineLines))
+        {
+            Log.Warn("细腻模式改写系统行数失败（错误码 " + Marshal.GetLastWin32Error() + "）");
+            TryDeleteFineBackup();
+            return 0;
+        }
+
+        Log.Info($"细腻模式已启用：系统滚动行数 {current} → {FineLines}（退出时还原为 {current}）");
+        return current;
+    }
+
+    /// <summary>退出细腻模式：按备份还原并删掉备份。返回是否真的写过系统设置。</summary>
+    public static bool LeaveFine()
+    {
+        var path = FineBackupPath;
+        if (!File.Exists(path)) return false;
+
+        var original = 0;
+        try
+        {
+            if (int.TryParse(File.ReadAllText(path, Encoding.UTF8).Trim(), out var v) && IsUsable(v)) original = v;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("读取细腻模式备份失败：" + ex.Message);
+            return false;
+        }
+
+        if (original > 0)
+        {
+            if (Native.GetWheelScrollLines() != original && !Native.SetWheelScrollLines(original))
+            {
+                Log.Warn($"细腻模式还原失败（目标 {original} 行），下次启动会再试");
+                return false;
+            }
+
+            TryDeleteFineBackup();
+            Log.Info($"细腻模式已关闭：系统滚动行数还原为 {original}");
+            return true;
+        }
+
+        TryDeleteFineBackup();
+        return false;
+    }
+
+    /// <summary>
+    /// 启动时调用：只要备份还在，就说明上次没退干净（崩溃/被杀），先按备份还原。
+    /// 还原之后如果仍要细腻模式，引擎会重新进入。
+    /// </summary>
+    public static void CleanupFine()
+    {
+        if (!HasFineBackup()) return;
+        var current = Current();
+        if (LeaveFine() || !HasFineBackup())
+            Log.Warn($"发现上次细腻模式没退干净（当前 {current} 行），已按备份还原");
+    }
+
+    private static void TryDeleteFineBackup()
+    {
+        try { File.Delete(FineBackupPath); }
+        catch (Exception ex) { Log.Warn("删除细腻模式备份失败：" + ex.Message); }
+    }
+
     /// <summary>读备份文件里记的原值（没有就是 0）。诊断用，不写任何东西。</summary>
     public static int BackupValue()
     {

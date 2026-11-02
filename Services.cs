@@ -97,6 +97,19 @@ internal static class Services
     /// </summary>
     public static void InitRuntime()
     {
+        /* 细腻模式的崩溃兜底：上次如果没退干净（崩溃/被结束进程），
+         * 备份还在就把系统行数先还回去，再按本次配置决定要不要重新进入。
+         * 放在引擎启动之前 —— 引擎 Apply 时可能立刻又要进入。 */
+        SystemWheelLines.CleanupFine();
+
+        /* 兜底：CLI 模式（--measure / --scrollsmooth …）不走 Shutdown，
+         * 进程退出时也必须把系统行数还回去。挂 ProcessExit 是最后一道保险，
+         * 即使某个分支漏了 Dispose 也能还原。 */
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            try { SystemWheelLines.LeaveFine(); } catch { }
+        };
+
         Engine = new WheelEngine();
         Engine.Apply(Store.Config);
 

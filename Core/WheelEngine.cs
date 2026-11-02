@@ -65,6 +65,24 @@ public sealed class WheelEngine : IDisposable
     private long _boosted;
     private long _passed;
     private long _lastErrorMs;
+
+    /// <summary>
+    /// 细腻模式的补偿倍数：1 = 关闭；N = 系统行数被临时压到 1 行，注入量要乘回 N。
+    /// 见 <see cref="SystemWheelLines.EnterFine"/>。
+    /// </summary>
+    private int _fineScale = 1;
+
+    /// <summary>
+    /// 细腻模式的补偿倍数（1 = 关闭）。**给设置窗口自己的滚动换算用**：
+    /// 它按 <c>行数 × 行高 ÷ 120</c> 把 delta 换成像素，而细腻模式把系统行数压到了 1，
+    /// 不乘回来就会只滚 1/N。
+    /// </summary>
+    public static int FineScale => Volatile.Read(ref _fineScaleStatic);
+
+    private static int _fineScaleStatic = 1;
+
+    /// <summary>细腻模式下"这个窗口收不到注入"只提示一次。</summary>
+    private int _fineUipiWarned;
     private double _lastMultiplier = 1.0;
     private double _lastRate;
 
@@ -159,6 +177,8 @@ public sealed class WheelEngine : IDisposable
     /// <summary>把一份配置烘焙成运行时快照，原子替换。</summary>
     public void Apply(AppConfig cfg)
     {
+        ApplyFineMode(cfg);
+
         var s = RuntimeSettings.From(cfg);
         Volatile.Write(ref _settings, s);
         _animator.UpdateSettings(s);
@@ -221,6 +241,7 @@ public sealed class WheelEngine : IDisposable
 
     public void Stop()
     {
+        LeaveFineOnExit();
         lock (_lifecycle)
         {
             StopCore();
@@ -442,6 +463,93 @@ public sealed class WheelEngine : IDisposable
         try { Faulted?.Invoke(message); } catch (Exception ex) { Log.Error("Faulted 订阅方异常", ex); }
     }
 
+    /// <summary>
+    /// 退出路径（Stop / Dispose）：细腻模式必须还原，绝不能把用户的系统行数留在 1 行。
+    /// 失败也不抛 —— 备份文件还在，下次启动会兜底。
+    /// </summary>
+    private void LeaveFineOnExit()
+    {
+        if (Volatile.Read(ref _fineScale) <= 1) return;
+        try
+        {
+            SystemWheelLines.LeaveFine();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("退出时还原系统滚动行数失败：" + ex.Message);
+        }
+
+        Volatile.Write(ref _fineScale, 1);
+        /* 静态值也要一起落下来：设置窗口的像素换算读的是它，
+         * 留着旧的会让"还原之后自己的窗口"多滚 N 倍。 */
+        Volatile.Write(ref _fineScaleStatic, 1);
+    }
+
+    /// <summary>
+    /// 细腻模式的进入/退出。只在**状态发生变化**时动系统设置，避免每次 Apply 都写注册表。
+    /// </summary>
+    private void ApplyFineMode(AppConfig cfg)
+    {
+        var want = cfg.Behavior.FineMode && cfg.Enabled && cfg.Smooth.Enabled;
+
+        if (want)
+        {
+            if (_fineScale > 1) return;              // 已经在跑
+
+            var scale = SystemWheelLines.EnterFine();
+            if (scale > 1)
+            {
+                Volatile.Write(ref _fineScale, scale);
+                Volatile.Write(ref _fineScaleStatic, scale);
+                Log.Info($"细腻模式：补偿倍数 {scale}（注入量 ×{scale}，距离与原生一致）");
+            }
+            else if (scale == 1)
+            {
+                Log.Info("细腻模式：系统本来就是 1 行，无需补偿（也不会改系统设置）");
+            }
+            else
+            {
+                Log.Warn("细腻模式启用失败，已按普通模式运行");
+            }
+            return;
+        }
+
+        if (_fineScale > 1)
+        {
+            SystemWheelLines.LeaveFine();
+            Volatile.Write(ref _fineScale, 1);
+            Volatile.Write(ref _fineScaleStatic, 1);
+        }
+    }
+
+    /// <summary>
+    /// 细腻模式下把"本该放行"的事件改成自己转发（已按倍数放大），保证距离不变。
+    /// 返回 true = 已经吞掉；false = 调用方应该原样放行。
+    /// </summary>
+    private bool ForwardRaw(int units)
+    {
+        if (Volatile.Read(ref _fineScale) <= 1) return false;
+        if (!InputInjector.SendWheel(units)) return false;
+        Interlocked.Increment(ref _passed);
+        return true;
+    }
+
+    /// <summary>
+    /// 整格应用（WPF/WinForms/Qt）在细腻模式下的转发：它们只认**事件个数**，
+    /// 所以补偿量必须拆成 N 个 120 的事件，一个事件滚一行。
+    /// </summary>
+    private bool ForwardWhole(int units)
+    {
+        if (Volatile.Read(ref _fineScale) <= 1) return false;
+        var notches = Math.Max(1, Math.Abs(units) / Native.WHEEL_DELTA);
+        var sign = Math.Sign(units);
+        if (sign == 0) return false;
+        for (var i = 0; i < notches; i++)
+            if (!InputInjector.SendWheel(sign * Native.WHEEL_DELTA)) return false;
+        Interlocked.Increment(ref _passed);
+        return true;
+    }
+
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
@@ -479,9 +587,18 @@ public sealed class WheelEngine : IDisposable
             if (!s.Enabled)
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
-            var delta = (short)((data.mouseData >> 16) & 0xFFFF);
+            var delta = (int)(short)((data.mouseData >> 16) & 0xFFFF);
             if (delta == 0)
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            /* ── 细腻模式：先把"系统少滚的那部分"乘回来 ──
+             *
+             * 系统行数被压到 1 行之后，同样的 delta 只会滚 1/N 的距离。
+             * 这里统一放大，后面所有分支（加速、摊帧、整格、原样转发）都按
+             * "一个 notch 仍然是原来那么多像素"来算 —— 只有一处乘法，不会有
+             * "某条路径忘了补偿"的半吊子状态。 */
+            var fineScale = Volatile.Read(ref _fineScale);
+            if (fineScale > 1) delta *= fineScale;
 
             // Ctrl/Alt + 滚轮 = 缩放，必须 1:1
             if (s.IgnoreCtrlAlt && (Native.IsKeyDown(Native.VK_CONTROL) || Native.IsKeyDown(Native.VK_MENU)))
@@ -497,6 +614,11 @@ public sealed class WheelEngine : IDisposable
             var target = _targets.ResolveForWheel(s.NeedsTitle);
             Volatile.Write(ref _lastTargetBox, new TargetBox(target));
 
+            /* 自己的窗口是特例：它的滚动由 App.OnPreviewMouseWheelScroll 直接按 delta
+             * 换算像素（固定行高），**不经过系统行数**。细腻模式把 delta 乘了 3 倍之后
+             * 它会多滚 3 倍 —— 这里乘回去。 */
+            if (fineScale > 1 && s.IsOwnExe(target.Exe)) delta /= fineScale;
+
             /* 按应用覆盖（v1.8.0）：只换"倍率上限 / 平滑开关"两项，
              * 快照在配置变更时就烘焙好了，这里只做一次字典查找。 */
             if (s.PerApp.Count > 0 && !string.IsNullOrEmpty(target.Exe)
@@ -511,6 +633,7 @@ public sealed class WheelEngine : IDisposable
             if (s.ShouldSkipSelf(target.Exe))
             {
                 if (_animator.PendingUnits != 0) _animator.Clear();
+                if (ForwardRaw(delta)) return (IntPtr)1;
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
@@ -518,6 +641,7 @@ public sealed class WheelEngine : IDisposable
             if (!s.IsAppEnabled(target.Exe, target.Title))
             {
                 if (_animator.PendingUnits != 0) _animator.Clear();
+                if (ForwardRaw(delta)) return (IntPtr)1;
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
@@ -598,6 +722,7 @@ public sealed class WheelEngine : IDisposable
             {
                 if (Interlocked.Exchange(ref _animatorWarned, 1) == 0)
                     Log.Warn("平滑动画线程已停止，本次滚动原样放行（看门狗会重新拉起它）");
+                if (ForwardRaw(delta)) return (IntPtr)1;
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
@@ -639,6 +764,10 @@ public sealed class WheelEngine : IDisposable
                      * 排空之后再把模式交回按比例（下一次加速事件会重新判定）。 */
                     if (_animator.WholeNotch && _animator.PendingUnits == 0)
                         _animator.WholeNotch = false;
+
+                    /* 细腻模式：这一下也必须转发，否则整格应用只会滚 1/N 行。 */
+                    if (ForwardWhole(delta)) return (IntPtr)1;
+
                     Interlocked.Increment(ref _passed);
                     return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
                 }
@@ -681,6 +810,10 @@ public sealed class WheelEngine : IDisposable
                  * 这一下由系统原样处理，再补发一截旧积压只会让用户看到
                  * "没加速却多滚了一点"。丢掉的是不到一格里的一小截，看不出来。 */
                 if (_animator.PendingUnits != 0) _animator.Clear();
+
+                /* 细腻模式下"不加速"也得接管：系统行数已经被我们改了，
+                 * 原样放行会让这个应用滚得只有原来的 1/N。 */
+                if (ForwardRaw(delta)) return (IntPtr)1;
 
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
@@ -730,6 +863,7 @@ public sealed class WheelEngine : IDisposable
 
     public void Dispose()
     {
+        LeaveFineOnExit();
         Stop();
         _animator.Dispose();
         _hookReady.Dispose();

@@ -571,6 +571,21 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
+                                        <TextBlock Text="细腻模式（实验性）" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="运行期间把系统「每次滚动几行」临时改成 1 行，退出时自动还原。量化从 0.5px 降到 0.17px，尾巴能一直顺到 20~30px/s。代价：这期间所有滚动都由本程序转发；少数不读系统行数的程序（部分 Electron/Qt 应用）滚起来会偏快，不合适就关掉。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="FineModeSwitch" Grid.Column="1"
+                                                  Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                  Checked="FineMode_Changed" Unchecked="FineMode_Changed" />
+                                </Grid>
+
+                                <Grid Margin="0,0,0,16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
                                         <TextBlock Text="反转加速方向" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
                                                    Text="只给系统里设过「滚轮反向」的鼠标用。正常鼠标不要开，否则上下相反。" />

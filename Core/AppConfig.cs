@@ -311,6 +311,24 @@ public sealed class AppBehaviorConfig
     public bool RunAtLogin { get; set; } = false;
 
     /// <summary>
+    /// 细腻模式（v1.8.17，实验）：运行期间把系统「每次滚动几行」临时压到 1 行，
+    /// 注入侧按原行数补偿距离，退出时按备份还原。
+    ///
+    /// <para>
+    /// 量化精度从「1 单位 = 行高 × N ÷ 120 px」提升到「行高 ÷ 120 px」
+    /// （3 行时 0.5px → 0.17px），尾巴才能连续减速到 20~30px/s，而不是 80px/s 一刀切。
+    /// </para>
+    /// <para>
+    /// 代价：这段时间里**所有滚动都由我们转发**（被排除的应用也一样，否则它们会慢 N 倍）。
+    /// 只有 Ctrl/Alt+滚轮（缩放）和"目标权限更高"两种情况仍原样放行。
+    /// 退出、崩溃、断电三种情况都会还原：进之前先把原值写进
+    /// <c>wheellines.fine.backup</c>，下次启动由
+    /// <see cref="Core.SystemWheelLines.CleanupFine"/> 兜底。
+    /// </para>
+    /// </summary>
+    public bool FineMode { get; set; } = false;
+
+    /// <summary>
     /// <b>始终以管理员身份运行</b> —— 手动双击启动也算，不只是开机那一次。
     ///
     /// <para>

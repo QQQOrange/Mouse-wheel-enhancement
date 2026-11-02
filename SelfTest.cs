@@ -1223,6 +1223,11 @@ internal static class SelfTest
             flick.Boost.FlickPageNotches.ToString());
 
         var rs8 = RuntimeSettings.From(d8);
+        Check("细腻模式默认关闭（不动系统设置）", !new AppConfig().Behavior.FineMode);
+        Check("细腻模式的目标行数是 1", SystemWheelLines.FineLines == 1);
+        Check("细腻模式行数落在可设置范围内", SystemWheelLines.IsUsable(SystemWheelLines.FineLines));
+        Check("细腻模式的补偿倍数在默认配置下是 1（未启用）", WheelEngine.FineScale >= 1);
+
         Check("横向开关被带到运行时快照", rs8.HorizontalBoost == d8.Input.HorizontalBoost);
         Check("看门狗开关被带到运行时快照", rs8.OsdMultiplier == d8.Behavior.OsdMultiplier);
     }

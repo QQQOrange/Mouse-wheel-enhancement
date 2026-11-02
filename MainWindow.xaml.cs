@@ -283,6 +283,7 @@ public partial class MainWindow : Window
             CloseToTraySwitch.IsChecked = c.Behavior.CloseToTray;
             PauseSelfSwitch.IsChecked = c.Behavior.PauseWhileSettingsOpen;
             FlickPageSwitch.IsChecked = c.Boost.FlickPage;
+        FineModeSwitch.IsChecked = c.Behavior.FineMode;
             HorizontalSwitch.IsChecked = c.Input.HorizontalBoost;
             OsdSwitch.IsChecked = c.Behavior.OsdMultiplier;
             WatchdogSwitch.IsChecked = c.Behavior.HookWatchdog;
@@ -1137,10 +1138,38 @@ public partial class MainWindow : Window
         Commit();
     }
 
+    private void FineMode_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+
+        var on = FineModeSwitch.IsChecked == true;
+        if (on && !Services.Config.Behavior.FineMode)
+        {
+            var answer = MessageBox.Show(this,
+                "细腻模式会在运行期间把系统「每次滚动几行」改成 1 行，退出本程序时还原。\n\n" +
+                "· 量化更细（0.5px → 0.17px），尾巴更顺；\n" +
+                "· 这期间所有滚动都由本程序转发；\n" +
+                "· 少数不读系统行数的程序可能滚得偏快，关掉这个开关即可恢复。\n\n" +
+                "确定开启吗？",
+                "细腻模式", MessageBoxButton.OKCancel, MessageBoxImage.Information);
+            if (answer != MessageBoxResult.OK)
+            {
+                _loading = true;
+                FineModeSwitch.IsChecked = false;
+                _loading = false;
+                return;
+            }
+        }
+
+        Services.Config.Behavior.FineMode = on;
+        Commit();
+    }
+
     private void FlickPage_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
         Services.Config.Boost.FlickPage = FlickPageSwitch.IsChecked == true;
+        Services.Config.Behavior.FineMode = FineModeSwitch.IsChecked == true;
         Commit();
     }
 

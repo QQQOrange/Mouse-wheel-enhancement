@@ -89,6 +89,10 @@ public partial class App : System.Windows.Application
         var lines = SystemWheelLines.Current();
         if (lines <= 0) { Bypass($"行数={lines}（≤0 不换算）"); return; }
 
+        /* 细腻模式把系统行数临时压到了 1 行，而这个页面是"按行数 × 行高"换算像素的
+         * —— 不乘回补偿倍数，设置窗口自己就会只剩 1/N 的滚动量。 */
+        lines *= Math.Max(1, WheelEngine.FineScale);
+
         var px = e.Delta * PixelsPerLine * lines / (double)Native.WHEEL_DELTA;
         var before = sv.VerticalOffset;
         var planned = PlanScroll(before, px, sv.ScrollableHeight);
