@@ -282,6 +282,15 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        if (e.Args.Any(a => a.Equals("--wpfprobe", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var probeCode = WpfProbe();
+            Shutdown(probeCode);
+            Environment.Exit(probeCode);
+            return;
+        }
+
         if (e.Args.Any(a => a.StartsWith("--wheeltest", StringComparison.OrdinalIgnoreCase)))
         {
             var lines = 0;

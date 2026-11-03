@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -565,6 +566,116 @@ public partial class App
     /// 只读运行（不加 --fix）不会写任何东西 —— 和程序正常启动的行为一致。
     /// </para>
     /// </summary>
+    /// <summary>
+    /// <c>--wpfprobe</c>：实测 **WPF 的 ScrollViewer 到底看不看 delta 大小**。
+    ///
+    /// <para>
+    /// 这是整格模式的根本前提：如果 WPF 只认"事件个数"，那我们把一档拆成几十个
+    /// 亚格 delta 就会变成几十档（v1.8.24 修的就是这个）；如果它按 delta 比例滚，
+    /// 那整格模式其实没必要。以前这个结论来自"手感观察"，没有实测数据。
+    /// </para>
+    /// <para>
+    /// 做法：开一个只有 ScrollViewer 的窗口（不装钩子、不接自己的 PreviewMouseWheel），
+    /// 把光标放进去，分别用 delta = 15 / 40 / 120 / 240 注入同样次数，量位移。
+    /// 位移相同 → 只认个数；位移等比例 → 认 delta。
+    /// </para>
+    /// </summary>
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    private const uint WM_MOUSEWHEEL = 0x020A;
+
+    /// <summary>
+    /// 直接给窗口投递一条 <c>WM_MOUSEWHEEL</c>。
+    /// 比 SendInput 更适合做语义实验：不需要窗口在前台、不需要光标停在上面，
+    /// 而且 delta 想给多少给多少（SendInput 受限于真实设备语义）。
+    /// </summary>
+    private static void PostWheel(IntPtr hwnd, Window w, int delta)
+    {
+        if (hwnd == IntPtr.Zero) return;
+
+        var dpi = VisualTreeHelper.GetDpi(w);
+        var x = (int)((w.Left + w.Width / 2) * dpi.DpiScaleX);
+        var y = (int)((w.Top + w.Height / 2) * dpi.DpiScaleY);
+
+        var lParam = (IntPtr)((y << 16) | (x & 0xFFFF));
+        var wParam = (IntPtr)(((long)(short)delta << 16) & 0xFFFF0000);
+        PostMessage(hwnd, WM_MOUSEWHEEL, wParam, lParam);
+    }
+
+    private static int WpfProbe()
+    {
+        var sb = new StringBuilder();
+        Window? w = null;
+        try
+        {
+            var sv = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            };
+            sv.Content = new Border { Height = 8000 };
+
+            w = new Window
+            {
+                Title = "wpfprobe",
+                Width = 420,
+                Height = 320,
+                Content = sv,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                ShowInTaskbar = false,
+            };
+            w.Show();
+            w.Activate();
+            PumpFor(w, 400);
+
+            /* 把光标放进窗口：WM_MOUSEWHEEL 会发给光标下的窗口。 */
+            var dpi = VisualTreeHelper.GetDpi(w);
+            Native.SetCursorPos(
+                (int)((w.Left + w.Width / 2) * dpi.DpiScaleX),
+                (int)((w.Top + w.Height / 2) * dpi.DpiScaleY));
+            PumpFor(w, 150);
+
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+            sb.AppendLine($"hwnd=0x{hwnd.ToInt64():X}");
+
+            sb.AppendLine("WPF ScrollViewer 位移实测（每档 6 次，向下滚）");
+            sb.AppendLine("delta → 每次位移");
+            foreach (var delta in new[] { 15, 40, 120, 240 })
+            {
+                sv.ScrollToVerticalOffset(0);
+                PumpFor(w, 120);
+                var before = sv.VerticalOffset;
+
+                const int times = 6;
+                for (var i = 0; i < times; i++)
+                {
+                    PostWheel(hwnd, w, -delta);
+                    PumpFor(w, 45);
+                }
+                PumpFor(w, 150);
+
+                var moved = sv.VerticalOffset - before;
+                sb.AppendLine($"{delta,4} → {moved / times,7:0.0} px/事件");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("系统每格行数 = " + SystemWheelLines.Current() + "，行高按 20 DIP 估");
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine("wpfprobe 异常：" + ex);
+            WriteCliResult("wpfprobe.txt", sb.ToString(), 31);
+            return 31;
+        }
+        finally
+        {
+            try { w?.Close(); } catch { }
+        }
+
+        return WriteCliResult("wpfprobe.txt", sb.ToString(), 0);
+    }
+
     private static int WheelLinesCli(string[] args)
     {
         static string Describe(int v) =>

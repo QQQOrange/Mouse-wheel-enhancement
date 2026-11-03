@@ -754,7 +754,11 @@ public sealed class WheelEngine : IDisposable
              * 语义上属于"按比例滚动"，直接吃摊帧就是浏览器级的手感。
              * 判据放在这里而不是 ScrollSemantics 里：类名仍然是 HwndWrapper，
              * "是不是自己"是进程维度的事，和框架无关。 */
-            if (target.ScrollsOncePerEvent && !s.IsOwnExe(target.Exe))
+            /* 覆盖优先：同一个 WPF 窗口里，ScrollViewer 认 delta 比例、ListBox 只认事件个数，
+             * 从外面分不出来（都是 HwndWrapper）。所以默认按类名走保守的整格，
+             * 用户可以在右键菜单里给某个程序切成"按像素"。 */
+            var wholeSemantics = s.ForceWholeNotch ?? target.ScrollsOncePerEvent;
+            if (wholeSemantics && !s.IsOwnExe(target.Exe))
             {
                 /* ① 没加速 → 让系统自己处理，零干预。
                  * ② 这一下本来就不到一格（触控板 / 自由滚轮的 15、40）→ 也放行：

@@ -55,6 +55,19 @@ public sealed class AppOverride
 
     /// <summary>这个应用里要不要平滑。null = 跟随全局。</summary>
     public bool? Smooth { get; set; }
+
+    /// <summary>
+    /// 这个应用按哪种语义发事件：<c>"pixel"</c> = 按 delta 比例（浏览器那种平滑），
+    /// <c>"whole"</c> = 按事件个数（一档一事件）。null = 自动（按窗口类猜）。
+    ///
+    /// <para>
+    /// 为什么需要手动开关：同一个 WPF 窗口里，<c>ScrollViewer</c>（像素滚动）**认 delta 比例**，
+    /// 而 <c>ListBox</c> / <c>DataGrid</c>（按项滚动）只认事件个数 —— 两者从窗口类名上
+    /// 完全分不出来（都是 <c>HwndWrapper</c>）。默认取保守的"整格"，避免列表类应用一档滚出八项；
+    /// 如果某个程序是文档/网页式的像素滚动，用户可以在右键菜单里切成"按像素"，立刻变顺滑。
+    /// </para>
+    /// </summary>
+    public string? ScrollMode { get; set; }
 }
 
 public sealed class BoostConfig
@@ -601,7 +614,10 @@ public sealed class AppConfig
         if (o == null) return null;
         if (o.MaxMultiplier.HasValue)
             o.MaxMultiplier = Whole(Clamp(o.MaxMultiplier.Value, 1, 8));
-        if (!o.MaxMultiplier.HasValue && !o.Smooth.HasValue) return null;
+        var mode = (o.ScrollMode ?? "").Trim().ToLowerInvariant();
+        o.ScrollMode = mode is "pixel" or "whole" ? mode : null;
+
+        if (!o.MaxMultiplier.HasValue && !o.Smooth.HasValue && o.ScrollMode == null) return null;
         return o;
     }
 

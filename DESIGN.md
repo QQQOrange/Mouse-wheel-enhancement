@@ -3952,3 +3952,49 @@ MIT License · © 2026 QQQOrange
 `MainWindow.xaml.cs` 2292 → 1845 行，按页拆出 `MainWindow.Help.cs`（搜索/锚点/过滤）、
 `MainWindow.Startup.cs`（自启/管理员/提权）、`MainWindow.Apps.cs`（名单/右键覆盖/导入导出）。
 同样是 partial，字段与状态不动。
+
+---
+
+## 63. v1.8.25：实测推翻了一个三版本的前提
+
+### 实验
+
+`--wpfprobe`：开一个只有 `ScrollViewer` 的窗口（不装钩子、不接自己的 PreviewMouseWheel），
+把光标放进去，分别用 delta = 15 / 40 / 120 / 240 各投递 6 次 `WM_MOUSEWHEEL`，量位移。
+
+结果（3 行 → 每档 60px）：
+
+| delta | 每次位移 |
+|---:|---:|
+| 15 | 7.5 px |
+| 40 | 20.0 px |
+| 120 | 60.0 px |
+| 240 | 120.0 px |
+
+**严格成比例。** 也就是说 WPF 的 `ScrollViewer` **认 delta 大小**，不是"只认事件个数"。
+项目从 v1.6 起把 WPF 归进"整格"，这个前提对 `ScrollViewer` 是错的。
+
+### 为什么之前没被发现
+
+同一个 WPF 窗口里，`ListBox` / `DataGrid` 这类 `CanContentScroll=true` 的容器**确实**只认事件
+个数（一次滚动一行/一项）。它们和 `ScrollViewer` 的窗口类名完全一样（都是 `HwndWrapper`），
+从外部无法区分 —— 于是"整格"这个保守假设被套到了所有 WPF 窗口上。
+
+保守假设的代价：`ScrollViewer` 类应用本来能得到亚格平滑（v1.8.24 之前那条"死开关"路径
+歪打正着），现在被按成一档一档。
+
+### 决策：把选择权交给用户
+
+新增**按应用的「滚动语义」**覆盖（右键名单项）：
+
+- **自动**（默认）：按窗口类猜 —— WPF/WinForms/Qt 走整格；
+- **按事件（整格）**：列表类应用用这个，一档一事件，距离永远准；
+- **按像素（平滑）**：文档/网页类的 WPF 程序切到这个，立刻变成亚格平滑。
+
+实现上只加了一个字段 <c>AppOverride.ScrollMode</c>（"pixel"/"whole"/null），
+引擎里 `<c>s.ForceWholeNotch ?? target.ScrollsOncePerEvent</c>` 一行决定走向。
+
+### 验收
+
+`--selftest` 360 项（+4：三种语义 + 字符串规范化）；`--wpfprobe` 数据留在
+`wpfprobe.txt`，以后怀疑语义问题先跑它。

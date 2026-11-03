@@ -54,6 +54,8 @@ public partial class MainWindow
         var parts = new List<string>();
         if (o.MaxMultiplier is double m) parts.Add($"上限 {m:0}×");
         if (o.Smooth is bool sm) parts.Add(sm ? "平滑开" : "平滑关");
+        if (o.ScrollMode == "pixel") parts.Add("按像素");
+        else if (o.ScrollMode == "whole") parts.Add("整格");
         return parts.Count == 0 ? "" : "· " + string.Join(" · ", parts);
     }
 
@@ -110,6 +112,25 @@ public partial class MainWindow
         AddSmooth("开", true);
         AddSmooth("关", false);
         menu.Items.Add(smoothRoot);
+
+        var semRoot = new MenuItem { Header = "滚动语义" };
+        void AddSem(string label, string? value, string tip)
+        {
+            var mi = new MenuItem
+            {
+                Header = label,
+                IsCheckable = true,
+                IsChecked = string.Equals(rule.Override?.ScrollMode, value, StringComparison.OrdinalIgnoreCase),
+                ToolTip = tip,
+            };
+            mi.Click += (_, _) => ApplyOverride(rule, o => o.ScrollMode = value);
+            semRoot.Items.Add(mi);
+        }
+        AddSem("自动（按窗口类型猜）", null, "WPF/WinForms/Qt 默认按整档发，最稳");
+        AddSem("按事件（整格）", "whole", "一个事件滚一档，列表类应用用这个");
+        AddSem("按像素（平滑）", "pixel",
+            "按 delta 比例滚，文档/网页类的 WPF 程序切到这一档会明显更顺");
+        menu.Items.Add(semRoot);
 
         menu.Items.Add(new Separator());
         var reset = new MenuItem { Header = "清除这个程序的覆盖" };

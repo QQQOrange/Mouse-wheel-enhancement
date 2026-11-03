@@ -106,6 +106,12 @@ public sealed record RuntimeSettings
     /// </summary>
     public bool HasOverride { get; init; }
 
+    /// <summary>
+    /// 覆盖里的滚动语义：true = 强制整格（按事件），false = 强制按像素，
+    /// null = 按窗口类自动判断（<see cref="TargetInfo.ScrollsOncePerEvent"/>）。
+    /// </summary>
+    public bool? ForceWholeNotch { get; init; }
+
     public FilterMode FilterMode { get; init; }
     public IReadOnlySet<string> FilterApps { get; init; } = new HashSet<string>();
     public Regex? TitleRegex { get; init; }
@@ -324,6 +330,13 @@ public sealed record RuntimeSettings
     {
         if (o == null) return this;
         var s = this with { HasOverride = true };
+
+        s = o.ScrollMode switch
+        {
+            "whole" => s with { ForceWholeNotch = true },
+            "pixel" => s with { ForceWholeNotch = false },
+            _ => s,
+        };
 
         if (o.MaxMultiplier is double raw)
         {

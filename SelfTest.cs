@@ -1224,6 +1224,25 @@ internal static class SelfTest
 
         var rs8 = RuntimeSettings.From(d8);
         /* 整格调度（v1.8.24）：WPF 类框架只认事件个数，必须一档一档发。 */
+        /* 覆盖里的滚动语义（v1.8.25）：分不出 ScrollViewer / ListBox，只能让用户切。 */
+        var cfgSem = AppConfig.Default();
+        cfgSem.Filter.Apps = new List<AppRule>
+        {
+            new() { Exe = "doc.exe", Override = new AppOverride { ScrollMode = "pixel" } },
+            new() { Exe = "list.exe", Override = new AppOverride { ScrollMode = "whole" } },
+            new() { Exe = "auto.exe", Override = new AppOverride { Smooth = true } },
+        };
+        cfgSem.Normalize();
+        var semSnap = RuntimeSettings.From(cfgSem);
+        Check("覆盖「按像素」→ 不走整格",
+            semSnap.WithOverride(cfgSem.Filter.Apps[0].Override).ForceWholeNotch == false);
+        Check("覆盖「整格」→ 强制整格",
+            semSnap.WithOverride(cfgSem.Filter.Apps[1].Override).ForceWholeNotch == true);
+        Check("覆盖没写语义 → 自动（null）",
+            semSnap.WithOverride(cfgSem.Filter.Apps[2].Override).ForceWholeNotch == null);
+        Check("语义字符串被规范化", cfgSem.Filter.Apps[0].Override!.ScrollMode == "pixel",
+            cfgSem.Filter.Apps[0].Override!.ScrollMode ?? "null");
+
         Check("整格调度：欠够一格 + 间隔够 → 该发",
             ScrollAnimator.WholeNotchDue(120, 12, 120));
         Check("整格调度：间隔不够 → 不发", !ScrollAnimator.WholeNotchDue(500, 5, 500));
