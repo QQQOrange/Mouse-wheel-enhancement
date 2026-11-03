@@ -362,6 +362,12 @@ public sealed record RuntimeSettings
     /// </summary>
     /// <param name="exe">小写的 exe 文件名；空串 = 解析失败（按"放行"处理）。</param>
     /// <param name="title">窗口标题（给正则用，可能是空串）。</param>
+    /// <summary>上一次做标题正则匹配时的标题（钩子热路径的缓存键）。</summary>
+    private string? _titleCacheKey;
+
+    /// <summary>该标题上一次的正则匹配结果。</summary>
+    private bool _titleCacheMatch;
+
     public bool IsAppEnabled(string exe, string title)
     {
         /* 解析不出进程名时**放行**：宁可在这种边缘情况下保留系统默认行为，
@@ -371,8 +377,25 @@ public sealed record RuntimeSettings
         var listed = FilterApps.Contains(exe);
         if (!listed && TitleRegex != null && !string.IsNullOrEmpty(title))
         {
-            try { listed = TitleRegex.IsMatch(title); }
-            catch (RegexMatchTimeoutException) { listed = false; }
+            /* ⚠ 钩子热路径：正则**绝不能每个事件都跑**。
+             *
+             * 标题正则带 50ms 超时，Windows 对低级钩子的预算是 300ms 左右；
+             * 用户随手写一个 `.*?foo.*bar.*` 就可能让每次滚轮卡几十毫秒。
+             * 而同一个窗口的标题在**连续滚动的一整段里几乎不变** ——
+             * 所以按标题字符串缓存一次判定结果，命中率接近 100%，
+             * 真正调用 IsMatch 的次数从"每事件一次"降到"每次换标题一次"。
+             *
+             * 缓存放在快照对象里：配置一改就换新快照，天然不会读到旧的正则。
+             */
+            if (!string.Equals(title, _titleCacheKey, StringComparison.Ordinal))
+            {
+                try { _titleCacheMatch = TitleRegex.IsMatch(title); }
+                catch (RegexMatchTimeoutException) { _titleCacheMatch = false; }
+
+                _titleCacheKey = title;
+            }
+
+            listed = _titleCacheMatch;
         }
 
         /* 「按应用覆盖」是**正向声明**：用户给某个程序单独设了倍率上限/平滑开关，

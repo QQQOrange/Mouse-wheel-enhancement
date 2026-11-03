@@ -12,6 +12,17 @@ namespace MouseWheelEnhancement;
 public partial class App : System.Windows.Application
 {
     private const string MutexName = @"Local\MouseWheelEnhancement.SingleInstance";
+
+    /// <summary>
+    /// "跑完就退"的诊断参数。只有它们才需要看门狗 —— 注意
+    /// <c>--minimized</c> 是开机自启用的正常参数，绝不能被当成诊断命令。
+    /// </summary>
+    private static readonly string[] DiagnosticArgs =
+    {
+        "--selftest", "--measure", "--featurecheck", "--taskcheck", "--frametrace",
+        "--dialogtest", "--runtimecheck", "--wheeltest", "--scrollsmooth", "--probe",
+        "--osdshot", "--uishot", "--smoke",
+    };
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
 
     /// <summary>
@@ -253,6 +264,27 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
 
         // 自检模式：不建窗口、不装钩子，只跑纯逻辑断言然后退出
+        /* CLI 诊断命令的统一看门狗。
+         *
+         * 这些命令都是"跑完就退"的，但它们会拉引擎、装钩子、注入事件、渲染窗口 ——
+         * 任何一环卡住（比如另一个实例占着钩子），进程就会**无声地挂着**：
+         * 没有输出、没有退出码、自动化脚本只能一直等。实测踩过一次 10 分钟的挂死。
+         *
+         * 所以：只要带诊断参数，就起一个后台看门狗，120 秒还没结束就写日志并强制退出 90。
+         * 正常路径 120 秒足够（最慢的 frametrace 也就几秒）。 */
+        if (e.Args.Any(a => DiagnosticArgs.Contains(a)))
+        {
+            var watchdog = new System.Threading.Thread(() =>
+            {
+                System.Threading.Thread.Sleep(TimeSpan.FromSeconds(120));
+                try { Log.Error("诊断命令超过 120 秒仍未结束，强制退出（可能是另一个实例占着钩子）"); } catch { }
+                try { Log.Flush(500); } catch { }
+                Environment.Exit(90);
+            })
+            { IsBackground = true, Name = "cli-watchdog" };
+            watchdog.Start();
+        }
+
         if (e.Args.Any(a => a.Equals("--selftest", StringComparison.OrdinalIgnoreCase)))
         {
             var code = SelfTest.Run();
@@ -495,6 +527,19 @@ public partial class App : System.Windows.Application
         StartActivateListener();
 
         DispatcherUnhandledException += OnUnhandled;
+
+        /* UI 线程之外（后台线程 / 线程池 / 原生回调）的兜底。
+         *
+         * 这类异常**不会**走 DispatcherUnhandledException，默认行为是直接结束进程：
+         * 用户看到的是"程序突然没了"，日志里一条都没有；如果当时细腻模式正开着，
+         * 系统行数也会停在 1 行（靠 RunOnce 兜底要等下次登录）。
+         * 这里至少做到三件事：留日志、尽量还原系统设置、把日志刷盘。 */
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            try { Log.Error("后台线程未处理异常", args.ExceptionObject as Exception); } catch { }
+            try { SystemWheelLines.LeaveFine(); } catch { }
+            try { Log.Flush(1000); } catch { }
+        };
 
         /* ══════════════════════════════════════════════════════════════
          * 接管 **WinForms** 的未处理异常通道。
