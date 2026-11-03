@@ -3875,3 +3875,37 @@ MIT License · © 2026 QQQOrange
 ### 验收
 
 --selftest **356 项**（新增：覆盖在两种名单模式下都增强、覆盖派生快照带标记）；--featurecheck 新增"覆盖关平滑 → 1 帧发 360 单位 / 全局开平滑 → 21 帧"的**出帧级**断言；--frametrace（含 jitter=12）、--scrollsmooth ×4、--smoke、--measure 全 rc=0；	ools\publish.ps1 走完"新产物自检 → 备份 → 安装 → 装机自检"，失败自动回滚。
+
+---
+
+## 61. v1.8.23：把 App 拆成三个 partial 文件（只搬家，不改行为）
+
+`App.xaml.cs` 曾经 2600 行，一个文件里塞了五件事：应用启动、CLI 诊断实现、冒烟检查、
+截图工具、以及本程序自己窗口的滚轮换算。改任何一处都得在 2600 行里翻。
+
+现在按"职责 + 变化原因"拆成三个 partial 声明（同一类型、同一份状态，**零新增耦合**）：
+
+| 文件 | 内容 | 变化原因 |
+|---|---|---|
+| `App.xaml.cs`（1449 行） | 启动/单实例/提权/托盘/窗口生命周期/看门狗/退出 | 用户能感知的运行时行为 |
+| `App.Diagnostics.cs`（约 950 行） | `--smoke`、`--dialogtest`、`--uishot`、`--osdshot`、`--wheeltest` 辅助 | 只在"验货"时用，改版才动 |
+| `App.ScrollPage.cs`（约 180 行） | 设置页自己的 delta → 像素换算与合帧队列 | 跟随滚动模型演进 |
+
+为什么用 partial 而不是拆成两个类：这些方法共享 App 的日志、配置、窗口与生命周期状态，
+硬拆就得引入构造注入或服务定位器 —— 那是更大的改动、更多的新 bug 面，而收益只是"看起来更架构"。
+**搬家的目的是让人找得到代码，不是让类型图好看。**
+
+### 顺手修掉的一个真 bug
+
+诊断看门狗原来用 `DiagnosticArgs.Contains(arg)` 判定，区分大小写、且只认整串：
+
+- `--WHEELTEST` 不触发看门狗；
+- `--wheeltest lines=3`（带参数）也不触发。
+
+也就是说这两个写法仍然会**无声挂死**。改成 `IsDiagnosticArg`：大小写不敏感，
+并接受 `--flag value` / `--flag=value` 两种形式。
+
+### 验收
+
+三个文件编译后 `--selftest` 351 项、`--featurecheck`、`--smoke`、`--uishot`、
+`--osdshot` 全部 rc=0；装机自检通过。
