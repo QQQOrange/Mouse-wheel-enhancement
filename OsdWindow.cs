@@ -2,15 +2,17 @@ using System;
 using MouseWheelEnhancement.Core;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 
 namespace MouseWheelEnhancement;
 
 /// <summary>
-/// 快速滚动时在光标旁边闪一下"当前倍率"（v1.8.0）。
+/// 快速滚动时在光标旁边闪一下"当前倍率"（v1.8.0，v1.8.19 重做外观）。
 ///
 /// <para>
 /// 三条硬要求，缺一条就会帮倒忙：
@@ -22,8 +24,18 @@ namespace MouseWheelEnhancement;
 ///   <item><b>不闪</b>：只在倍率 ≥ 1.5 时出现，且同一时刻只有一个实例，
 ///         连续快滚时更新数字而不是反复新建窗口。</item>
 /// </list>
+///
 /// <para>
-/// 位置贴在光标右下 18px；碰到屏幕边缘会自动翻到另一侧。
+/// # 外观（v1.8.19）
+/// </para>
+/// <para>
+/// 旧版是一个固定深色的方角小方块，浅色主题下像贴了块黑胶布，深色主题下又和背景糊在一起。
+/// 现在改成跟随主题的**胶囊标签**：圆角 + 1px 描边 + 一层很淡的投影 + 左侧一条强调色竖条，
+/// 数字用主题前景色、乘号用次要色。所有颜色都走 <c>DynamicResource</c>，
+/// 所以切换浅色/深色（含"跟随系统"）会立刻跟着变 —— 不需要重建窗口。
+/// </para>
+/// <para>
+/// 位置贴在光标右下 16px；碰到屏幕边缘会自动翻到另一侧。
 /// </para>
 /// </summary>
 internal sealed class OsdWindow : Window
@@ -33,7 +45,13 @@ internal sealed class OsdWindow : Window
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
 
-    private readonly TextBlock _label;
+    /// <summary>停留多久开始淡出。太短读不到，太长挡视线。</summary>
+    private const int HoldMs = 520;
+
+    private readonly Border _card;
+    private readonly TextBlock _value;
+    private readonly Run _times;
+    private readonly ScaleTransform _scale;
     private readonly DispatcherTimer _hide;
 
     /// <summary>显示代次：每次 Flash 自增，旧淡出动画的收尾回调据此作废。</summary>
@@ -51,25 +69,65 @@ internal sealed class OsdWindow : Window
         ResizeMode = ResizeMode.NoResize;
         SizeToContent = SizeToContent.WidthAndHeight;
         WindowStartupLocation = WindowStartupLocation.Manual;
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
         Opacity = 0;
 
-        _label = new TextBlock
+        /* 数字和乘号放在**同一个 TextBlock 的两段 Run** 里：
+         * 分成两个 TextBlock 时基线对不齐，「×」会飘成上标的样子（v1.8.19 修）。 */
+        _value = new TextBlock
         {
-            FontSize = 13,
+            FontSize = 17,
             FontWeight = FontWeights.SemiBold,
-            Foreground = Brushes.White,
-            Margin = new Thickness(10, 4, 10, 4),
+            VerticalAlignment = VerticalAlignment.Center,
         };
+        _value.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+        _value.Inlines.Add(new Run("1.0"));
+        _times = new Run("×") { FontSize = 12 };
+        _times.SetResourceReference(TextElement.ForegroundProperty, "TextSecondary");
+        _value.Inlines.Add(_times);
 
-        Content = new Border
+        /* 左侧那条 3px 的强调色：给"这是在加速"一个颜色锚点，
+         * 比旧版整块深色更容易被余光捕捉到。 */
+        var accent = new Border
         {
-            CornerRadius = new CornerRadius(9),
-            Background = new SolidColorBrush(Color.FromArgb(0xE6, 0x1E, 0x22, 0x2C)),
-            Child = _label,
-            Effect = null,
+            Width = 3,
+            Height = 16,
+            CornerRadius = new CornerRadius(1.5),
+            Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center,
         };
+        accent.SetResourceReference(Border.BackgroundProperty, "AccentBrush");
 
-        _hide = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(340) };
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(accent);
+        row.Children.Add(_value);
+
+        _card = new Border
+        {
+            CornerRadius = new CornerRadius(15),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(11, 5, 13, 5),
+            Child = row,
+            Effect = new DropShadowEffect
+            {
+                BlurRadius = 18,
+                ShadowDepth = 2,
+                Direction = 270,
+                Opacity = 0.30,
+                Color = Colors.Black,
+            },
+        };
+        _card.SetResourceReference(Border.BackgroundProperty, "CardBg");
+        _card.SetResourceReference(Border.BorderBrushProperty, "BorderBrushSoft");
+
+        _scale = new ScaleTransform(1, 1);
+        _card.RenderTransform = _scale;
+        _card.RenderTransformOrigin = new Point(0.5, 0.5);
+
+        Content = _card;
+
+        _hide = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(HoldMs) };
         _hide.Tick += (_, _) =>
         {
             _hide.Stop();
@@ -100,7 +158,7 @@ internal sealed class OsdWindow : Window
     /// <summary>显示一次。已经显示时只更新文字并续命，不新建窗口。</summary>
     public void Flash(double multiplier)
     {
-        _label.Text = $"{multiplier:0.0}×";
+        if (_value.Inlines.FirstInline is Run number) number.Text = $"{multiplier:0.0}";
         _generation++;
 
         if (!IsVisible)
@@ -117,9 +175,20 @@ internal sealed class OsdWindow : Window
         }
 
         _hide.Stop();
+
+        /* 每次出现轻轻"弹"一下（0.94 → 1），比纯淡入更有存在感，
+         * 但幅度很小，不会在余光里变成闪烁。 */
+        _scale.BeginAnimation(ScaleTransform.ScaleXProperty, Pop());
+        _scale.BeginAnimation(ScaleTransform.ScaleYProperty, Pop());
         Fade(1, 90, null);
         _hide.Start();
     }
+
+    private static DoubleAnimation Pop() => new(1, TimeSpan.FromMilliseconds(110))
+    {
+        From = 0.94,
+        EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+    };
 
     private void Fade(double to, int ms, Action? done)
     {
@@ -147,7 +216,7 @@ internal sealed class OsdWindow : Window
         var w = ActualWidth > 1 ? ActualWidth : 64;
         var h = ActualHeight > 1 ? ActualHeight : 28;
 
-        var x = cursorX + 18.0;
+        var x = cursorX + 16.0;
         var y = cursorY + 18.0;
 
         // 虚拟桌面边界也是 DIP，和 Left/Top 同一套单位

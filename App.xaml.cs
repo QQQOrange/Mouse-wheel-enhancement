@@ -369,6 +369,16 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        /* 倍率浮层截图：`--osdshot`。两种主题各拍一张，用来核对颜色和圆角/投影。 */
+        if (e.Args.Any(a => a.Equals("--osdshot", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var osdCode = ShotOsd();
+            Shutdown(osdCode);
+            Environment.Exit(osdCode);
+            return;
+        }
+
         /* 界面截图：`--uishot [dark|light]`。逐页渲染成 PNG，用来肉眼/自动核对
          * "深色主题下有没有黑字落在深底上"。截图落在数据目录 uishot-*.png。 */
         if (e.Args.Any(a => a.Equals("--uishot", StringComparison.OrdinalIgnoreCase)))
@@ -1369,6 +1379,67 @@ public partial class App : System.Windows.Application
     /// 逐页截图（`--uishot`）。给"深色主题下字看不清"这类问题留证：
     /// 一次把 8 个页面都渲染成 PNG，改完再拍一遍对比。
     /// </summary>
+    /// <summary>
+    /// 把倍率浮层（OSD）在浅色/深色下各渲染一张 PNG（`--osdshot`）。
+    /// 浮层是透明背景的独立窗口，只渲染它的内容，方便直接看颜色和描边。
+    /// </summary>
+    private static int ShotOsd()
+    {
+        var code = 0;
+        OsdWindow? w = null;
+        try
+        {
+            /* 只建**一个**窗口，先浅后深各拍一张：这样截出来的两张图能证明
+             * 主题是在运行中切换的（如果颜色写死，两张会一模一样）。 */
+            w = new OsdWindow();
+            w.Show();
+            w.Flash(2.3);
+            w.BeginAnimation(Window.OpacityProperty, null);
+            w.Opacity = 1;
+
+            foreach (var mode in new[] { Theme.Light, Theme.Dark })
+            {
+                Theme.SetMode(mode);
+                for (var i = 0; i < 3; i++)
+                {
+                    w.UpdateLayout();
+                    w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+                }
+
+                var path = Path.Combine(AppPaths.DataDir, $"osd-{mode}.png");
+                SaveContentShot(w, path);
+                Log.Info($"osdshot: {mode} → {path}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("osdshot 失败", ex);
+            code = 32;
+        }
+        finally
+        {
+            try { w?.Close(); } catch { }
+        }
+        return code;
+    }
+
+    /// <summary>把一个窗口的内容渲染成带透明通道的 PNG。</summary>
+    private static void SaveContentShot(Window w, string path)
+    {
+        if (w.Content is not FrameworkElement el) return;
+
+        var width = Math.Max(1, (int)Math.Ceiling(el.ActualWidth));
+        var height = Math.Max(1, (int)Math.Ceiling(el.ActualHeight));
+        var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            width, height, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+        rtb.Render(el);
+
+        var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
+        using var fs = File.Create(path);
+        enc.Save(fs);
+    }
+
     private static int ShotAllPages(MainWindow w, string mode, int only)
     {
         var code = 0;
