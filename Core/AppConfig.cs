@@ -145,7 +145,7 @@ public sealed class SmoothConfig
     /// <summary>
     /// 指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。
     /// </summary>
-    public double TailTauMs { get; set; } = 45.0;
+    public double TailTauMs { get; set; } = 30.0;
 
     /// <summary>允许积压多少格。防止连续甩动时积雪越滚越远。</summary>
     public double MaxBacklogNotches { get; set; } = 5.0;
@@ -165,7 +165,7 @@ public sealed class SmoothConfig
     /// </para>
     /// </summary>
     [JsonPropertyName("glideTauMs")]
-    public int GlideMs { get; set; } = 180;
+    public int GlideMs { get; set; } = 420;
 
     /// <summary>
     /// 停止输入多少毫秒算"松手"、可以开始滑行。
@@ -537,7 +537,20 @@ public sealed class AppConfig
             SchemaVersion = 7;
         }
 
-        SchemaVersion = Math.Max(7, SchemaVersion);
+        /* ── v8 迁移：默认手感向触控板靠（v1.8.27）──
+         *
+         * 两件事：
+         *   · 跟手 τ 45 → 30ms：触控板是"手到哪、内容到哪"，45ms 的滞后读作"发飘"；
+         *   · 惯性 180 → 420ms：收尾拉长，配合速度域二阶低通，尾巴是连续收敛而不是软着陆。
+         * 只改**仍是旧默认值**的用户；自己调过的一律不动。 */
+        if (SchemaVersion < 8)
+        {
+            if (Math.Abs(Smooth.TailTauMs - 45) < 0.01) Smooth.TailTauMs = 30;
+            if (Smooth.GlideMs == 180) Smooth.GlideMs = 420;
+            SchemaVersion = 8;
+        }
+
+        SchemaVersion = Math.Max(8, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* 窗口大小/位置：0 表示"没记录"（首次启动），按默认居中。
@@ -576,7 +589,7 @@ public sealed class AppConfig
         Smooth.FramesPerNotch = NearestDivisorOf120(Smooth.FramesPerNotch);
         Smooth.TailTauMs = Whole(Clamp(Smooth.TailTauMs, 5, 200));
         Smooth.MaxBacklogNotches = Whole(Clamp(Smooth.MaxBacklogNotches, 1, 20));
-        Smooth.GlideMs = Whole(Clamp(Smooth.GlideMs, 0, 400));
+        Smooth.GlideMs = Whole(Clamp(Smooth.GlideMs, 0, 800));
         Smooth.GlideDelayMs = Whole(Clamp(Smooth.GlideDelayMs, 10, 150));
 
         if (Filter.Apps == null) Filter.Apps = new();

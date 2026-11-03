@@ -363,7 +363,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// 只是**速度**变连续了。22ms 是实测折中：再小抹不平，再大会明显延迟。
     /// </para>
     /// </summary>
-    private const double VelocitySmoothTauMs = 22.0;
+    private const double VelocitySmoothTauMs = 14.0;
 
     /// <summary>
     /// 整格模式下两档之间的间隔（毫秒）。**固定值，不随剩余档数变化。**
@@ -404,6 +404,9 @@ internal sealed class ScrollAnimator : IDisposable
 
     /// <summary>速度域低通的状态（单位/帧）。只有动画线程读写。</summary>
     private double _smoothWant;
+
+    /// <summary>第二级低通的状态（见 Loop 里的两级串联说明）。</summary>
+    private double _smoothWant2;
 
     /// <summary>
     /// 一次投递最多几档。和 <see cref="ScrollSemantics.WholeNotchesFor"/> 的上限一致：
@@ -451,6 +454,7 @@ internal sealed class ScrollAnimator : IDisposable
             Interlocked.Exchange(ref _lastWholeMs, 0);
             _wholeAccum = 0;
             _smoothWant = 0;
+            _smoothWant2 = 0;
         }
     }
 
@@ -550,6 +554,7 @@ internal sealed class ScrollAnimator : IDisposable
              * 留着它会把反方向的第一步提前一点点，看起来像"往回滚还先往前抖一下"。 */
             Interlocked.Exchange(ref _carryMilli, 0);
             _smoothWant = 0;
+            _smoothWant2 = 0;
             /* 新一轮收尾从这一刻重新起算，否则上一轮的"已过时长"会把新一轮 τ 一上来就收紧。 */
             Interlocked.Exchange(ref _glideStartTicks, 0);
 
@@ -585,6 +590,7 @@ internal sealed class ScrollAnimator : IDisposable
     public void Clear()
     {
         _smoothWant = 0;
+        _smoothWant2 = 0;
         Interlocked.Exchange(ref _pendingMilli, 0);
         Interlocked.Exchange(ref _glideStartTicks, 0);
         Interlocked.Exchange(ref _carryMilli, 0);
@@ -1002,13 +1008,22 @@ internal sealed class ScrollAnimator : IDisposable
                      * 关掉平滑时不做 —— 那种情况要求"立刻发完"。 */
                     if (s.SmoothEnabled)
                     {
-                        var k = 1.0 - Math.Exp(-effDtMs / VelocitySmoothTauMs);
-                        _smoothWant += (want - _smoothWant) * k;
-                        want = _smoothWant;
+                        /* 两级串联 = 速度上的二阶系统：
+                         *   第一级抹掉"档到档"的速度尖峰；
+                         *   第二级再抹掉**加速度**的跳变（一阶系统在档来的瞬间仍有一个加速度阶跃，
+                         *   敏感的人读作"轻微的一顶"）。两级之后速度与加速度都连续。 */
+                        var k1 = 1.0 - Math.Exp(-effDtMs / VelocitySmoothTauMs);
+                        _smoothWant += (want - _smoothWant) * k1;
+
+                        var k2 = 1.0 - Math.Exp(-effDtMs / VelocitySmoothTauMs);
+                        _smoothWant2 += (_smoothWant - _smoothWant2) * k2;
+
+                        want = _smoothWant2;
                     }
                     else
                     {
                         _smoothWant = 0;
+                        _smoothWant2 = 0;
                     }
 
                     units = Quantize(want, Interlocked.Read(ref _carryMilli) / Milli, out var carry);

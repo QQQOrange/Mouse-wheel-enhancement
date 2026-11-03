@@ -725,13 +725,13 @@ internal static class SelfTest
         // ⑧ 参数默认值与夹取
         var c = AppConfig.Default();
         Check("默认开启滑行（GlideMs > 0）", c.Smooth.GlideMs > 0, c.Smooth.GlideMs.ToString());
-        Check("默认滑行时长合理（120~240ms，v1.8.13 收到 180）",
-            c.Smooth.GlideMs >= 120 && c.Smooth.GlideMs <= 240, c.Smooth.GlideMs.ToString());
+        Check("默认滑行时长合理（300~500ms，v1.8.27 拉长到 420）",
+            c.Smooth.GlideMs is >= 300 and <= 500, c.Smooth.GlideMs.ToString());
         c.Smooth.GlideMs = 9999;
         c.Smooth.GlideDelayMs = 1;
         c.Normalize();
-        Check("越界的滑行参数会被夹回", c.Smooth.GlideMs <= 400 && c.Smooth.GlideDelayMs >= 10,
-            $"{c.Smooth.GlideMs}/{c.Smooth.GlideDelayMs}");
+        Check("越界的滑行参数会被夹回", c.Smooth.GlideMs == 800 && c.Smooth.TailTauMs >= 5,
+            $"{c.Smooth.GlideMs} / {c.Smooth.TailTauMs}");
     }
 
     /// <summary>一帧记录：相对"滚轮动作"的毫秒数 + 这一帧真正发出去的整数单位。</summary>
@@ -1205,7 +1205,7 @@ internal static class SelfTest
         /* ⑨ v1.8.0 新增开关的默认值与 schema */
         var d8 = AppConfig.Default();
         d8.Normalize();
-        Check("schema 已推进到 7", d8.SchemaVersion >= 7, d8.SchemaVersion.ToString());
+        Check("schema 已推进到 8", d8.SchemaVersion >= 8, d8.SchemaVersion.ToString());
         Check("横向加速默认开", d8.Input.HorizontalBoost);
         Check("倍率浮层默认开", d8.Behavior.OsdMultiplier);
         Check("钩子看门狗默认开", d8.Behavior.HookWatchdog);
@@ -1303,7 +1303,7 @@ internal static class SelfTest
         legacy.Normalize();
         Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
         // v1 的配置会一路迁移到当前版本（v2 自排除 + v3 平滑范围 + v4 滑行语义）
-        Check("迁移后 schemaVersion 记为当前版本 7", legacy.SchemaVersion == 7, legacy.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为当前版本 8", legacy.SchemaVersion == 8, legacy.SchemaVersion.ToString());
 
         // 已经是 v2 之后，用户自己打开就不再被覆盖
         var kept = AppConfig.Default();
@@ -1322,7 +1322,7 @@ internal static class SelfTest
         scope2.Normalize();
         Check("v2 老配置的平滑范围被纠正为所有滚动", scope2.Smooth.Scope == SmoothScope.Always,
             scope2.Smooth.Scope.ToString());
-        Check("迁移后 schemaVersion 记为 7", scope2.SchemaVersion == 7, scope2.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为 8", scope2.SchemaVersion == 8, scope2.SchemaVersion.ToString());
 
         // v3 之后用户自己选回「仅加速时」不再被覆盖
         var keptScope = AppConfig.Default();
@@ -1338,9 +1338,9 @@ internal static class SelfTest
         oldGlide.SchemaVersion = 3;
         oldGlide.Smooth.GlideMs = 110;              // 旧配置里的 glideTauMs
         oldGlide.Normalize();
-        Check("v3 老配置的滑行时长换算成新默认值（180，v7 又从 300 收了一次）", oldGlide.Smooth.GlideMs == 180,
+        Check("v3 老配置的滑行时长换算成新默认值（v8 已拉长到 420）", oldGlide.Smooth.GlideMs == 420,
             oldGlide.Smooth.GlideMs.ToString());
-        Check("v4 迁移后 schemaVersion 记为 7", oldGlide.SchemaVersion == 7, oldGlide.SchemaVersion.ToString());
+        Check("v4 迁移后 schemaVersion 记为 8", oldGlide.SchemaVersion == 8, oldGlide.SchemaVersion.ToString());
 
         var glideOff = AppConfig.Default();
         glideOff.SchemaVersion = 3;
@@ -1359,7 +1359,7 @@ internal static class SelfTest
         oldFrames.Normalize();
         Check("v4 老配置的 8 帧/格 不被改动", oldFrames.Smooth.FramesPerNotch == 8,
             oldFrames.Smooth.FramesPerNotch.ToString());
-        Check("v5 迁移后 schemaVersion 记为 7", oldFrames.SchemaVersion == 7,
+        Check("v5 迁移后 schemaVersion 记为 8", oldFrames.SchemaVersion == 8,
             oldFrames.SchemaVersion.ToString());
 
         var oldFrames6 = AppConfig.Default();
