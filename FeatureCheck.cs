@@ -49,6 +49,7 @@ internal static class FeatureCheck
 
         fail = Math.Max(fail, CheckOverride(sb));
         fail = Math.Max(fail, CheckHookRotation(sb));
+        fail = Math.Max(fail, CheckWholeNotchFrames(sb));
         fail = Math.Max(fail, CheckConfigRoundTrip(sb));
         fail = Math.Max(fail, CheckDiagPack(sb));
         fail = Math.Max(fail, CheckOsd(sb));
@@ -207,6 +208,72 @@ internal static class FeatureCheck
         {
             engine.Animator.FrameSink = null;
         }
+    }
+
+    /// <summary>
+    /// 整格模式出帧（v1.8.24）：真的跑一遍动画线程，确认它发的是**整档**，
+    /// 而不是把一档拆成几十个亚格 delta —— WPF 那类框架只认事件个数，
+    /// 拆了就变成"加速 3 倍滚 30 档"。
+    /// </summary>
+    private static int CheckWholeNotchFrames(StringBuilder sb)
+    {
+        sb.AppendLine("【整格模式出帧】");
+        var bad = 0;
+        WheelEngine? engine = null;
+        try
+        {
+            engine = new WheelEngine();
+            var cfg = AppConfig.Default();
+            cfg.Enabled = false;          // 不碰真实滚动
+            engine.Apply(cfg);
+
+            var units = new List<int>();
+            var stamps = new List<long>();
+            var anim = engine.Animator;
+            anim.FrameSink = (u, _, _) =>
+            {
+                lock (units) { units.Add(u); stamps.Add(Environment.TickCount64); }
+            };
+
+            anim.Start();
+            Thread.Sleep(80);
+            anim.WholeNotch = true;
+            anim.PushWholeNotches(3);
+
+            var deadline = Environment.TickCount64 + 2000;
+            while (Environment.TickCount64 < deadline && anim.PendingUnits != 0) Thread.Sleep(5);
+            Thread.Sleep(40);
+
+            int count, total;
+            long minGap;
+            lock (units)
+            {
+                count = units.Count;
+                total = units.Sum();
+                minGap = long.MaxValue;
+                for (var i = 1; i < stamps.Count; i++) minGap = Math.Min(minGap, stamps[i] - stamps[i - 1]);
+                if (stamps.Count > 0) minGap = Math.Min(minGap, long.MaxValue);
+            }
+
+            var allWhole = true;
+            lock (units)
+                foreach (var u in units) if (Math.Abs(u) % Native.WHEEL_DELTA != 0) allWhole = false;
+
+            bad += Line(sb, count == 3, "3 档 → 正好 3 帧", $"{count} 帧");
+            bad += Line(sb, total == 360, "总位移 = 360（一单位不差）", $"{total} 单位");
+            bad += Line(sb, allWhole, "每帧都是整档（120 的倍数）", allWhole ? "是" : "出现了亚格 delta");
+            bad += Line(sb, minGap >= 8, "两档之间至少隔 8ms（不是一帧糊完）", $"{minGap} ms");
+        }
+        catch (Exception ex)
+        {
+            bad += Line(sb, false, "整格出帧异常", ex.Message);
+        }
+        finally
+        {
+            try { if (engine != null) engine.Animator.FrameSink = null; } catch { }
+            engine?.Dispose();
+        }
+        return bad;
     }
 
     /* ══════════════ ② 钩子生命周期与轮换 ══════════════ */

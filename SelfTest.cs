@@ -1223,6 +1223,16 @@ internal static class SelfTest
             flick.Boost.FlickPageNotches.ToString());
 
         var rs8 = RuntimeSettings.From(d8);
+        /* 整格调度（v1.8.24）：WPF 类框架只认事件个数，必须一档一档发。 */
+        Check("整格调度：欠够一格 + 间隔够 → 该发",
+            ScrollAnimator.WholeNotchDue(120, 12, 120));
+        Check("整格调度：间隔不够 → 不发", !ScrollAnimator.WholeNotchDue(500, 5, 500));
+        Check("整格调度：首档立即发（无上次时刻）",
+            ScrollAnimator.WholeNotchDue(120, -1, 360));
+        Check("整格调度：欠得不够一格 → 不发", !ScrollAnimator.WholeNotchDue(60, 99, 360));
+        Check("整格调度：剩不到一格 → 不发（否则永远凑不满）",
+            !ScrollAnimator.WholeNotchDue(500, 99, 60));
+
         Check("细腻模式默认关闭（不动系统设置）", !new AppConfig().Behavior.FineMode);
         Check("细腻模式的目标行数是 1", SystemWheelLines.FineLines == 1);
         Check("细腻模式行数落在可设置范围内", SystemWheelLines.IsUsable(SystemWheelLines.FineLines));

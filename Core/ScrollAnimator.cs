@@ -367,6 +367,9 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>上一档是什么时候发出去的（毫秒，整格模式专用）。</summary>
     private long _lastWholeMs;
 
+    /// <summary>整格模式下“曲线已经欠了多少单位”（够一格才发）。只有动画线程读写。</summary>
+    private double _wholeAccum;
+
     /// <summary>
     /// 跨帧攒着的"零头"（单位 × 1000）。0 ≤ 值 &lt; 1000。
     ///
@@ -427,6 +430,7 @@ internal sealed class ScrollAnimator : IDisposable
             Interlocked.Exchange(ref _carryMilli, 0);
             /* 让下一档立刻发出去，别被上一轮的时间戳拖住。 */
             Interlocked.Exchange(ref _lastWholeMs, 0);
+            _wholeAccum = 0;
         }
     }
 
@@ -496,6 +500,8 @@ internal sealed class ScrollAnimator : IDisposable
 
         var n = Math.Clamp(Math.Abs(notches), 1, MaxWholeNotches);
         var s = effective ?? Volatile.Read(ref _settings);
+        _wholeAccum = 0;
+        Interlocked.Exchange(ref _lastWholeMs, 0);
         PushCore(Math.Sign(notches) * n * Native.WHEEL_DELTA, s,
             Math.Max(s.MaxBacklogUnits, MaxWholeNotches * (double)Native.WHEEL_DELTA));
     }
@@ -574,6 +580,69 @@ internal sealed class ScrollAnimator : IDisposable
     {
         if (Math.Abs(pendingUnits) < Native.WHEEL_DELTA) return 0;
         return Math.Sign(pendingUnits) * Native.WHEEL_DELTA;
+    }
+
+    /// <summary>
+    /// 整格模式这一帧发不发（纯函数，便于自检断言）。
+    ///
+    /// <para>
+    /// 三个条件缺一不可：还剩至少一格、曲线已经“欠”够一格、距上一档 ≥ <see cref="WholeStepMs"/>。
+    /// 第三条是节奏下限（防止一帧连发好几档），前两条让**尾段自动减速** ——
+    /// 剩余越少，攒够一格花的时间越长，最后一档自然被拉开到 30~60ms 之后。
+    /// </para>
+    /// <para>
+    /// <paramref name="msSinceLast"/> 传负数表示“还没发过第一档”（首档立即发）。
+    /// </para>
+    /// </summary>
+    public static bool WholeNotchDue(double accumUnits, double msSinceLast, double pendingUnits)
+    {
+        if (Math.Abs(pendingUnits) < Native.WHEEL_DELTA) return false;
+        if (Math.Abs(accumUnits) < Native.WHEEL_DELTA) return false;
+        return msSinceLast < 0 || msSinceLast >= WholeStepMs;
+    }
+
+    /// <summary>
+    /// 整格模式的一帧：把曲线这一帧“该走的距离”累起来，攒够一格、且离上一档够久，才发一档。
+    ///
+    /// <para>
+    /// 旧版这里压根没走整格逻辑（<c>WholeNotch</c> 只被赋值、从没被读过），
+    /// 于是 WPF 那类应用收到的是**一串亚格 delta**：它们只认事件个数，
+    /// 一串 delta 就是“一串整档” —— 加速 3 倍会变成 30 多档。这条分支现在真正生效了。
+    /// </para>
+    /// <para>
+    /// 尾段也因此变顺：剩余 1 档时，曲线要花约 2τ 才“欠”够那一格，
+    /// 最后一档被自然拉开，而不是每隔 12ms 匀速发完然后硬停。
+    /// </para>
+    /// </summary>
+    private int WholeNotchStep(double pendingUnits, double dtMs, double tauMs, RuntimeSettings s, long nowTicks)
+    {
+        var want = FrameAmount(pendingUnits, dtMs, tauMs, s.UnitsPerFrame, s.SmoothEnabled);
+
+        _wholeAccum += want;
+        var cap = 4.0 * Native.WHEEL_DELTA;
+        if (Math.Abs(_wholeAccum) > cap) _wholeAccum = Math.Sign(_wholeAccum) * cap;
+
+        var nowMs = TicksToMs(nowTicks);
+        var last = Interlocked.Read(ref _lastWholeMs);
+        var since = last == 0 ? -1.0 : nowMs - last;
+
+        if (WholeNotchDue(_wholeAccum, since, pendingUnits))
+        {
+            var sign = Math.Sign(pendingUnits);
+            _wholeAccum -= sign * Native.WHEEL_DELTA;
+            Interlocked.Exchange(ref _lastWholeMs, (long)nowMs);
+            return sign * Native.WHEEL_DELTA;
+        }
+
+        /* 剩不到一格：这类框架表达不了半格，直接丢掉 —— 否则 pending 永远 > 0，
+         * 动画线程会以帧率空转。 */
+        if (Math.Abs(pendingUnits) < Native.WHEEL_DELTA)
+        {
+            Interlocked.Exchange(ref _pendingMilli, 0);
+            _wholeAccum = 0;
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -884,10 +953,16 @@ internal sealed class ScrollAnimator : IDisposable
                 }
 
                 int units;
-                var want = FrameAmount(pendingUnits, effDtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
                 var residualUnits = Math.Round(Math.Abs(pendingUnits));
 
-                if (residualUnits < 1)
+                if (_wholeNotch)
+                {
+                    /* 整格模式：WPF / WinForms / Qt 只认"事件个数"，不认 delta 大小。
+                     * 所以这里**只发整格**，一帧最多一档；两档之间至少隔 WholeStepMs。
+                     * 见 WholeNotchStep 的说明。 */
+                    units = WholeNotchStep(pendingUnits, effDtMs, tau, s, now);
+                }
+                else if (residualUnits < 1)
                 {
                     /* 只剩不到半个单位（亚像素零头）：直接丢掉。
                      * 留着它每帧都算出"该发 1 单位"、却永远凑不够（TakePending 只扣整单位），
@@ -899,6 +974,7 @@ internal sealed class ScrollAnimator : IDisposable
                 }
                 else
                 {
+                    var want = FrameAmount(pendingUnits, effDtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
                     units = Quantize(want, Interlocked.Read(ref _carryMilli) / Milli, out var carry);
                     Interlocked.Exchange(ref _carryMilli, (long)Math.Round(carry * Milli));
 
