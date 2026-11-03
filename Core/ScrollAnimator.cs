@@ -350,6 +350,22 @@ internal sealed class ScrollAnimator : IDisposable
     private volatile bool _wholeNotch;
 
     /// <summary>
+    /// 速度域低通的时间常数（毫秒）。
+    ///
+    /// <para>
+    /// 原来的曲线是"距离衰减"：每来一档，pending 突然变大，本帧该走多少就跟着跳一下 ——
+    /// 于是输出的速度是**一档一个尖峰**（档与档之间的谷值可以掉到峰值的 1/3）。
+    /// 触控板不是这样：手指连续移动，速度是**连续**的。
+    /// </para>
+    /// <para>
+    /// 这里把"每帧该走多少"再过一道一阶低通（相当于在速度上做二阶系统），
+    /// 尖峰被抹圆，档与档之间的谷被填平；总位移仍然守恒（低通的积分等于原信号的积分），
+    /// 只是**速度**变连续了。22ms 是实测折中：再小抹不平，再大会明显延迟。
+    /// </para>
+    /// </summary>
+    private const double VelocitySmoothTauMs = 22.0;
+
+    /// <summary>
     /// 整格模式下两档之间的间隔（毫秒）。**固定值，不随剩余档数变化。**
     ///
     /// <para>
@@ -385,6 +401,9 @@ internal sealed class ScrollAnimator : IDisposable
     /// </para>
     /// </summary>
     private long _carryMilli;
+
+    /// <summary>速度域低通的状态（单位/帧）。只有动画线程读写。</summary>
+    private double _smoothWant;
 
     /// <summary>
     /// 一次投递最多几档。和 <see cref="ScrollSemantics.WholeNotchesFor"/> 的上限一致：
@@ -431,6 +450,7 @@ internal sealed class ScrollAnimator : IDisposable
             /* 让下一档立刻发出去，别被上一轮的时间戳拖住。 */
             Interlocked.Exchange(ref _lastWholeMs, 0);
             _wholeAccum = 0;
+            _smoothWant = 0;
         }
     }
 
@@ -529,6 +549,7 @@ internal sealed class ScrollAnimator : IDisposable
             /* 零头是"上一个方向还没凑满一单位的那一点点"，换方向之后必须丢掉：
              * 留着它会把反方向的第一步提前一点点，看起来像"往回滚还先往前抖一下"。 */
             Interlocked.Exchange(ref _carryMilli, 0);
+            _smoothWant = 0;
             /* 新一轮收尾从这一刻重新起算，否则上一轮的"已过时长"会把新一轮 τ 一上来就收紧。 */
             Interlocked.Exchange(ref _glideStartTicks, 0);
 
@@ -563,6 +584,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>直接丢弃积压，一个字节都不发。</summary>
     public void Clear()
     {
+        _smoothWant = 0;
         Interlocked.Exchange(ref _pendingMilli, 0);
         Interlocked.Exchange(ref _glideStartTicks, 0);
         Interlocked.Exchange(ref _carryMilli, 0);
@@ -975,6 +997,20 @@ internal sealed class ScrollAnimator : IDisposable
                 else
                 {
                     var want = FrameAmount(pendingUnits, effDtMs, tau, s.UnitsPerFrame, s.SmoothEnabled);
+
+                    /* 速度域低通（见 VelocitySmoothTauMs）：把"档到档"的速度尖峰抹圆。
+                     * 关掉平滑时不做 —— 那种情况要求"立刻发完"。 */
+                    if (s.SmoothEnabled)
+                    {
+                        var k = 1.0 - Math.Exp(-effDtMs / VelocitySmoothTauMs);
+                        _smoothWant += (want - _smoothWant) * k;
+                        want = _smoothWant;
+                    }
+                    else
+                    {
+                        _smoothWant = 0;
+                    }
+
                     units = Quantize(want, Interlocked.Read(ref _carryMilli) / Milli, out var carry);
                     Interlocked.Exchange(ref _carryMilli, (long)Math.Round(carry * Milli));
 

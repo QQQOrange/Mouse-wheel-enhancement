@@ -1156,6 +1156,7 @@ public partial class MainWindow : Window
         {
             "crisp" => (20.0, 120.0),
             "long" => (45.0, 400.0),
+            "trackpad" => (16.0, 600.0),
             _ => (30.0, 300.0),
         };
 

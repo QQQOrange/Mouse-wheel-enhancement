@@ -185,6 +185,17 @@ internal static class ScrollSmooth
                 $"单帧突刺 {spike:0.0}×（≤ {MaxSpikeRatio:0.#}，最大 {maxStep:0.#} / 中位 {median:0.#} px）",
                 spike <= MaxSpikeRatio, $"最大单帧 {maxStep:0.#} px 是中位的 {spike:0.0} 倍");
 
+            /* ②' 中段"脉动深度"（v1.8.26）：取中间 50% 的步长，看最大/最小。
+             *
+             * 触控板的速度是连续的，脉动深度接近 1；旧版"每档一个尖峰"能到 3 以上
+             * （档来的一瞬间一大步，档间掉成小步）。速度域低通就是冲这个来的。 */
+            var midFrom = body.Count / 4;
+            var midTo = body.Count - Math.Max(2, body.Count / 4);
+            var mid = body.Skip(midFrom).Take(Math.Max(3, midTo - midFrom)).ToList();
+            var pulse = mid.Count == 0 ? 1.0 : mid.Max() / Math.Max(0.5, mid.Min());
+            fail += Check(sb, $"中段脉动 {pulse:0.0}×（≤ 2.6，越小越像触控板）",
+                pulse <= 2.6, mid.Count == 0 ? "样本不足" : $"最大 {mid.Max():0.#} / 最小 {mid.Min():0.#} px");
+
             /* ③ 末段不回升：最后 8 步里，后一步不该比前一步大太多。
              *    回升 = "已经在减速了，突然又窜一下"。 */
             var tail = steps.Skip(Math.Max(0, steps.Count - 8)).ToList();

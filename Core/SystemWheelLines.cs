@@ -167,7 +167,8 @@ public static class SystemWheelLines
         try
         {
             /* 顺序很重要：**先备份、再改**。反过来的话，改完到写备份之间崩溃就还原不回去了。 */
-            File.WriteAllText(FineBackupPath, current.ToString(), new UTF8Encoding(false));
+            File.WriteAllText(FineBackupPath,
+                current.ToString() + "\n" + Environment.ProcessId.ToString(), new UTF8Encoding(false));
         }
         catch (Exception ex)
         {
@@ -198,7 +199,19 @@ public static class SystemWheelLines
     /// 自己又去系统设置里改成了别的值，就尊重用户的选择，只清理备份。
     /// </para>
     /// </summary>
-    public static bool LeaveFine()
+    public static bool LeaveFine() => LeaveFine(onlyIfOwnerDead: false);
+
+    /// <summary>
+    /// 退出细腻模式。
+    ///
+    /// <para>
+    /// <paramref name="onlyIfOwnerDead"/> = true 时用于**启动清理**：备份里记着写入者的 pid，
+    /// 如果那个进程还活着，说明细腻模式正被另一个实例正常使用（比如用户开了两个实例，
+    /// 或者有人正在跑 `--scrollsmooth` 诊断），这时**绝不能**替它还原 ——
+    /// 否则会把对方正在用的设置改回 3 行，而对方还以为自己是 1 行。
+    /// </para>
+    /// </summary>
+    public static bool LeaveFine(bool onlyIfOwnerDead)
     {
         var path = FineBackupPath;
         if (!File.Exists(path))
@@ -210,7 +223,15 @@ public static class SystemWheelLines
         var original = 0;
         try
         {
-            if (int.TryParse(File.ReadAllText(path, Encoding.UTF8).Trim(), out var v) && IsUsable(v)) original = v;
+            var lines = File.ReadAllLines(path, Encoding.UTF8);
+            if (lines.Length > 0 && int.TryParse(lines[0].Trim(), out var v) && IsUsable(v)) original = v;
+
+            if (onlyIfOwnerDead && lines.Length > 1 &&
+                int.TryParse(lines[1].Trim(), out var ownerPid) && IsProcessAlive(ownerPid))
+            {
+                Log.Info($"细腻模式：备份属于仍在运行的进程 {ownerPid}，跳过还原（不干扰另一个实例）");
+                return false;
+            }
         }
         catch (Exception ex)
         {
@@ -261,7 +282,7 @@ public static class SystemWheelLines
         }
 
         var current = Current();
-        if (LeaveFine() || !HasFineBackup())
+        if (LeaveFine(onlyIfOwnerDead: true) || !HasFineBackup())
             Log.Warn($"发现上次细腻模式没退干净（当前 {current} 行），已按备份还原");
     }
 
@@ -314,6 +335,21 @@ public static class SystemWheelLines
         catch (Exception ex)
         {
             Log.Warn("撤销 RunOnce 还原失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>这个 pid 还活着吗（用来判断备份的写入者是否仍然在用细腻模式）。</summary>
+    private static bool IsProcessAlive(int pid)
+    {
+        if (pid <= 0) return false;
+        try
+        {
+            using var p = System.Diagnostics.Process.GetProcessById(pid);
+            return !p.HasExited;
+        }
+        catch
+        {
+            return false;
         }
     }
 

@@ -653,6 +653,9 @@
                                     <Button Content="顺滑" Style="{StaticResource GhostButton}" Tag="smooth"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
                                             ToolTip="默认手感（τ 30ms / 惯性 300ms）" />
+                                    <Button Content="触控板" Style="{StaticResource GhostButton}" Tag="trackpad"
+                                            Click="CurvePreset_Click"
+                                            ToolTip="低延迟跟手 + 长惯性收尾（τ 16ms / 惯性 600ms），最接近触控板的连续减速" />
                                     <Button Content="悠长" Style="{StaticResource GhostButton}" Tag="long"
                                             Click="CurvePreset_Click"
                                             ToolTip="收得更慢、滑得更远（τ 45ms / 惯性 400ms）" />
