@@ -1406,6 +1406,15 @@ public partial class App : System.Windows.Application
                     w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
                 }
 
+                if (w.Content is Border card)
+                {
+                    card.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    Log.Info($"osdshot: 卡片 DesiredSize={card.DesiredSize.Width:0.#}×{card.DesiredSize.Height:0.#} / 子元素 {card.Child?.DesiredSize.Width:0.#}×{card.Child?.DesiredSize.Height:0.#} / Effect={card.Effect?.GetType().Name ?? "null"}");
+                }
+
+                if (w.Content is FrameworkElement fe)
+                    Log.Info($"osdshot: {mode} 窗口 {w.ActualWidth:0.#}×{w.ActualHeight:0.#} / 内容 {fe.ActualWidth:0.#}×{fe.ActualHeight:0.#} / Width={w.Width:0.#} SizeToContent={w.SizeToContent}");
+
                 var path = Path.Combine(AppPaths.DataDir, $"osd-{mode}.png");
                 SaveContentShot(w, path);
                 Log.Info($"osdshot: {mode} → {path}");
@@ -1423,16 +1432,18 @@ public partial class App : System.Windows.Application
         return code;
     }
 
-    /// <summary>把一个窗口的内容渲染成带透明通道的 PNG。</summary>
+    /// <summary>
+    /// 把窗口的**整个客户区**渲染成带透明通道的 PNG。
+    /// 渲染 Window 而不是它的 Content：Content 带 Margin 时，直接渲染 Content
+    /// 会把画面按 margin 偏移，右下角被裁掉（v1.8.20 截图时踩过）。
+    /// </summary>
     private static void SaveContentShot(Window w, string path)
     {
-        if (w.Content is not FrameworkElement el) return;
-
-        var width = Math.Max(1, (int)Math.Ceiling(el.ActualWidth));
-        var height = Math.Max(1, (int)Math.Ceiling(el.ActualHeight));
+        var width = Math.Max(1, (int)Math.Ceiling(w.ActualWidth));
+        var height = Math.Max(1, (int)Math.Ceiling(w.ActualHeight));
         var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
             width, height, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-        rtb.Render(el);
+        rtb.Render(w);
 
         var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
         enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));

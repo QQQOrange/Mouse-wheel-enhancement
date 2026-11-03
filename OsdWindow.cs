@@ -48,6 +48,19 @@ internal sealed class OsdWindow : Window
     /// <summary>停留多久开始淡出。太短读不到，太长挡视线。</summary>
     private const int HoldMs = 520;
 
+    /// <summary>
+    /// 投影在窗口内留出的透明边距（DIP）。
+    ///
+    /// <para>
+    /// 这里是 v1.8.20 那个"浮层特别宽、左右留白差一大截"的修复点：
+    /// <c>SizeToContent</c> 会把 <c>DropShadowEffect</c> 的**外扩边界**算进窗口尺寸
+    /// （BlurRadius=18 时每边约 27px），而卡片本身只有 72px 宽 —— 于是窗口 131px、
+    /// 里面一半是空的。现在改成：卡片自己留 <c>ShadowPad</c> 的透明外边距给投影，
+    /// 窗口按卡片的 <c>DesiredSize</c> 精确设定，一点多余宽度都没有。
+    /// </para>
+    /// </summary>
+    private const double ShadowPad = 9;
+
     private readonly Border _card;
     private readonly TextBlock _value;
     private readonly Run _times;
@@ -67,7 +80,7 @@ internal sealed class OsdWindow : Window
         ShowActivated = false;
         IsHitTestVisible = false;
         ResizeMode = ResizeMode.NoResize;
-        SizeToContent = SizeToContent.WidthAndHeight;
+        SizeToContent = SizeToContent.Manual;
         WindowStartupLocation = WindowStartupLocation.Manual;
         UseLayoutRounding = true;
         SnapsToDevicePixels = true;
@@ -107,14 +120,15 @@ internal sealed class OsdWindow : Window
         {
             CornerRadius = new CornerRadius(15),
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(11, 5, 13, 5),
+            Padding = new Thickness(11, 5, 14, 5),
+            Margin = new Thickness(ShadowPad),
             Child = row,
             Effect = new DropShadowEffect
             {
-                BlurRadius = 18,
-                ShadowDepth = 2,
+                BlurRadius = 8,
+                ShadowDepth = 1,
                 Direction = 270,
-                Opacity = 0.30,
+                Opacity = 0.18,
                 Color = Colors.Black,
             },
         };
@@ -161,6 +175,8 @@ internal sealed class OsdWindow : Window
         if (_value.Inlines.FirstInline is Run number) number.Text = $"{multiplier:0.0}";
         _generation++;
 
+        ResizeToContent();
+
         if (!IsVisible)
         {
             /* 先 Show 再定位：Show 之前 ActualWidth/ActualHeight 还是 0，
@@ -182,6 +198,18 @@ internal sealed class OsdWindow : Window
         _scale.BeginAnimation(ScaleTransform.ScaleYProperty, Pop());
         Fade(1, 90, null);
         _hide.Start();
+    }
+
+    /// <summary>
+    /// 按卡片自己的 DesiredSize 设定窗口大小（DesiredSize **不含**投影外扩，
+    /// 所以不会再出现"窗口比内容宽一大截"）。数字位数变化时会跟着变宽变窄。
+    /// </summary>
+    private void ResizeToContent()
+    {
+        _card.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var d = _card.DesiredSize;
+        Width = Math.Max(1, Math.Ceiling(d.Width));
+        Height = Math.Max(1, Math.Ceiling(d.Height));
     }
 
     private static DoubleAnimation Pop() => new(1, TimeSpan.FromMilliseconds(110))
