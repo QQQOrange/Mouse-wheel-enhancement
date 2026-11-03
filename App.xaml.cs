@@ -1380,6 +1380,21 @@ public partial class App : System.Windows.Application
     /// 一次把 8 个页面都渲染成 PNG，改完再拍一遍对比。
     /// </summary>
     /// <summary>
+    /// 让 UI 线程以正常消息循环跑 <paramref name="ms"/> 毫秒。
+    /// 截图前必须用它 —— 直接连调几次 Dispatcher.Invoke 不会推进 Storyboard 时钟，
+    /// 页面淡入停在半路时截出来就是"整页发暗"（v1.8.21 排查时踩过）。
+    /// </summary>
+    private static void PumpFor(Window w, int ms)
+    {
+        var frame = new DispatcherFrame();
+        var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(ms), DispatcherPriority.Background,
+            (_, _) => frame.Continue = false, w.Dispatcher);
+        timer.Start();
+        Dispatcher.PushFrame(frame);
+        timer.Stop();
+    }
+
+    /// <summary>
     /// 把倍率浮层（OSD）在浅色/深色下各渲染一张 PNG（`--osdshot`）。
     /// 浮层是透明背景的独立窗口，只渲染它的内容，方便直接看颜色和描边。
     /// </summary>
@@ -1400,11 +1415,8 @@ public partial class App : System.Windows.Application
             foreach (var mode in new[] { Theme.Light, Theme.Dark })
             {
                 Theme.SetMode(mode);
-                for (var i = 0; i < 3; i++)
-                {
-                    w.UpdateLayout();
-                    w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
-                }
+                PumpFor(w, 220);
+                w.UpdateLayout();
 
                 if (w.Content is Border card)
                 {
@@ -1460,11 +1472,8 @@ public partial class App : System.Windows.Application
             for (var tab = (only >= 0 ? only : 0); tab < (only >= 0 ? only + 1 : 8); tab++)
             {
                 w.SelectTab(tab);
-                for (var i = 0; i < 3; i++)
-                {
-                    w.UpdateLayout();
-                    w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
-                }
+                PumpFor(w, 260);
+                w.UpdateLayout();
 
                 var path = Path.Combine(AppPaths.DataDir, $"uishot-{mode}-{tab}.png");
                 SaveWindowShot(w, path);

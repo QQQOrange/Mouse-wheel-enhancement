@@ -1152,7 +1152,7 @@
                     </Border>
 
                     <ScrollViewer Grid.Row="1" x:Name="HelpScroll" VerticalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="HelpPanel" Margin="24,10,24,26" />
+                        <StackPanel x:Name="HelpPanel" Margin="24,18,24,26" />
                     </ScrollViewer>
                 </Grid>
             </TabItem>
@@ -1165,7 +1165,7 @@
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                                    <Border Width="52" Height="52" CornerRadius="13"
+                                    <Border Width="52" Height="52" CornerRadius="14"
                                             Background="{DynamicResource AccentSoft}" Margin="0,0,16,0">
                                         <TextBlock Text="⟳" FontSize="26" Foreground="{DynamicResource AccentHover}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />

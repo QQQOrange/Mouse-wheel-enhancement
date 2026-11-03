@@ -387,7 +387,7 @@ internal static class HelpContent
         foreach (var section in Sections())
         {
             var panel = new StackPanel();
-            panel.Children.Add(Text(section.Title, 14.5, FontWeights.SemiBold, "TextPrimary", top: 0));
+            panel.Children.Add(Text(section.Title, 17, FontWeights.SemiBold, "TextPrimary", top: 0));
             if (!string.IsNullOrWhiteSpace(section.Intro))
                 panel.Children.Add(Text(section.Intro, 12, FontWeights.Normal, "TextSecondary",
                     top: 6, bottom: 12, wrap: true));
@@ -414,7 +414,7 @@ internal static class HelpContent
     private static FrameworkElement Intro()
     {
         var p = new StackPanel();
-        p.Children.Add(Text("这个软件是干什么的", 14.5, FontWeights.SemiBold, "TextPrimary", top: 0));
+        p.Children.Add(Text("这个软件是干什么的", 17, FontWeights.SemiBold, "TextPrimary", top: 0));
 
         p.Children.Add(Text(
             "只解决一个具体问题：滚轮在「需要翻很远」的时候太慢。",
@@ -425,7 +425,7 @@ internal static class HelpContent
             "你快速连续拨动滚轮的那一瞬间，它把这一段滚动的距离按倍率放大；速度回到正常以后，放大立刻消失，只留下平滑的收尾。",
             12, FontWeights.Normal, "TextSecondary", top: 8, wrap: true));
 
-        p.Children.Add(Text("三条核心规则", 13, FontWeights.SemiBold, "AccentHover", top: 16, bottom: 8));
+        p.Children.Add(Text("三条核心规则", 14, FontWeights.SemiBold, "TextPrimary", top: 18, bottom: 8));
 
         void Rule(string n, string head, string body)
         {
@@ -521,7 +521,7 @@ internal static class HelpContent
 
         foreach (var (q, a) in Faqs())
         {
-            var qb = Text("Q　" + q, 12.5, FontWeights.SemiBold, "AccentHover", wrap: true);
+            var qb = Text("Q　" + q, 13, FontWeights.SemiBold, "TextPrimary", wrap: true);
             qb.Margin = new Thickness(0, 0, 0, 3);
             p.Children.Add(qb);
 
