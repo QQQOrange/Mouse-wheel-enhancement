@@ -282,6 +282,15 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        if (e.Args.Any(a => a.Equals("--keyprobe", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var keyCode = KeyProbe();
+            Shutdown(keyCode);
+            Environment.Exit(keyCode);
+            return;
+        }
+
         if (e.Args.Any(a => a.Equals("--wpfprobe", StringComparison.OrdinalIgnoreCase)))
         {
             Services.Init();

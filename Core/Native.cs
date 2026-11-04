@@ -181,6 +181,23 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
+    public const int WH_KEYBOARD_LL = 13;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr GetModuleHandle(string? lpModuleName);
 

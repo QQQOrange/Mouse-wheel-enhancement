@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -348,11 +349,12 @@ public partial class App
     /// 截图前必须用它 —— 直接连调几次 Dispatcher.Invoke 不会推进 Storyboard 时钟，
     /// 页面淡入停在半路时截出来就是"整页发暗"（v1.8.21 排查时踩过）。
     /// </summary>
-    private static void PumpFor(Window w, int ms)
+    private static void PumpFor(Window? w, int ms)
     {
         var frame = new DispatcherFrame();
         var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(ms), DispatcherPriority.Background,
-            (_, _) => frame.Continue = false, w.Dispatcher);
+            (_, _) => frame.Continue = false,
+            w?.Dispatcher ?? System.Windows.Threading.Dispatcher.CurrentDispatcher);
         timer.Start();
         Dispatcher.PushFrame(frame);
         timer.Stop();
@@ -601,6 +603,94 @@ public partial class App
         var lParam = (IntPtr)((y << 16) | (x & 0xFFFF));
         var wParam = (IntPtr)(((long)(short)delta << 16) & 0xFFFF0000);
         PostMessage(hwnd, WM_MOUSEWHEEL, wParam, lParam);
+    }
+
+    /// <summary>
+    /// <c>--keyprobe</c>：注入一次 <c>Ctrl+C</c>，用键盘钩子记录系统**实际**看到的事件。
+    ///
+    /// <para>
+    /// 用来回答"Ctrl+C 是不是变成了 Alt+C"：如果收到的是 <c>VK_CONTROL</c>，说明没有替换；
+    /// 如果收到 <c>VK_MENU</c>（Alt）或者 Ctrl 缺失，那才叫真的被改了 ——
+    /// 而且能立刻看出是哪一段（按下 / 抬起）丢的。
+    /// </para>
+    /// <para>
+    /// 用钩子而不是焦点窗口：不需要抢前台，在任何会话里都能跑。
+    /// </para>
+    /// </summary>
+    private static int KeyProbe()
+    {
+        var sb = new StringBuilder();
+        var events = new List<string>();
+        Native.LowLevelKeyboardProc proc = (nCode, wParam, lParam) =>
+        {
+            if (nCode >= 0)
+            {
+                var kb = Marshal.PtrToStructure<Native.KBDLLHOOKSTRUCT>(lParam);
+                /* 左右键的 vkCode 是分开的（A2/A3 = 左右 Ctrl，A0/A1 = 左右 Shift，A4/A5 = 左右 Alt），
+                 * 只匹配 0x11/0x12/0x10 会漏掉所有真实按键。 */
+                var name = kb.vkCode switch
+                {
+                    0x11 or 0xA2 or 0xA3 => "Ctrl",
+                    0x12 or 0xA4 or 0xA5 => "Alt",
+                    0x10 or 0xA0 or 0xA1 => "Shift",
+                    0x43 => "C",
+                    _ => $"vk=0x{kb.vkCode:X2}",
+                };
+                var kind = (int)wParam == 0x0100 ? "down" : (int)wParam == 0x0101 ? "up" : $"msg={wParam}";
+                var injected = (kb.flags & 0x10) != 0 ? " (injected)" : "";
+                var sig = kb.dwExtraInfo == IntPtr.Zero ? "" : $" ↯0x{kb.dwExtraInfo.ToInt64():X}";
+                lock (events) events.Add($"{name} {kind}{injected}{sig}");
+            }
+            return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        };
+
+        var hook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
+        if (hook == IntPtr.Zero)
+        {
+            sb.AppendLine("键盘钩子装不上，错误码 " + Marshal.GetLastWin32Error());
+            return WriteCliResult("keyprobe.txt", sb.ToString(), 31);
+        }
+
+        try
+        {
+            PumpFor(null, 150);
+            lock (events) events.Clear();
+
+            /* 不注入，只**听**：请用户在这段时间里真的按一次 Ctrl+C。
+             * 这样测的是完整链路（键盘 → 驱动 → 系统 → 所有钩子），
+             * 比我们自己注入更有说服力。 */
+            sb.AppendLine("请在 12 秒内按一次 Ctrl+C（和其它你想验证的组合键）…");
+            PumpFor(null, 12000);
+
+            sb.AppendLine();
+            sb.AppendLine("这 12 秒里键盘钩子收到的顺序：");
+            lock (events)
+            {
+                if (events.Count == 0) sb.AppendLine("  （什么都没收到 —— 键盘钩子没工作或注入被拦）");
+                foreach (var e in events) sb.AppendLine("  " + e);
+            }
+
+            var sawCtrl = false;
+            var sawAlt = false;
+            lock (events)
+            {
+                foreach (var e in events)
+                {
+                    if (e.StartsWith("Ctrl")) sawCtrl = true;
+                    if (e.StartsWith("Alt")) sawAlt = true;
+                }
+            }
+
+            sb.AppendLine();
+            sb.AppendLine(sawCtrl ? "✓ 收到 Ctrl —— 没有被替换成 Alt" : "✗ 没有收到 Ctrl（被替换或丢失）");
+            if (sawAlt) sb.AppendLine("✗ 出现了 Alt —— 有人把 Ctrl 换成了 Alt");
+        }
+        finally
+        {
+            Native.UnhookWindowsHookEx(hook);
+        }
+
+        return WriteCliResult("keyprobe.txt", sb.ToString(), 0);
     }
 
     private static int WpfProbe()
