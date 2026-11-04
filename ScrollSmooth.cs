@@ -123,8 +123,24 @@ internal static class ScrollSmooth
             Pump(300);
 
             var myHwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
-            var under = Native.WindowFromPoint(new Native.POINT { X = (int)p.X, Y = (int)p.Y });
-            var root = under == IntPtr.Zero ? IntPtr.Zero : Native.GetAncestor(under, Native.GA_ROOT);
+
+            /* 前台/光标被抢是很常见的（用户正在用别的程序、UAC 桌面、远程桌面…）。
+             * 以前一次判不过就直接 rc=3 退出，等于"我在忙就测不了"。
+             * 现在重试 6 次、每次把窗口再顶到最前；真的抢不到才退出。 */
+            var root = IntPtr.Zero;
+            for (var attempt = 0; attempt < 6; attempt++)
+            {
+                Native.SetCursorPos((int)p.X, (int)p.Y);
+                try { w.Activate(); w.Topmost = true; w.Topmost = false; } catch { }
+                Pump(180);
+
+                var under = Native.WindowFromPoint(new Native.POINT { X = (int)p.X, Y = (int)p.Y });
+                root = under == IntPtr.Zero ? IntPtr.Zero : Native.GetAncestor(under, Native.GA_ROOT);
+                if (root == myHwnd) break;
+
+                Pump(320);
+            }
+
             if (root != myHwnd)
             {
                 sb.AppendLine("失败：光标位置被别的窗口占着（把本程序放到最前面再跑）");
@@ -138,6 +154,14 @@ internal static class ScrollSmooth
                 Pump(60);
             }
             Pump(600);
+
+            /* 基准：单格通过同一条链路走一次，量出这台机器上"一格到底多少像素"。
+             * 用它做总数判据，就不会被"行高不是常量"坑（PixelsPerLine 只是估算值）。 */
+            var baseBefore = sv.VerticalOffset;
+            InputInjector.SendWheelWith(-Native.WHEEL_DELTA, ForeignSig);
+            Pump(700);
+            var oneNotch = Math.Abs(sv.VerticalOffset - baseBefore);
+            if (oneNotch < 1) oneNotch = 0;      // 量不出来就不做总量判据
 
             var samples = Capture(sv, out var injections);
             sb.AppendLine($"注入 {injections} 格，采样 {samples.Count} 帧");
@@ -173,6 +197,24 @@ internal static class ScrollSmooth
             /* ① 有位移 */
             fail += Check(sb, $"有位移（{total:0.#} px）", total > 1, "几乎没有滚动");
             if (fail > 0) { Finish(sb, fail); return fail; }
+
+            /* ①' 总量对不对（v1.8.29）：用**基准单格**折算，而不是用 PixelsPerLine 猜。
+             *
+             * 之前出现过一次"8 格滚了 1235px（154/格）而不是 705px（88/格）"的异常，
+             * 说明某一步被投递了两次。曲线上看不出这种错，只有对总量才抓得到。 */
+            if (oneNotch > 0)
+            {
+                var expected = oneNotch * injections;
+                var drift = Math.Abs(total - expected) / Math.Max(1, expected);
+                fail += Check(sb,
+                    $"总量 {total:0.#} px（基准 {oneNotch:0.#}×{injections} 格 = {expected:0.#}，偏差 {drift:P0} ≤ 25%）",
+                    drift <= 0.25,
+                    $"疑似重复投递：{injections} 格实际滚了 {total:0.#} px");
+            }
+            else
+            {
+                sb.AppendLine("（单格基准没量出来，跳过总量判据）");
+            }
 
             /* ② 单帧突刺：跳过前 2 步（起手本来就大），比中位步长。
              *    这就是"猛地跳一段"的量化。 */
