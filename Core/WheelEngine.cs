@@ -874,10 +874,13 @@ public sealed class WheelEngine : IDisposable
             var wholeSemantics = s.ForceWholeNotch ?? target.ScrollsOncePerEvent;
             if (wholeSemantics && !s.IsOwnExe(target.Exe))
             {
+                /* PPT 这类"一个事件 = 翻一页"的窗口不读系统行数：
+                 * 细腻模式的 ×N 补偿对它是 N 倍副作用，这里一律用原始 delta。 */
+                var wholeDelta = target.IgnoresSystemLines ? rawDelta : delta;
                 /* ① 没加速 → 让系统自己处理，零干预。
                  * ② 这一下本来就不到一格（触控板 / 自由滚轮的 15、40）→ 也放行：
                  *    在这类框架里它本来就是一档，放大成 120 只会滚得更远。 */
-                if (!decision.Boosted || Math.Abs(delta) < Native.WHEEL_DELTA)
+                if (!decision.Boosted || Math.Abs(wholeDelta) < Native.WHEEL_DELTA)
                 {
                     /* 这一下原样放行。留着的整格积压**不能**就地切回按比例模式 ——
                      * 整格模式一次发 120，按比例模式会拆成 15/30，而 Qt 的
@@ -890,7 +893,7 @@ public sealed class WheelEngine : IDisposable
                         _animator.WholeNotch = false;
 
                     /* 细腻模式：这一下也必须转发，否则整格应用只会滚 1/N 行。 */
-                    if (ForwardWhole(delta)) return (IntPtr)1;
+                    if (ForwardWhole(wholeDelta)) return (IntPtr)1;
 
                     Interlocked.Increment(ref _passed);
                     return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
@@ -901,10 +904,11 @@ public sealed class WheelEngine : IDisposable
                 /* 倍率兑现成**事件个数**：3× → 3 个整格。
                  * 交给动画器按帧逐个发（见 ScrollAnimator.PushWholeNotches），
                  * 让快滚有推进的节奏，而不是"啪"一下跳过 5 档。 */
-                var notches = ScrollSemantics.WholeNotchesFor(decision.OutputUnits * fineScale)
+                var notches = ScrollSemantics.WholeNotchesFor(
+                    decision.OutputUnits * (target.IgnoresSystemLines ? 1 : fineScale))
                               + FlickExtraNotches(s, decision);
                 var sign = Math.Sign(decision.OutputUnits);
-                if (sign == 0) sign = Math.Sign(delta);
+                if (sign == 0) sign = Math.Sign(wholeDelta);
 
                 _animator.WholeNotch = true;
                 _animator.PushWholeNotches(sign * notches, s);

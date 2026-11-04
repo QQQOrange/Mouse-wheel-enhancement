@@ -260,6 +260,15 @@ internal static partial class SelfTest
             ScrollSemantics.IsPerEventScroll("screenClass"));
         Check("PowerPoint 的一格只发一格",
             ScrollSemantics.WholeNotchesFor(Native.WHEEL_DELTA) == 1);
+
+        /* 细腻模式对 PPT 不能补偿：它"一格翻一页"，与系统行数无关。
+         * 补了就是"滚一格跳三页"（用户实测）。 */
+        Check("PPT 不读系统行数（细腻模式不补偿）",
+            ScrollSemantics.IgnoresSystemLines("PPTFrameClass"));
+        Check("放映窗口同样不补偿",
+            ScrollSemantics.IgnoresSystemLines("screenClass"));
+        Check("WPF 读系统行数（需要补偿）",
+            !ScrollSemantics.IgnoresSystemLines("HwndWrapper[App;;1]"));
         Check("记事本（系统 Edit）不算", !ScrollSemantics.IsPerEventScroll("Notepad"));
 
         /* Qt = 按事件滚动（v1.7.14）

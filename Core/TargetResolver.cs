@@ -13,6 +13,9 @@ public readonly record struct TargetInfo(IntPtr Hwnd, uint Pid, string Exe, stri
 
     /// <summary>这个窗口是不是自带平滑动画（Chromium / Electron / Firefox）。</summary>
     public bool SelfAnimatesScroll => ScrollSemantics.SelfAnimates(Class);
+
+    /// <summary>这个窗口不读系统行数（细腻模式对它不做补偿，见 <see cref="ScrollSemantics.IgnoresSystemLines"/>）。</summary>
+    public bool IgnoresSystemLines => ScrollSemantics.IgnoresSystemLines(Class);
 }
 
 /// <summary>
@@ -72,6 +75,22 @@ public static class ScrollSemantics
         if (className.StartsWith("screenClass", StringComparison.Ordinal)) return true;
 
         return false;
+    }
+
+    /// <summary>
+    /// 这类窗口**不读**系统"每次滚动几行"的设置（细腻模式的补偿对它们有害）。
+    ///
+    /// <para>
+    /// PowerPoint 是典型：幻灯片视图里"一个滚轮事件 = 翻一页"，与系统行数无关。
+    /// 细腻模式把行数压到 1 之后，别的框架需要把注入量 ×N 补回来，
+    /// 但 PPT 补了就是"N 倍翻页"——用户实测"滚一格跳三页"。
+    /// </para>
+    /// </summary>
+    public static bool IgnoresSystemLines(string className)
+    {
+        if (string.IsNullOrEmpty(className)) return false;
+        return className.StartsWith("PPTFrameClass", StringComparison.Ordinal)
+            || className.StartsWith("screenClass", StringComparison.Ordinal);
     }
 
     /// <summary>
