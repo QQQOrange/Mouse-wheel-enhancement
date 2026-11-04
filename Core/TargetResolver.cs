@@ -10,6 +10,9 @@ public readonly record struct TargetInfo(IntPtr Hwnd, uint Pid, string Exe, stri
 
     /// <summary>这个窗口是不是"一个滚轮事件滚一档"的框架（WPF / WinForms / Qt）。</summary>
     public bool ScrollsOncePerEvent => ScrollSemantics.IsPerEventScroll(Class);
+
+    /// <summary>这个窗口是不是自带平滑动画（Chromium / Electron / Firefox）。</summary>
+    public bool SelfAnimatesScroll => ScrollSemantics.SelfAnimates(Class);
 }
 
 /// <summary>
@@ -56,6 +59,37 @@ public static class ScrollSemantics
 
         // Qt 5/6：Qt51514QWindowIcon / Qt652QWindowIcon / Qt6.5.2QWindowIcon
         if (IsQtWindow(className)) return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// 目标窗口是不是**自带平滑动画**的框架（Chromium / Electron / Firefox）。
+    ///
+    /// <para>
+    /// 这类程序收到一个 <c>WM_MOUSEWHEEL</c> 之后，会自己把这段位移摊成
+    /// 150~250ms 的动画（Chromium 的 smooth scroll、Firefox 的顺滑滚动）。
+    /// 我们再把它拆成几十个小事件，等于让它们**对每个小事件各起一段动画** ——
+    /// 动画排队、互相打断，表现就是：
+    /// </para>
+    /// <list type="bullet">
+    /// <item>跟手变差、有一种"黏"或"橡皮"的感觉；</item>
+    /// <item>快速连滚时明显掉帧，比不装这个软件还难滚。</item>
+    /// </list>
+    /// <para>
+    /// 所以对这类目标，最顺的做法是**只发一个事件**（delta 乘以倍率），
+    /// 把平滑交还给它们自己 —— 那本来就是它们原生的手感。
+    /// </para>
+    /// </summary>
+    public static bool SelfAnimates(string className)
+    {
+        if (string.IsNullOrEmpty(className)) return false;
+
+        // Chromium / Electron / Edge / CEF：Chrome_WidgetWin_0 / Chrome_WidgetWin_1
+        if (className.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal)) return true;
+
+        // Firefox
+        if (className.StartsWith("MozillaWindowClass", StringComparison.Ordinal)) return true;
 
         return false;
     }

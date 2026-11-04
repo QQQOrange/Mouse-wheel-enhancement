@@ -757,6 +757,46 @@ public sealed class WheelEngine : IDisposable
             /* 覆盖优先：同一个 WPF 窗口里，ScrollViewer 认 delta 比例、ListBox 只认事件个数，
              * 从外面分不出来（都是 HwndWrapper）。所以默认按类名走保守的整格，
              * 用户可以在右键菜单里给某个程序切成"按像素"。 */
+            /* ── 自带平滑动画的框架（Chromium / Electron / Firefox）──
+             *
+             * 它们收到一个事件后会自己摊成 150~250ms 的动画。我们若把一格拆成几十个小事件，
+             * 它们就会对每个小事件各起一段动画 —— 动画排队、互相打断，结果比不装还难滚
+             * （用户实测：DeepSeek Harness、Electron 系应用）。
+             *
+             * 所以这里**不拆**：加速了就发一个事件，delta 直接乘以倍率，
+             * 平滑交给它们自己。distance 由 delta 决定，所以总量仍然准确。
+             *
+             * 不做细腻模式补偿：这类框架不看系统行数（Chromium 用自己的每格像素），
+             * 按 1/N 补偿会变成 N 倍过冲。 */
+            if (target.SelfAnimatesScroll && s.ForceWholeNotch != true && !s.IsOwnExe(target.Exe))
+            {
+                if (_animator.WholeNotch) _animator.WholeNotch = false;
+                if (_animator.PendingUnits != 0) _animator.Clear();
+
+                if (!decision.Boosted)
+                {
+                    Interlocked.Increment(ref _passed);
+                    return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+                }
+
+                Volatile.Write(ref _lastMultiplier, decision.Multiplier);
+                var units = decision.OutputUnits;
+                if (units == 0) units = delta;
+                if (units != 0 && InputInjector.SendWheel(units))
+                {
+                    if (!string.Equals(_notchLogged, target.Exe, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _notchLogged = target.Exe;
+                        Log.Info($"原生平滑：{target.Exe}（{target.Class}）" +
+                                 $"倍率 {decision.Multiplier:0.00}× → 单个事件 {units} 单位");
+                    }
+
+                    Interlocked.Increment(ref _boosted);
+                    NotifyBoosted(decision.Multiplier, s);
+                    return (IntPtr)1;
+                }
+            }
+
             var wholeSemantics = s.ForceWholeNotch ?? target.ScrollsOncePerEvent;
             if (wholeSemantics && !s.IsOwnExe(target.Exe))
             {

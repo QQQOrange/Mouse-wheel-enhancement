@@ -107,7 +107,14 @@ Get-Process -Name "MouseWheelEnhancement*" -ErrorAction SilentlyContinue | ForEa
     Write-Host "    先退出正在运行的实例 (PID $($_.Id) $($_.ProcessName))" -ForegroundColor Yellow
     $_.CloseMainWindow() | Out-Null
     Start-Sleep -Milliseconds 600
-    if (-not $_.HasExited) { $_.Kill() }
+    if (-not $_.HasExited) {
+        # 以管理员身份运行的实例杀不掉（Access is denied）。
+        # 这不是安装失败：单文件 exe 的映像不锁文件，照样能覆盖；
+        # 新版本会在用户下次启动时生效。所以只警告，不中断。
+        try { $_.Kill() } catch {
+            Write-Host "    跳过（拒绝访问，可能以管理员运行）：新版本会在下次启动时生效" -ForegroundColor DarkYellow
+        }
+    }
     $_.WaitForExit(3000) | Out-Null
 }
 

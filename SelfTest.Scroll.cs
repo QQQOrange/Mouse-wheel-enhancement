@@ -234,6 +234,21 @@ internal static partial class SelfTest
         Check("WinForms 窗口算「按事件滚动」",
             ScrollSemantics.IsPerEventScroll("WindowsForms10.Window.8.app.0.141b42a_r7_ad1"));
 
+        /* 自带平滑动画的框架（v1.8.32）：对它们必须"只发一个事件"。 */
+        Check("Chromium / Electron 认作自带平滑",
+            ScrollSemantics.SelfAnimates("Chrome_WidgetWin_1"));
+        Check("Chromium 的 0 号窗口也认",
+            ScrollSemantics.SelfAnimates("Chrome_WidgetWin_0"));
+        Check("Firefox 认作自带平滑",
+            ScrollSemantics.SelfAnimates("MozillaWindowClass"));
+        Check("WPF 不算自带平滑（它是按事件）",
+            !ScrollSemantics.SelfAnimates("HwndWrapper[App;;1234]"));
+        Check("普通 Win32 窗口不算自带平滑",
+            !ScrollSemantics.SelfAnimates("Notepad"));
+        Check("两个语义互斥（不会同时成立）",
+            !(ScrollSemantics.SelfAnimates("Chrome_WidgetWin_1")
+              && ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1")));
+
         Check("Chrome / Electron 不算（按像素比例）",
             !ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1"));
         Check("Firefox 不算", !ScrollSemantics.IsPerEventScroll("MozillaWindowClass"));
