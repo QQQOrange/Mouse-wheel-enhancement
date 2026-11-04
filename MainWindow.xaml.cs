@@ -786,6 +786,18 @@ public partial class MainWindow : Window
             _ => (30.0, 300.0),
         };
 
+        if (key == "trackpad-plus")
+        {
+            /* 一步到位：手感参数 + 细腻模式。
+             * 细腻模式会改系统设置，所以走的是用户已经点过的那条路（FineModeSwitch 的 Checked 事件），
+             * 包括它的确认弹窗和还原机制 —— 这里不重复实现。 */
+            TauSlider.Value = 16;
+            GlideSlider.Value = 600;
+            if (FineModeSwitch.IsChecked != true) FineModeSwitch.IsChecked = true;
+            SetFooterHint("已应用「触控板级」：16ms 跟手 + 600ms 惯性 + 细腻模式");
+            return;
+        }
+
         TauSlider.Value = tau;
         GlideSlider.Value = glide;
         SetFooterHint($"已应用「{b.Content}」手感");
