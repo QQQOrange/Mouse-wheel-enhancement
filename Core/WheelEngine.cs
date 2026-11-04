@@ -580,6 +580,20 @@ public sealed class WheelEngine : IDisposable
         return true;
     }
 
+    private string? _lastDecisionExe;
+    private long _lastDecisionMs;
+
+    /// <summary>每个程序每分钟最多记一条判定日志（避免刷屏）。</summary>
+    private void LogOncePerExe(string exe, string message)
+    {
+        var now = Environment.TickCount64;
+        if (string.Equals(_lastDecisionExe, exe, StringComparison.OrdinalIgnoreCase) &&
+            now - _lastDecisionMs < 60_000) return;
+        _lastDecisionExe = exe;
+        _lastDecisionMs = now;
+        Log.Info(message);
+    }
+
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
@@ -628,6 +642,14 @@ public sealed class WheelEngine : IDisposable
              * "一个 notch 仍然是原来那么多像素"来算 —— 只有一处乘法，不会有
              * "某条路径忘了补偿"的半吊子状态。 */
             var fineScale = Volatile.Read(ref _fineScale);
+
+            /* 细腻模式的补偿只在**输出侧**做。
+             *
+             * ⚠ 不能先把 delta 乘成 3 倍再去判速度：速度跟踪器看到的是"每秒 3 倍的单位"，
+             * 阈值 10 格/秒会在实际 3.3 格/秒时就满足 —— 用户感觉就是"稍微动一下就 5 倍加速"
+             * （v1.8.34 修的就是这个：开着细腻模式时倍率失控）。
+             * 所以速度按 rawDelta 算，距离再乘回去。 */
+            var rawDelta = delta;
             if (fineScale > 1) delta *= fineScale;
 
             // Ctrl/Alt + 滚轮 = 缩放，必须 1:1
@@ -712,7 +734,7 @@ public sealed class WheelEngine : IDisposable
             if (shiftDown && s.HorizontalBoost)
             {
                 var hNow = Environment.TickCount64;
-                var hd = _trackerH.Sample(delta, hNow,
+                var hd = _trackerH.Sample(rawDelta, hNow,
                     s.BoostEnabled ? s.BoostView : NoBoostView,
                     s.InvertDirection, s.EnhancePrecisionInput, s.BoostScale);
 
@@ -726,7 +748,7 @@ public sealed class WheelEngine : IDisposable
                 }
 
                 /* 方向：Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右 —— 所以翻号。 */
-                var units = -hd.OutputUnits;
+                var units = -hd.OutputUnits * fineScale;
                 if (InputInjector.SendHWheel(units))
                 {
                     Interlocked.Increment(ref _boosted);
@@ -741,7 +763,7 @@ public sealed class WheelEngine : IDisposable
             }
 
             var nowMs = Environment.TickCount64;
-            var decision = _tracker.Sample(delta, nowMs,
+            var decision = _tracker.Sample(rawDelta, nowMs,
                 s.BoostEnabled ? s.BoostView : NoBoostView,
                 s.InvertDirection, s.EnhancePrecisionInput, s.BoostScale);
 
@@ -810,6 +832,12 @@ public sealed class WheelEngine : IDisposable
                 }
 
                 Volatile.Write(ref _lastMultiplier, decision.Multiplier);
+
+                /* 诊断用：把"判定的原始速度 / 细腻倍数 / 倍率"记下来。
+                 * 以后有人报"稍微动一下就加速"，看这一行就知道是速度估高了还是阈值配低了。 */
+                LogOncePerExe(target.Exe, $"加速判定：{target.Exe} 速度 {decision.RatePerSec:0.0} 格/秒" +
+                    $"（阈值 {s.BoostView.FastThresholdPerSec:0}）→ {decision.Multiplier:0.00}×，细腻 ×{fineScale}");
+                /* 这类框架不读系统行数，所以细腻模式对它们没有影响 —— 不补偿。 */
                 var units = decision.OutputUnits;
                 if (units == 0) units = delta;
                 if (units != 0)
@@ -858,7 +886,7 @@ public sealed class WheelEngine : IDisposable
                 /* 倍率兑现成**事件个数**：3× → 3 个整格。
                  * 交给动画器按帧逐个发（见 ScrollAnimator.PushWholeNotches），
                  * 让快滚有推进的节奏，而不是"啪"一下跳过 5 档。 */
-                var notches = ScrollSemantics.WholeNotchesFor(decision.OutputUnits)
+                var notches = ScrollSemantics.WholeNotchesFor(decision.OutputUnits * fineScale)
                               + FlickExtraNotches(s, decision);
                 var sign = Math.Sign(decision.OutputUnits);
                 if (sign == 0) sign = Math.Sign(delta);
@@ -904,7 +932,7 @@ public sealed class WheelEngine : IDisposable
 
             /* 按比例滚动的框架：算出来多少就发多少，一格 = 120 单位。
              * 摊帧（每格 4~8 帧）带来的平滑全在这一步。 */
-            var outUnits = decision.OutputUnits;
+            var outUnits = decision.OutputUnits * fineScale;
             var flick = FlickExtraNotches(s, decision);
             if (flick > 0) outUnits += Math.Sign(outUnits) * flick * Native.WHEEL_DELTA;
 
