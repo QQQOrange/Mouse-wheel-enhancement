@@ -645,7 +645,7 @@
                             <StackPanel>
                                 <TextBlock Text="手感曲线" Style="{StaticResource H2}" />
                                 <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,10"
-                                           Text="不想逐个调滑块就选一个现成的：三档只改「收尾时间常数」和「惯性长度」，其余参数不动。" />
+                                           Text="不想逐个调滑块就选一个现成的：四档只改「收尾时间常数」和「惯性长度」，其余参数不动。" />
                                 <WrapPanel>
                                     <Button Content="干脆" Style="{StaticResource GhostButton}" Tag="crisp"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
