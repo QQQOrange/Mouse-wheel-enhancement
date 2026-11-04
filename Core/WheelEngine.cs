@@ -136,6 +136,9 @@ public sealed class WheelEngine : IDisposable
     private long _cbMaxTicks;
     private long _cbSamples;
     private long _rotations;
+
+    /// <summary>慢回调只提醒一次（轮换之后不该再出现）。</summary>
+    private long _slowCbWarned;
     /// <summary>
     /// 最近一次解析到的目标应用。**故意包成不可变引用**再由 Volatile 交换：
     /// TargetInfo 是 4 个字段的结构体（含两个引用），直接在两个线程间读写会是
@@ -612,7 +615,8 @@ public sealed class WheelEngine : IDisposable
             /* ⚠ 这一段运行在系统输入链路上，必须**又快又不抛**。
              *   微软的 LowLevelHooksTimeout 是个硬闸：超时后系统会直接把钩子摘掉，
              *   而且不会有任何提示 —— 表现就是"用着用着突然失灵了"。
-             *   所以这里不做任何 IO、不做日志、不做正则编译。 */
+             *   所以这里不做任何 IO、不做正则编译；日志走 Log 的异步队列
+             *   （Log.Enqueue 只做一次字符串拼接 + 无锁入队，不碰磁盘）。 */
             if ((int)wParam != Native.WM_MOUSEWHEEL)
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
@@ -977,6 +981,19 @@ public sealed class WheelEngine : IDisposable
                 if (dt > Interlocked.Read(ref _cbMaxTicks))
                     Interlocked.Exchange(ref _cbMaxTicks, dt);
                 Interlocked.Increment(ref _cbSamples);
+
+                /* 单次回调一旦超过 150ms，系统**可能已经丢掉排队的输入事件**
+                 * （包括按键的 key-up）。丢失 key-up 的表现就是"Ctrl 卡住/自己在按"。
+                 *
+                 * 这里立刻把钩子轮换掉（异步投递，不在回调里做重活），
+                 * 让输入链路马上恢复，并留一条日志作为证据。 */
+                var ms = dt * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                if (ms > 150 && Interlocked.Exchange(ref _slowCbWarned, 1) == 0)
+                {
+                    Log.Warn($"钩子回调 {ms:0} ms（超过 150ms）：系统可能丢弃排队输入，" +
+                             "已立即轮换钩子。若发现 Ctrl/Shift 卡住，按一下该键即可恢复。");
+                    RotateHookForSafety();
+                }
             }
         }
     }
