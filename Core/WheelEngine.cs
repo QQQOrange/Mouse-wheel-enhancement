@@ -132,6 +132,12 @@ public sealed class WheelEngine : IDisposable
     /// <summary>钩子线程里处理"轮换"的自定义消息。</summary>
     private const int WmRotate = 0x8000 + 0x4D;
 
+    /// <summary>
+    /// 最近一次滚轮事件的判定快照（给 <c>--targettrace</c> 用）。
+    /// 钩子线程写、别的线程读，只存一个字符串引用，原子性足够。
+    /// </summary>
+    public static volatile string TraceLine = "";
+
     /// <summary>回调耗时（QPC 周期）的最大值 / 采样次数，每 10 秒被读走一次。</summary>
     private long _cbMaxTicks;
     private long _cbSamples;
@@ -773,6 +779,11 @@ public sealed class WheelEngine : IDisposable
 
             Interlocked.Increment(ref _events);
             Volatile.Write(ref _lastRate, decision.RatePerSec);
+
+            TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} fine={fineScale}" +
+                        $" | boosted={decision.Boosted} mult={decision.Multiplier:0.00} out={decision.OutputUnits}" +
+                        $" | whole={(target.ScrollsOncePerEvent ? 1 : 0)} self={(target.SelfAnimatesScroll ? 1 : 0)}" +
+                        $" ignoreLines={(target.IgnoresSystemLines ? 1 : 0)}";
 
             /* ── 动画线程不在了 → 一律原样放行 ──
              *

@@ -617,6 +617,41 @@ public partial class App
     /// 用钩子而不是焦点窗口：不需要抢前台，在任何会话里都能跑。
     /// </para>
     /// </summary>
+    /// <summary>
+    /// <c>--targettrace</c>：采样 20 秒内每一次滚轮事件的判定结果，写成 targettrace.txt。
+    ///
+    /// <para>
+    /// 专门回答"某个程序里滚一格为什么会跳好几页"：把窗口类、是否按事件、
+    /// 细腻倍数、是否加速、倍率、输出单位全部摊开，一眼就能看出是哪一步算错了。
+    /// </para>
+    /// </summary>
+    private static int TargetTrace()
+    {
+        var sb = new StringBuilder();
+        var seen = new List<string>();
+
+        sb.AppendLine("请把鼠标放到目标程序（PPT / WPS）上，滚**一格**，等两秒再滚一格。");
+        sb.AppendLine("采样 20 秒…");
+
+        var last = "";
+        for (var i = 0; i < 400; i++)
+        {
+            PumpFor(null, 50);
+            var line = WheelEngine.TraceLine;
+            if (!string.IsNullOrEmpty(line) && line != last)
+            {
+                last = line;
+                seen.Add($"{DateTime.Now:HH:mm:ss.fff}  {line}");
+            }
+        }
+
+        sb.AppendLine();
+        sb.AppendLine($"共 {seen.Count} 条事件：");
+        foreach (var line in seen) sb.AppendLine(line);
+
+        return WriteCliResult("targettrace.txt", sb.ToString(), 0);
+    }
+
     private static int KeyProbe()
     {
         var sb = new StringBuilder();

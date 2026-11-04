@@ -282,6 +282,15 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        if (e.Args.Any(a => a.Equals("--targettrace", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var traceCode = TargetTrace();
+            Shutdown(traceCode);
+            Environment.Exit(traceCode);
+            return;
+        }
+
         if (e.Args.Any(a => a.Equals("--keyprobe", StringComparison.OrdinalIgnoreCase)))
         {
             Services.Init();

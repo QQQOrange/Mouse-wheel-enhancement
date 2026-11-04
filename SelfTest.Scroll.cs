@@ -267,6 +267,16 @@ internal static partial class SelfTest
             ScrollSemantics.IgnoresSystemLines("PPTFrameClass"));
         Check("放映窗口同样不补偿",
             ScrollSemantics.IgnoresSystemLines("screenClass"));
+
+        /* WPS 演示（实测类名 PP12FrameClass）：和 PPT 一样按事件、不读系统行数 */
+        Check("WPS 演示算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("PP12FrameClass"));
+        Check("WPS 演示不读系统行数",
+            ScrollSemantics.IgnoresSystemLines("PP12FrameClass"));
+        Check("PP14FrameClass 之类的变体也认",
+            ScrollSemantics.IsPerEventScroll("PP14FrameClass"));
+        Check("不是 PP 数字 FrameClass 的不误判",
+            !ScrollSemantics.IsPerEventScroll("PPXFrameClass"));
         Check("WPF 读系统行数（需要补偿）",
             !ScrollSemantics.IgnoresSystemLines("HwndWrapper[App;;1]"));
         Check("记事本（系统 Edit）不算", !ScrollSemantics.IsPerEventScroll("Notepad"));

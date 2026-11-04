@@ -74,6 +74,11 @@ public static class ScrollSemantics
         if (className.StartsWith("PPTFrameClass", StringComparison.Ordinal)) return true;
         if (className.StartsWith("screenClass", StringComparison.Ordinal)) return true;
 
+        /* WPS 演示（用户实测：窗口类 = PP12FrameClass）。它和 PowerPoint 一样，
+         * 幻灯片视图里"一个事件 = 翻一页"，也不读系统行数。
+         * 顺带覆盖 PP11/PP14/PP15 这些版本号变体。 */
+        if (IsPpFrameClass(className)) return true;
+
         return false;
     }
 
@@ -90,7 +95,8 @@ public static class ScrollSemantics
     {
         if (string.IsNullOrEmpty(className)) return false;
         return className.StartsWith("PPTFrameClass", StringComparison.Ordinal)
-            || className.StartsWith("screenClass", StringComparison.Ordinal);
+            || className.StartsWith("screenClass", StringComparison.Ordinal)
+            || IsPpFrameClass(className);
     }
 
     /// <summary>
@@ -122,6 +128,27 @@ public static class ScrollSemantics
         if (className.StartsWith("MozillaWindowClass", StringComparison.Ordinal)) return true;
 
         return false;
+    }
+
+    /// <summary>
+    /// PowerPoint / WPS 演示的主窗口类：<c>PP12FrameClass</c>、<c>PP14FrameClass</c>…
+    ///
+    /// <para>
+    /// WPS 演示（12.x）实测就是 <c>PP12FrameClass</c> —— 和微软 PowerPoint 的
+    /// <c>PPTFrameClass</c> 只差一个字母，之前完全没被识别出来，
+    /// 于是它被当成"按比例滚动"，一格被拆成十几个事件 → 翻好几页。
+    /// </para>
+    /// </summary>
+    public static bool IsPpFrameClass(string className)
+    {
+        if (string.IsNullOrEmpty(className)) return false;
+        if (!className.StartsWith("PP", StringComparison.Ordinal)) return false;
+        if (!className.EndsWith("FrameClass", StringComparison.Ordinal)) return false;
+
+        var digits = className.Substring(2, className.Length - 2 - "FrameClass".Length);
+        if (digits.Length == 0) return false;
+        foreach (var ch in digits) if (!char.IsDigit(ch)) return false;
+        return true;
     }
 
     /// <summary>
