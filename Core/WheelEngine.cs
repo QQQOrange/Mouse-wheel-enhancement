@@ -827,6 +827,16 @@ public sealed class WheelEngine : IDisposable
 
                 if (!decision.Boosted)
                 {
+                    /* 细腻模式下系统行数是 1：对这类框架**原样放行**会让它只滚 1/N
+                     * （实测：DeepSeek Harness 开着细腻模式时明显变慢）。
+                     * 所以这里也必须把补偿量转发出去 —— delta 此时已经是 × N 的。 */
+                    if (fineScale > 1)
+                    {
+                        _animator.PushPassthrough(delta);
+                        Interlocked.Increment(ref _passed);
+                        return (IntPtr)1;
+                    }
+
                     Interlocked.Increment(ref _passed);
                     return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
                 }
@@ -837,8 +847,9 @@ public sealed class WheelEngine : IDisposable
                  * 以后有人报"稍微动一下就加速"，看这一行就知道是速度估高了还是阈值配低了。 */
                 LogOncePerExe(target.Exe, $"加速判定：{target.Exe} 速度 {decision.RatePerSec:0.0} 格/秒" +
                     $"（阈值 {s.BoostView.FastThresholdPerSec:0}）→ {decision.Multiplier:0.00}×，细腻 ×{fineScale}");
-                /* 这类框架不读系统行数，所以细腻模式对它们没有影响 —— 不补偿。 */
-                var units = decision.OutputUnits;
+                /* 这类框架**确实**读系统行数（用户实测：细腻模式下明显变慢），
+                 * 所以加速输出同样要乘回细腻倍数。 */
+                var units = decision.OutputUnits * fineScale;
                 if (units == 0) units = delta;
                 if (units != 0)
                 {
