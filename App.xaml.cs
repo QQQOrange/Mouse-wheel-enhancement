@@ -1407,8 +1407,19 @@ public partial class App : System.Windows.Application
 
             /* 只在明显偏慢时记一条：正常回调是几十微秒量级，
              * 超过 40ms 说明这台机器在输入链路上被拖住了，值得留证据。 */
+            /* 有输入就记一条（10 秒一次、只在真的有滚动时），
+             * 让"回调到底多快"变成可查的事实，而不是只在出问题时才留证据。 */
+            if (samples > 0 && maxMs <= 40)
+            {
+                Log.Info($"钩子回调：{samples} 次，最大 {maxMs:0.00} ms");
+            }
+
             if (samples > 0 && maxMs > 40)
                 Log.Warn($"钩子回调耗时偏高：最大 {maxMs:0.0} ms / {samples} 次（已轮换 {rotations} 次）");
+
+                /* 超过 250ms 就不是"偶发抖动"，而是真的在拖整机输入：
+                 * 主动把钩子摘掉再装上 —— 摘掉的那一瞬间系统输入立刻恢复。 */
+                if (maxMs > 250) engine.RotateHookForSafety();
         }
         catch
         {

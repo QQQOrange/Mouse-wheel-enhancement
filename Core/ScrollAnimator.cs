@@ -218,6 +218,42 @@ internal sealed class ScrollAnimator : IDisposable
     private const double GlideReferenceMs = 180.0;
 
     private readonly AutoResetEvent _wake = new(false);
+
+    /// <summary>
+    /// 需要**原样立刻发出**的事件（不做曲线）。
+    ///
+    /// <para>
+    /// ⚠ 存在的唯一理由：**绝对不能在钩子回调里调 SendInput**。
+    /// 低层鼠标钩子是全局的，我们在回调里注入的事件会再次进入自己的钩子队列，
+    /// 而当前回调还没返回 —— Windows 只能等钩子超时（实测约 1000ms）才继续。
+    /// 结果就是"每滚一下，整台电脑的鼠标卡一秒"（v1.8.32 的真实事故）。
+    /// </para>
+    /// <para>
+    /// 所以钩子线程只负责**入队**，真正的注入交给这条动画线程 ——
+    /// 它不在钩子回调栈里，SendInput 立即返回。延迟最多一帧（约 6ms）。
+    /// </para>
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<int> _passthrough = new();
+
+    /// <summary>把一个"原样发出"的滚动事件排进队列（可从钩子线程安全调用）。</summary>
+    public void PushPassthrough(int units)
+    {
+        if (units == 0) return;
+        _passthrough.Enqueue(units);
+        _wake.Set();
+    }
+
+    /// <summary>把排队的直通事件全部发出去（只在动画线程上调用）。</summary>
+    private void DrainPassthrough()
+    {
+        while (_passthrough.TryDequeue(out var units))
+        {
+            if (!InputInjector.SendWheel(units))
+            {
+                Log.Warn("直通注入失败（错误码 " + Marshal.GetLastWin32Error() + "）");
+            }
+        }
+    }
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly object _lifecycle = new();
 
@@ -826,8 +862,12 @@ internal sealed class ScrollAnimator : IDisposable
 
             while (_alive)
             {
+                /* 先把钩子线程排进来的"直通事件"发掉 —— 它们必须在**没有**
+                 * 钩子回调栈的线程上注入，否则整机鼠标会卡到钩子超时（见 _passthrough）。 */
+                DrainPassthrough();
+
                 /* 这一帧按"这一轮滚动"的设置出帧：按应用覆盖时钩子会带着覆盖后的
-                 * 快照投递进来，见 _burstSettings。没有覆盖就是全局快照。 */
+                 * 快照投递进来，见 _burstSettings。 */
                 var s = EffectiveSettings();
                 var frameTicks = MsToTicks(s.FrameIntervalMs);
 
@@ -858,6 +898,7 @@ internal sealed class ScrollAnimator : IDisposable
                      * 首帧就按 50ms 的量发 —— 单格滚动开头先跳出去 0.375 格（实测 45 单位）。
                      * 记在醒来之后，首帧 dt≈0，开头就只剩亚像素的一小步。 */
                     _wake.WaitOne(Timeout.Infinite);
+                    DrainPassthrough();
                     var wake = _clock.ElapsedTicks;
                     _lastFrameTicks = wake;
                     _nextFrameTicks = wake;

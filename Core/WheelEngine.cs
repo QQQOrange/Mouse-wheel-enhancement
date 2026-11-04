@@ -393,6 +393,28 @@ public sealed class WheelEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// 看门狗用：钩子回调明显超时的时候，把钩子摘掉再装上。
+    ///
+    /// <para>
+    /// 摘掉的那一下，系统输入立刻恢复（低层钩子是串行调用的，一个卡住就全卡）。
+    /// 重新装上是为了继续正常工作 —— 如果根因还在，下一轮看门狗会再摘一次，
+    /// 至少设备不会长时间处于"滚一下就卡一秒"的状态。
+    /// </para>
+    /// </summary>
+    public void RotateHookForSafety()
+    {
+        try
+        {
+            var tid = _threadId;
+            if (tid != 0) Native.PostThreadMessage(tid, WmRotate, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("安全轮换失败：" + ex.Message);
+        }
+    }
+
     /// <summary>取走这一轮的性能度量并清零（定时器每 10 秒调一次写日志）。</summary>
     public (long Samples, double MaxMs, long Rotations) TakeHookStats()
     {
@@ -411,7 +433,14 @@ public sealed class WheelEngine : IDisposable
          * 真正需要 1ms 帧精度的只有平滑动画线程，那边按需申请/释放。 */
         try
         {
-            _proc = HookProc;
+            /* 包一层：让 InputInjector 知道"现在是钩子回调栈"，
+             * 从根上禁止在回调里注入（见 InputInjector.InHookCallback）。 */
+            _proc = (code, w, l) =>
+            {
+                InputInjector.InHookCallback = true;
+                try { return HookProc(code, w, l); }
+                finally { InputInjector.InHookCallback = false; }
+            };
             _hook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, _proc, Native.GetModuleHandle(null), 0);
             if (_hook == IntPtr.Zero)
             {
@@ -529,7 +558,8 @@ public sealed class WheelEngine : IDisposable
     private bool ForwardRaw(int units)
     {
         if (Volatile.Read(ref _fineScale) <= 1) return false;
-        if (!InputInjector.SendWheel(units)) return false;
+        /* 入队，由动画线程真正注入：在钩子回调里 SendInput 会让整机鼠标卡住（见 ScrollAnimator._passthrough）。 */
+        _animator.PushPassthrough(units);
         Interlocked.Increment(ref _passed);
         return true;
     }
@@ -545,7 +575,7 @@ public sealed class WheelEngine : IDisposable
         var sign = Math.Sign(units);
         if (sign == 0) return false;
         for (var i = 0; i < notches; i++)
-            if (!InputInjector.SendWheel(sign * Native.WHEEL_DELTA)) return false;
+            _animator.PushPassthrough(sign * Native.WHEEL_DELTA);
         Interlocked.Increment(ref _passed);
         return true;
     }
@@ -782,8 +812,9 @@ public sealed class WheelEngine : IDisposable
                 Volatile.Write(ref _lastMultiplier, decision.Multiplier);
                 var units = decision.OutputUnits;
                 if (units == 0) units = delta;
-                if (units != 0 && InputInjector.SendWheel(units))
+                if (units != 0)
                 {
+                    _animator.PushPassthrough(units);
                     if (!string.Equals(_notchLogged, target.Exe, StringComparison.OrdinalIgnoreCase))
                     {
                         _notchLogged = target.Exe;

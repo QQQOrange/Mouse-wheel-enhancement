@@ -284,6 +284,15 @@ internal static partial class SelfTest
         Check("整格调度：剩不到一格 → 不发（否则永远凑不满）",
             !ScrollAnimator.WholeNotchDue(500, 99, 60));
 
+        /* 钩子回调里禁止注入（v1.8.33 事故的护栏）。
+         * 真调了要能拦下、且不抛异常 —— 宁可少发一次，也不能让整机鼠标卡一秒。 */
+        InputInjector.InHookCallback = true;
+        var blocked = true;
+        try { blocked = InputInjector.SendWheel(120); }
+        catch { blocked = false; }
+        finally { InputInjector.InHookCallback = false; }
+        Check("钩子回调里注入会被拦下（不抛异常）", blocked);
+
         Check("细腻模式默认关闭（不动系统设置）", !new AppConfig().Behavior.FineMode);
         Check("细腻模式的目标行数是 1", SystemWheelLines.FineLines == 1);
         Check("细腻模式行数落在可设置范围内", SystemWheelLines.IsUsable(SystemWheelLines.FineLines));

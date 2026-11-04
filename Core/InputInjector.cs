@@ -27,6 +27,24 @@ internal static class InputInjector
     private static readonly int InputSize = Marshal.SizeOf<Native.INPUT>();
 
     /// <summary>发一次滚轮。<paramref name="units"/> 正数 = 向上（内容往上看）。</summary>
+    /// <summary>
+    /// 当前线程是不是正在执行低层鼠标钩子的回调。
+    ///
+    /// <para>
+    /// 在钩子回调里调 <c>SendInput</c> 会把整机鼠标卡住：注入的事件要再进一次全局钩子，
+    /// 而当前回调还没返回，Windows 只能等到钩子超时（实测约 1000ms）。
+    /// v1.8.32 的事故就是这么来的（"每滚一下电脑卡一秒"）。
+    /// </para>
+    /// <para>
+    /// 这里做成硬性护栏：真有人在回调里调，直接拦下并记一条错误日志，
+    /// 而不是让整台机器陪着卡。正确做法是 <c>ScrollAnimator.PushPassthrough</c>。
+    /// </para>
+    /// </summary>
+    [ThreadStatic]
+    public static bool InHookCallback;
+
+    private static int _hookSendBlocked;
+
     public static bool SendWheel(int units) => SendWheelWith(units, Signature);
 
     /// <summary>
@@ -36,6 +54,16 @@ internal static class InputInjector
     /// </summary>
     public static bool SendWheelWith(int units, IntPtr signature)
     {
+        if (InHookCallback)
+        {
+            if (Interlocked.Increment(ref _hookSendBlocked) == 1)
+            {
+                Log.Error("拦下一次「在钩子回调里注入滚动」——那会让整机鼠标卡到钩子超时。" +
+                          "请改用 ScrollAnimator.PushPassthrough 排队。");
+            }
+            return true;    // 当作已处理，避免调用方重试
+        }
+
         if (units == 0) return true;
         units = Math.Clamp(units, -MaxUnitsPerCall, MaxUnitsPerCall);
 
