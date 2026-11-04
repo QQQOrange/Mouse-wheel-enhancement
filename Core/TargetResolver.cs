@@ -60,6 +60,17 @@ public static class ScrollSemantics
         // Qt 5/6：Qt51514QWindowIcon / Qt652QWindowIcon / Qt6.5.2QWindowIcon
         if (IsQtWindow(className)) return true;
 
+        /* PowerPoint（v1.8.38）：幻灯片视图 / 放映窗口里，**一个滚轮事件 = 翻一页**，
+         * 完全不看 delta 大小。我们的摊帧会把一格拆成十几个事件 —— 用户实测
+         * "滚一下从第 1 页跳到第 3 页"。
+         *
+         *   · PPTFrameClass —— PowerPoint 主窗口
+         *   · screenClass   —— 放映窗口
+         *
+         * Excel 的 XLMAIN 不在此列：它按行滚，认 delta，摊帧是安全的。 */
+        if (className.StartsWith("PPTFrameClass", StringComparison.Ordinal)) return true;
+        if (className.StartsWith("screenClass", StringComparison.Ordinal)) return true;
+
         return false;
     }
 

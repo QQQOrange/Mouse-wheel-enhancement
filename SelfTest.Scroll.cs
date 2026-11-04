@@ -253,6 +253,13 @@ internal static partial class SelfTest
             !ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1"));
         Check("Firefox 不算", !ScrollSemantics.IsPerEventScroll("MozillaWindowClass"));
         Check("Office 不算", !ScrollSemantics.IsPerEventScroll("XLMAIN"));
+        /* PowerPoint（v1.8.38）：一格必须只发一个事件，否则"滚一下翻两页" */
+        Check("PowerPoint 主窗口算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("PPTFrameClass"));
+        Check("PowerPoint 放映窗口算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("screenClass"));
+        Check("PowerPoint 的一格只发一格",
+            ScrollSemantics.WholeNotchesFor(Native.WHEEL_DELTA) == 1);
         Check("记事本（系统 Edit）不算", !ScrollSemantics.IsPerEventScroll("Notepad"));
 
         /* Qt = 按事件滚动（v1.7.14）
