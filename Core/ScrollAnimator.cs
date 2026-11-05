@@ -224,6 +224,9 @@ internal sealed class ScrollAnimator : IDisposable
      * 独立线程 + 独立队列：不碰纵向主循环的任何状态，出问题最多是横向不平滑，
      * 绝不会把纵向滚动拖死。一个 HWHEEL 拆成最多 8 个事件、每 ~12ms 一个。 */
     private readonly System.Collections.Concurrent.ConcurrentQueue<int> _hQueue = new();
+
+    /// <summary>给自检用：设置后横向事件不注入，交给它统计（--featurecheck）。</summary>
+    internal Action<int>? HorizontalSink;
     private Thread? _hThread;
 
     /// <summary>排入一次横向滚动（单位制，120 = 一格）。</summary>
@@ -268,7 +271,12 @@ internal sealed class ScrollAnimator : IDisposable
                 var take = i == pieces - 1 ? abs - sent : abs / pieces;
                 sent += take;
                 if (take == 0) continue;
-                if (!InputInjector.SendHWheel(sign * take))
+                var sink = HorizontalSink;
+                if (sink != null)
+                {
+                    sink(sign * take);
+                }
+                else if (!InputInjector.SendHWheel(sign * take))
                 {
                     Log.Warn("横向注入失败（错误码 " + Marshal.GetLastWin32Error() + "）");
                     break;

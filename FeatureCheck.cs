@@ -50,6 +50,7 @@ internal static class FeatureCheck
         fail = Math.Max(fail, CheckOverride(sb));
         fail = Math.Max(fail, CheckHookRotation(sb));
         fail = Math.Max(fail, CheckWholeNotchFrames(sb));
+        fail = Math.Max(fail, CheckHorizontalSmoothing(sb));
         fail = Math.Max(fail, CheckConfigRoundTrip(sb));
         fail = Math.Max(fail, CheckDiagPack(sb));
         fail = Math.Max(fail, CheckOsd(sb));
@@ -272,6 +273,45 @@ internal static class FeatureCheck
         {
             try { if (engine != null) engine.Animator.FrameSink = null; } catch { }
             engine?.Dispose();
+        }
+        return bad;
+    }
+
+    /// <summary>
+    /// 横向平滑（v1.9.9）：PushH 应把 360 单位拆成 ≤ 8 个事件、总量正好 360。
+    /// 用 HorizontalSink 接管注入，不会真的滚动任何窗口。
+    /// </summary>
+    private static int CheckHorizontalSmoothing(StringBuilder sb)
+    {
+        sb.AppendLine("【横向滚动平滑】");
+        var bad = 0;
+        ScrollAnimator? anim = null;
+        try
+        {
+            var got = new List<int>();
+            anim = new ScrollAnimator();
+            anim.HorizontalSink = u => { lock (got) got.Add(u); };
+            anim.Start();
+            Thread.Sleep(120);
+
+            anim.PushH(360);
+            Thread.Sleep(700);
+
+            int count, total;
+            lock (got) { count = got.Count; total = got.Sum(); }
+
+            bad += Line(sb, count is >= 1 and <= 8, "拆成 1~8 个事件", $"{count} 个");
+            bad += Line(sb, total == 360, "总量 = 360（一单位不差）", $"{total}");
+            bad += Line(sb, got.Count == 0 || got.All(u => Math.Sign(u) == Math.Sign(got.Count > 0 ? got[0] : 1)),
+                "方向一致（没有反向残片）");
+        }
+        catch (Exception ex)
+        {
+            bad += Line(sb, false, "横向平滑异常", ex.Message);
+        }
+        finally
+        {
+            try { if (anim != null) anim.Dispose(); } catch { }
         }
         return bad;
     }
