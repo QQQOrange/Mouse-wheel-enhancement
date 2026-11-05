@@ -186,6 +186,7 @@ public sealed class WheelEngine : IDisposable
 
     /// <summary>中键拖拽平移的运行时状态（只在钩子线程读写）。</summary>
     private bool _panActive;
+    private bool _panHasAnchor;
     private int _panAnchorY;
     private int _panAccum;
 
@@ -720,12 +721,21 @@ public sealed class WheelEngine : IDisposable
              * 按住中键上下拖 = 连续滚动：每 40px 折算一格，走直通队列。
              * 只在开启时接管中键；关闭时完全不碰（见 behavior.middleDragPan）。 */
             var panSettings = Volatile.Read(ref _settings);
-            if (panSettings.MiddleDragPan)
+            if (!panSettings.MiddleDragPan)
+            {
+                /* 功能被关掉时把状态清干净：否则半路关掉会留下 _panActive=true，
+                 * 下次再打开时第一次中键抬起会被莫名吞掉。 */
+                _panActive = false;
+                _panHasAnchor = false;
+                _panAccum = 0;
+            }
+            else
             {
                 var msg = (int)wParam;
                 if (msg == 0x0207)                  // WM_MBUTTONDOWN
                 {
                     _panActive = true;
+                    _panHasAnchor = false;
                     _panAnchorY = 0;
                     _panAccum = 0;
                     return (IntPtr)1;
@@ -741,7 +751,11 @@ public sealed class WheelEngine : IDisposable
                 if (msg == 0x0200 && _panActive)    // WM_MOUSEMOVE
                 {
                     var pan = Marshal.PtrToStructure<Native.MSLLHOOKSTRUCT>(lParam);
-                    if (_panAnchorY == 0) _panAnchorY = pan.pt.Y;
+                    if (!_panHasAnchor)
+                    {
+                        _panAnchorY = pan.pt.Y;
+                        _panHasAnchor = true;
+                    }
                     _panAccum += pan.pt.Y - _panAnchorY;
                     _panAnchorY = pan.pt.Y;
 
@@ -916,8 +930,10 @@ public sealed class WheelEngine : IDisposable
 
                 /* 方向：Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右 —— 所以翻号。 */
                 var units = -hd.OutputUnits * fineScale;
-                if (InputInjector.SendHWheel(units))
+                /* 交给动画器的横向通道：拆成多个事件摊开发，不在钩子里 SendInput。 */
+                if (units != 0)
                 {
+                    _animator.PushH(units);
                     Interlocked.Increment(ref _boosted);
                     Volatile.Write(ref _lastMultiplier, hd.Multiplier);
                     NotifyBoosted(hd.Multiplier, s);

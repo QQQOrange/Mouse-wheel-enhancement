@@ -434,6 +434,15 @@ public sealed class AppConfig
     public int SchemaVersion { get; set; } = 5;
 
     /// <summary>
+    /// 更新通道：<c>stable</c>（默认，只看正式版）/ <c>beta</c>（连预发布一起看）。
+    /// <para>
+    /// 存字符串而不是枚举：配置文件是给人看、也可能被人手改的。
+    /// 非法值由 <see cref="NormalizeUpdateChannel"/> 收敛成 <c>stable</c>。
+    /// </para>
+    /// </summary>
+    public string UpdateChannel { get; set; } = "stable";
+
+    /// <summary>
     /// 功能总开关（托盘和界面都能切）。
     ///
     /// <para>
@@ -626,6 +635,7 @@ public sealed class AppConfig
         Filter.TitleRegex ??= "";
 
         Update.Repo = NormalizeRepo(Update.Repo);
+        UpdateChannel = NormalizeUpdateChannel(UpdateChannel);
         Update.GitHubToken ??= "";
         Update.GitHubTokenProtected ??= "";
         Update.LastCheckUtc ??= "";
@@ -667,6 +677,20 @@ public sealed class AppConfig
         var parts = s.Split('/', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length >= 2 ? $"{parts[0]}/{parts[1]}" : fallback;
     }
+
+    /// <summary>
+    /// 更新通道只允许 <c>stable</c> / <c>beta</c>，其余（含空值、大小写/空白）收敛成
+    /// <c>stable</c>。手改配置写错一个字时，应该退回最保守的正式版通道。
+    /// </summary>
+    public static string NormalizeUpdateChannel(string? raw)
+    {
+        var s = (raw ?? "").Trim().ToLowerInvariant();
+        return s == "beta" ? "beta" : "stable";
+    }
+
+    /// <summary>这个通道是不是 beta（含预发布）。</summary>
+    public static bool IsBetaChannel(string? channel)
+        => NormalizeUpdateChannel(channel) == "beta";
 
     /// <summary>
     /// 取整。**不用默认的银行家舍入**（4.5 → 4），按"四舍五入"来（4.5 → 5）——

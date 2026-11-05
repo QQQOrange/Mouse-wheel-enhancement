@@ -170,7 +170,22 @@ public sealed class UpdateService
         return string.IsNullOrWhiteSpace(v) ? null : v.Trim();
     }
 
-    public string LatestApi => Env("MWE_UPDATE_API") ?? $"https://api.github.com/repos/{Repo}/releases/latest";
+    /// <summary>当前更新通道：<c>stable</c>（默认）或 <c>beta</c>（含预发布）。</summary>
+    public string UpdateChannel => AppConfig.NormalizeUpdateChannel(_store.Config.UpdateChannel);
+
+    /// <summary>
+    /// 指定通道的 Release 接口。
+    /// <para>
+    /// stable 仍然走 <c>releases/latest</c>（GitHub 会跳过预发布）；beta 走列表接口
+    /// <c>releases?per_page=20</c>，调用方取第一条 —— GitHub 的列表按发布时间倒序，
+    /// 第一条就是最新的那个（预发布也算）。
+    /// </para>
+    /// </summary>
+    public string LatestApiFor(string channel) => AppConfig.IsBetaChannel(channel)
+        ? $"https://api.github.com/repos/{Repo}/releases?per_page=20"
+        : $"https://api.github.com/repos/{Repo}/releases/latest";
+
+    public string LatestApi => Env("MWE_UPDATE_API") ?? LatestApiFor(UpdateChannel);
     public string LatestWeb => Env("MWE_UPDATE_WEB") ?? $"https://github.com/{Repo}/releases/latest";
     public string UserApi => Env("MWE_GITHUB_USER_API") ?? "https://api.github.com/user";
     public string RateApi => Env("MWE_GITHUB_RATE_API") ?? "https://api.github.com/rate_limit";
@@ -231,7 +246,7 @@ public sealed class UpdateService
             try
             {
                 using var doc = await ApiLatestAsync(token, ct);
-                return new CheckOutcome(BuildInfo(doc.RootElement, current, true), null);
+                return new CheckOutcome(BuildInfo(ReleaseRoot(doc), current, true), null);
             }
             catch (ApiException e) when (e.Kind == ApiErrorKind.AuthRejected)
             {
@@ -258,6 +273,19 @@ public sealed class UpdateService
     /// <summary>没令牌那条路：先花 0 额度判版本，确认有新版才调 API 拿详情。</summary>
     private async Task<CheckOutcome> CheckAnonymousAsync(string current, CancellationToken ct)
     {
+        /* beta 不能走 releases/latest 的 302：GitHub 的 "latest" **不含预发布**，
+         * 预发布候选会被它过滤掉。直接调列表接口（匿名每小时 60 次额度），取第一条。 */
+        if (AppConfig.IsBetaChannel(UpdateChannel))
+        {
+            try
+            {
+                using var doc = await ApiLatestAsync(null, ct);
+                return new CheckOutcome(BuildInfo(ReleaseRoot(doc), current, false), null);
+            }
+            catch (ApiException e) { return new CheckOutcome(null, e.Message); }
+            catch (Exception e) { return new CheckOutcome(null, Explain(e)); }
+        }
+
         string tag;
         try
         {
@@ -269,9 +297,10 @@ public sealed class UpdateService
             try
             {
                 using var doc = await ApiLatestAsync(null, ct);
-                tag = doc.RootElement.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+                var root = ReleaseRoot(doc);
+                tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
                 if (tag.Length == 0) return new CheckOutcome(null, "这次响应里没有版本号（tag_name 缺失）");
-                return new CheckOutcome(BuildInfo(doc.RootElement, current, false), null);
+                return new CheckOutcome(BuildInfo(root, current, false), null);
             }
             catch (ApiException ae) { return new CheckOutcome(null, ae.Message); }
             catch (Exception e2) { return new CheckOutcome(null, Explain(e2)); }
@@ -284,7 +313,7 @@ public sealed class UpdateService
         try
         {
             using var doc = await ApiLatestAsync(null, ct);
-            return new CheckOutcome(BuildInfo(doc.RootElement, current, false), null);
+            return new CheckOutcome(BuildInfo(ReleaseRoot(doc), current, false), null);
         }
         catch (ApiException e) { return new CheckOutcome(null, e.Message); }
         catch (Exception e) { return new CheckOutcome(null, Explain(e)); }
@@ -395,6 +424,19 @@ public sealed class UpdateService
             ? $"GitHub 接口限流了（这个令牌的每小时额度用完了）—— {wait}"
             : $"GitHub 接口限流了（没填令牌时每小时只有 60 次）—— {wait}。" +
               "到「更新」页填一个 GitHub 个人访问令牌，额度是 5000 次/小时";
+    }
+
+    /// <summary>
+    /// 从 API 响应里取"这一条 Release"。stable 的 <c>releases/latest</c> 返回对象；
+    /// beta 的 <c>releases</c> 返回数组，按发布时间倒序，第一条就是最新的（含预发布）。
+    /// </summary>
+    private static JsonElement ReleaseRoot(JsonDocument doc)
+    {
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Array) return root;
+        if (root.GetArrayLength() == 0)
+            throw new ApiException(ApiErrorKind.Other, "这个仓库还没有发布过任何版本（beta 通道也没有候选）");
+        return root[0];
     }
 
     private UpdateInfo BuildInfo(JsonElement root, string current, bool authed)
