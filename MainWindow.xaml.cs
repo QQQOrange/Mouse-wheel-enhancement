@@ -284,6 +284,8 @@ public partial class MainWindow : Window
             PauseSelfSwitch.IsChecked = c.Behavior.PauseWhileSettingsOpen;
             FlickPageSwitch.IsChecked = c.Boost.FlickPage;
         FineModeSwitch.IsChecked = c.Behavior.FineMode;
+        RestoreLinesSlider.Value = c.Behavior.FineRestoreLines;
+        UpdateRestoreLinesLabel();
             HorizontalSwitch.IsChecked = c.Input.HorizontalBoost;
             OsdSwitch.IsChecked = c.Behavior.OsdMultiplier;
             WatchdogSwitch.IsChecked = c.Behavior.HookWatchdog;

@@ -593,6 +593,23 @@
                                                   Checked="FineMode_Changed" Unchecked="FineMode_Changed" />
                                 </Grid>
 
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="退出时还原为" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                           Text="细腻模式会把系统改成 1 行，退出时按这里还原。0 = 用进入前记录的原值（推荐）。强制结束、崩溃、关机由独立守护进程负责。" />
+                            </StackPanel>
+                            <TextBlock x:Name="RestoreLinesValue" Grid.Column="1" Style="{StaticResource Value}" Text="原值" />
+                        </Grid>
+                        <Slider x:Name="RestoreLinesSlider" Style="{StaticResource HSlider}" Margin="0,4,0,12"
+                                Minimum="0" Maximum="10" SmallChange="1" LargeChange="1"
+                                TickFrequency="1" IsSnapToTickEnabled="True"
+                                ValueChanged="RestoreLines_Changed" />
+
                                 <Grid Margin="0,0,0,16">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />

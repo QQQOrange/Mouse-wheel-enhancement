@@ -65,6 +65,21 @@ public partial class MainWindow
         Commit();
     }
 
+    private void RestoreLines_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_loading) return;
+        Services.Config.Behavior.FineRestoreLines = (int)Math.Round(RestoreLinesSlider.Value);
+        SystemWheelLines.RestoreTarget = Services.Config.Behavior.FineRestoreLines;
+        UpdateRestoreLinesLabel();
+        Commit(refreshDerived: false);
+    }
+
+    private void UpdateRestoreLinesLabel()
+    {
+        var v = (int)Math.Round(RestoreLinesSlider.Value);
+        RestoreLinesValue.Text = v <= 0 ? "原值" : v + " 行";
+    }
+
     private void FlickPage_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
