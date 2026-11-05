@@ -331,6 +331,9 @@ public sealed record RuntimeSettings
         if (o == null) return this;
         var s = this with { HasOverride = true };
 
+        if (o.TauMs is double tau) s = s with { TauMs = tau };
+        if (o.GlideMs is int glide) s = s with { GlideMs = glide };
+
         s = o.ScrollMode switch
         {
             "whole" => s with { ForceWholeNotch = true },

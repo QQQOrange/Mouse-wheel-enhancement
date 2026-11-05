@@ -403,8 +403,68 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>「最近识别的程序」：每次刷新重建最多 6 行（数量很小，重建比增量维护简单可靠）。</summary>
+    private void RefreshRecentTargets()
+    {
+        var panel = RecentPanel;
+        if (panel == null) return;
+
+        var rows = WheelEngine.RecentTargets();
+        if (rows.Count == 0)
+        {
+            panel.Children.Clear();
+            var empty = new TextBlock
+            {
+                Text = "还没识别到程序 —— 在别的窗口里滚一下就会出现。",
+                Opacity = 0.6,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            empty.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
+            empty.SetResourceReference(TextBlock.FontSizeProperty, 12.0);
+            panel.Children.Add(empty);
+            return;
+        }
+
+        var key = string.Join(";", rows.Select(r => r.Exe + r.LastTicks));
+        if (key == _recentKey) return;      // 内容没变就不重建，避免每帧重建 UI
+        _recentKey = key;
+
+        panel.Children.Clear();
+        foreach (var r in rows.Take(6))
+        {
+            var grid = new Grid { Margin = new Thickness(0, 3, 0, 3) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var left = new StackPanel();
+            var name = new TextBlock { Text = r.Exe, FontWeight = FontWeights.SemiBold, FontSize = 13 };
+            name.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+            var cls = new TextBlock { Text = r.Class, FontSize = 11, Opacity = 0.65 };
+            cls.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
+            left.Children.Add(name);
+            left.Children.Add(cls);
+            grid.Children.Add(left);
+
+            var right = new TextBlock
+            {
+                Text = $"{r.Semantics} · {r.Events} 次" + (r.Boosted > 0 ? $"（加速 {r.Boosted}）" : ""),
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12, 0, 0, 0),
+            };
+            right.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
+            Grid.SetColumn(right, 1);
+            grid.Children.Add(right);
+
+            panel.Children.Add(grid);
+        }
+    }
+
+    private string _recentKey = "";
+
     private void RefreshStats()
     {
+        RefreshRecentTargets();
         var e = Services.Engine;
         var running = e.IsRunning;
 

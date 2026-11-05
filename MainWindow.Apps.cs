@@ -132,6 +132,25 @@ public partial class MainWindow
             "按 delta 比例滚，文档/网页类的 WPF 程序切到这一档会明显更顺");
         menu.Items.Add(semRoot);
 
+        var feelRoot = new MenuItem { Header = "手感（跟手 τ / 惯性）" };
+        void AddFeel(string label, double? tau, int? glide)
+        {
+            var mi = new MenuItem
+            {
+                Header = label,
+                IsCheckable = true,
+                IsChecked = rule.Override?.TauMs is double t && Math.Abs(t - (tau ?? -1)) < 0.01
+                            || tau == null && rule.Override?.TauMs == null && rule.Override?.GlideMs == null,
+            };
+            mi.Click += (_, _) => ApplyOverride(rule, o => { o.TauMs = tau; o.GlideMs = glide; });
+            feelRoot.Items.Add(mi);
+        }
+        AddFeel("跟随全局", null, null);
+        AddFeel("跟手（τ16 / 惯性 200）", 16, 200);
+        AddFeel("标准（τ30 / 惯性 420）", 30, 420);
+        AddFeel("悠长（τ45 / 惯性 600）", 45, 600);
+        menu.Items.Add(feelRoot);
+
         menu.Items.Add(new Separator());
         var reset = new MenuItem { Header = "清除这个程序的覆盖" };
         reset.Click += (_, _) => ApplyOverride(rule, _ => { }, clear: true);

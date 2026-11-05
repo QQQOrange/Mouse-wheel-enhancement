@@ -195,6 +195,15 @@
 
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
+                                <TextBlock Text="最近识别的程序" Style="{StaticResource H2}" Margin="0,0,0,6" />
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,10" TextWrapping="Wrap"
+                                           Text="每个程序用的是哪种滚动语义，一眼可查。手感不对时看这里：显示「按事件」的程序不能摊帧，「自带平滑」的交还给应用。" />
+                                <StackPanel x:Name="RecentPanel" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
                                 <TextBlock Text="它是怎么做事的" Style="{StaticResource H2}" Margin="0,0,0,10" />
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                            Text="1 · 滚动事件先经过本程序：量是多少、按什么节奏发，由下面的参数决定。默认「所有滚动」都接管，慢慢拨一格也是分成几小步滑上去，不再是一跳。" />

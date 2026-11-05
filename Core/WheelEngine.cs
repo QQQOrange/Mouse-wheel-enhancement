@@ -132,6 +132,44 @@ public sealed class WheelEngine : IDisposable
     /// <summary>钩子线程里处理"轮换"的自定义消息。</summary>
     private const int WmRotate = 0x8000 + 0x4D;
 
+    /// <summary>一个"最近识别到的程序"（健康页 / 诊断用）。</summary>
+    public sealed record RecentTarget(string Exe, string Class, string Semantics, long Events, long Boosted, long LastTicks);
+
+    private static readonly object RecentLock = new();
+    private static readonly Dictionary<string, RecentTarget> RecentMap = new();
+
+    /// <summary>最近识别到的程序（按最后出现时间倒序，最多 24 条）。</summary>
+    public static IReadOnlyList<RecentTarget> RecentTargets()
+    {
+        lock (RecentLock)
+        {
+            return RecentMap.Values.OrderByDescending(t => t.LastTicks).Take(24).ToList();
+        }
+    }
+
+    private static void TrackRecent(TargetInfo target, bool boosted)
+    {
+        if (!target.IsKnown) return;
+        var key = target.Exe + "|" + target.Class;
+        var semantics = target.IgnoresSystemLines ? "按事件·不读行数"
+            : target.ScrollsOncePerEvent ? "按事件"
+            : target.SelfAnimatesScroll ? "自带平滑"
+            : "按像素";
+
+        lock (RecentLock)
+        {
+            RecentMap.TryGetValue(key, out var old);
+            RecentMap[key] = new RecentTarget(target.Exe, target.Class, semantics,
+                (old?.Events ?? 0) + 1, (old?.Boosted ?? 0) + (boosted ? 1 : 0), Environment.TickCount64);
+
+            if (RecentMap.Count > 48)
+            {
+                var stale = RecentMap.OrderBy(t => t.Value.LastTicks).Take(24).Select(t => t.Key).ToList();
+                foreach (var k in stale) RecentMap.Remove(k);
+            }
+        }
+    }
+
     /// <summary>
     /// 最近一次滚轮事件的判定快照（给 <c>--targettrace</c> 用）。
     /// 钩子线程写、别的线程读，只存一个字符串引用，原子性足够。
@@ -854,6 +892,8 @@ public sealed class WheelEngine : IDisposable
 
             Interlocked.Increment(ref _events);
             Volatile.Write(ref _lastRate, decision.RatePerSec);
+
+            TrackRecent(target, decision.Boosted);
 
             TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} fine={fineScale}" +
                         $" | boosted={decision.Boosted} mult={decision.Multiplier:0.00} out={decision.OutputUnits}" +

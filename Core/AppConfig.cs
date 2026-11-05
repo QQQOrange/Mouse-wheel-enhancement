@@ -56,6 +56,12 @@ public sealed class AppOverride
     /// <summary>这个应用里要不要平滑。null = 跟随全局。</summary>
     public bool? Smooth { get; set; }
 
+    /// <summary>这个应用的跟手 τ（毫秒）。null = 跟随全局。</summary>
+    public double? TauMs { get; set; }
+
+    /// <summary>这个应用的惯性长度（毫秒）。null = 跟随全局。</summary>
+    public int? GlideMs { get; set; }
+
     /// <summary>
     /// 这个应用按哪种语义发事件：<c>"pixel"</c> = 按 delta 比例（浏览器那种平滑），
     /// <c>"whole"</c> = 按事件个数（一档一事件）。null = 自动（按窗口类猜）。
@@ -630,7 +636,11 @@ public sealed class AppConfig
         var mode = (o.ScrollMode ?? "").Trim().ToLowerInvariant();
         o.ScrollMode = mode is "pixel" or "whole" ? mode : null;
 
-        if (!o.MaxMultiplier.HasValue && !o.Smooth.HasValue && o.ScrollMode == null) return null;
+        if (o.TauMs is double tau) o.TauMs = Math.Clamp(tau, 5, 120);
+        if (o.GlideMs is int glide) o.GlideMs = Math.Clamp(glide, 0, 800);
+
+        if (!o.MaxMultiplier.HasValue && !o.Smooth.HasValue && o.ScrollMode == null
+            && !o.TauMs.HasValue && !o.GlideMs.HasValue) return null;
         return o;
     }
 
