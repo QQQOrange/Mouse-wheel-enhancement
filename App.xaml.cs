@@ -282,6 +282,11 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        if (e.Args.Any(a => a.Equals("--safe", StringComparison.OrdinalIgnoreCase)))
+        {
+            SafeMode = true;
+        }
+
         if (e.Args.Any(a => a.Equals("--targettrace", StringComparison.OrdinalIgnoreCase)))
         {
             Services.Init();

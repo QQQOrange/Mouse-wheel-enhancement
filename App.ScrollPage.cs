@@ -25,6 +25,16 @@ namespace MouseWheelEnhancement;
 public partial class App
 {
     /// <summary>
+    /// <c>--safe</c>：安全模式。只打开界面，**不装钩子、不改系统设置、不加速**。
+    ///
+    /// <para>
+    /// 用途：当用户怀疑"电脑变卡/按键异常是不是这个程序"时，用它排除 ——
+    /// 安全模式下本程序对系统输入零影响，和没运行完全一样。
+    /// </para>
+    /// </summary>
+    internal static bool SafeMode { get; set; }
+
+    /// <summary>
     /// 页面按像素滚动的入口（挂在 App.xaml 里那条隐式 ScrollViewer 样式上）。
     ///
     /// <para>

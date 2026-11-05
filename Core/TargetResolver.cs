@@ -23,6 +23,86 @@ public readonly record struct TargetInfo(IntPtr Hwnd, uint Pid, string Exe, stri
 /// </summary>
 public static class ScrollSemantics
 {
+    /// <summary>窗口的滚动语义（v1.9.0 改成表驱动）。</summary>
+    public enum Kind
+    {
+        /// <summary>按 delta 比例滚（浏览器内核、Office 画布、系统 Edit…）。</summary>
+        Proportional,
+
+        /// <summary>一个事件滚一档（WPF / WinForms / Qt / PPT / WPS 演示）。</summary>
+        PerEvent,
+
+        /// <summary>自带平滑动画（Chromium / Electron / Firefox）——平滑交还给它们。</summary>
+        SelfAnimating,
+    }
+
+    private readonly record struct Rule(string Prefix, Kind Kind, bool IgnoreSystemLines, bool Exact = false);
+
+    /// <summary>
+    /// 「窗口类 → 语义」的唯一真相表。
+    ///
+    /// <para>
+    /// 以前是三个手写 if 链（IsPerEventScroll / SelfAnimates / IgnoresSystemLines），
+    /// 加一个类名要改三处、而且**很容易漏** —— WPS 演示的 <c>PP12FrameClass</c>
+    /// 就是这样漏掉的（和 <c>PPTFrameClass</c> 只差一个字母），结果滚一格翻三页。
+    /// </para>
+    /// <para>
+    /// 现在只有这张表：新增一个类名 = 加一行；<c>--selftest</c> 会自动遍历整张表校验一致性，
+    /// 不可能再出现"某个入口忘了加"的情况。
+    /// </para>
+    /// </summary>
+    private static readonly Rule[] Rules =
+    {
+        // ── 按事件（一格一事件）──
+        new("HwndWrapper[",        Kind.PerEvent,      false),   // WPF
+        new("WindowsForms10.",     Kind.PerEvent,      false),   // WinForms
+        // Qt 5/6：Qt51514QWindowIcon / Qt652QWindowIcon（版本号段单独判定，见 IsQtWindow）
+        new("PPTFrameClass",       Kind.PerEvent,      true),    // 微软 PowerPoint
+        new("screenClass",         Kind.PerEvent,      true),    // PowerPoint 放映
+        // WPS 演示：PP12FrameClass / PP14FrameClass…（数字段单独判定，见 IsPpFrameClass）
+
+        // ── 自带平滑 ──
+        new("Chrome_WidgetWin_",   Kind.SelfAnimating, false),   // Chromium / Electron / Edge / CEF
+        new("MozillaWindowClass",  Kind.SelfAnimating, false),   // Firefox
+    };
+
+    /// <summary>把一个窗口类名解析成语义（唯一入口，所有判据都走这里）。</summary>
+    public static Kind Classify(string className)
+    {
+        if (string.IsNullOrEmpty(className)) return Kind.Proportional;
+
+        foreach (var rule in Rules)
+        {
+            var hit = rule.Exact
+                ? string.Equals(className, rule.Prefix, StringComparison.Ordinal)
+                : className.StartsWith(rule.Prefix, StringComparison.Ordinal);
+            if (hit) return rule.Kind;
+        }
+
+        if (IsQtWindow(className)) return Kind.PerEvent;
+        if (IsPpFrameClass(className)) return Kind.PerEvent;
+
+        return Kind.Proportional;
+    }
+
+    /// <summary>这个类名是否需要细腻模式的 ×N 补偿（PPT/WPS 演示不读系统行数）。</summary>
+    public static bool IgnoresSystemLinesOf(string className)
+    {
+        if (string.IsNullOrEmpty(className)) return false;
+        foreach (var rule in Rules)
+        {
+            if (rule.IgnoreSystemLines && className.StartsWith(rule.Prefix, StringComparison.Ordinal))
+                return true;
+        }
+        return IsPpFrameClass(className);
+    }
+
+    /// <summary>表里所有规则（自检用来逐条校验）。</summary>
+    public static IEnumerable<(string Prefix, Kind Kind, bool IgnoreSystemLines)> AllRules()
+    {
+        foreach (var r in Rules) yield return (r.Prefix, r.Kind, r.IgnoreSystemLines);
+    }
+
     /// <summary>
     /// 目标窗口是不是**按事件次数**滚动的框架。
     ///
@@ -50,7 +130,10 @@ public static class ScrollSemantics
     /// </para>
     /// </summary>
     /// <param name="className">顶层窗口类名（<see cref="Native.ClassNameOf"/>）。</param>
-    public static bool IsPerEventScroll(string className)
+    public static bool IsPerEventScroll(string className) => Classify(className) == Kind.PerEvent;
+
+    /// <summary>（历史实现，保留注释说明来由）</summary>
+    private static bool IsPerEventScrollLegacy(string className)
     {
         if (string.IsNullOrEmpty(className)) return false;
 
@@ -91,13 +174,7 @@ public static class ScrollSemantics
     /// 但 PPT 补了就是"N 倍翻页"——用户实测"滚一格跳三页"。
     /// </para>
     /// </summary>
-    public static bool IgnoresSystemLines(string className)
-    {
-        if (string.IsNullOrEmpty(className)) return false;
-        return className.StartsWith("PPTFrameClass", StringComparison.Ordinal)
-            || className.StartsWith("screenClass", StringComparison.Ordinal)
-            || IsPpFrameClass(className);
-    }
+    public static bool IgnoresSystemLines(string className) => IgnoresSystemLinesOf(className);
 
     /// <summary>
     /// 目标窗口是不是**自带平滑动画**的框架（Chromium / Electron / Firefox）。
@@ -117,18 +194,7 @@ public static class ScrollSemantics
     /// 把平滑交还给它们自己 —— 那本来就是它们原生的手感。
     /// </para>
     /// </summary>
-    public static bool SelfAnimates(string className)
-    {
-        if (string.IsNullOrEmpty(className)) return false;
-
-        // Chromium / Electron / Edge / CEF：Chrome_WidgetWin_0 / Chrome_WidgetWin_1
-        if (className.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal)) return true;
-
-        // Firefox
-        if (className.StartsWith("MozillaWindowClass", StringComparison.Ordinal)) return true;
-
-        return false;
-    }
+    public static bool SelfAnimates(string className) => Classify(className) == Kind.SelfAnimating;
 
     /// <summary>
     /// PowerPoint / WPS 演示的主窗口类：<c>PP12FrameClass</c>、<c>PP14FrameClass</c>…

@@ -245,6 +245,22 @@ internal static partial class SelfTest
             !ScrollSemantics.SelfAnimates("HwndWrapper[App;;1234]"));
         Check("普通 Win32 窗口不算自带平滑",
             !ScrollSemantics.SelfAnimates("Notepad"));
+        /* v1.9.0：语义表驱动 —— 表里每一条都必须自洽（分类 + 是否补偿系统行数）。 */
+        var ruleCount = 0;
+        foreach (var (prefix, kind, ignoreLines) in ScrollSemantics.AllRules())
+        {
+            ruleCount++;
+            var sample = prefix.EndsWith("[", StringComparison.Ordinal) ? prefix + "App;;1]"
+                       : prefix.EndsWith(".", StringComparison.Ordinal) ? prefix + "Window.8.app.0.x"
+                       : prefix.EndsWith("_", StringComparison.Ordinal) ? prefix + "1"
+                       : prefix;
+            Check($"语义表：{prefix} → {kind}", ScrollSemantics.Classify(sample) == kind,
+                ScrollSemantics.Classify(sample).ToString());
+            Check($"语义表：{prefix} 的补偿标记一致",
+                ScrollSemantics.IgnoresSystemLines(sample) == ignoreLines);
+        }
+        Check("语义表已覆盖主要框架（Qt/PP 走专用判定，不在表内）", ruleCount >= 6, ruleCount.ToString());
+
         Check("两个语义互斥（不会同时成立）",
             !(ScrollSemantics.SelfAnimates("Chrome_WidgetWin_1")
               && ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1")));

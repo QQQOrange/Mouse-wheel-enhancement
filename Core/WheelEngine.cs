@@ -145,6 +145,18 @@ public sealed class WheelEngine : IDisposable
 
     /// <summary>慢回调只提醒一次（轮换之后不该再出现）。</summary>
     private long _slowCbWarned;
+
+    /// <summary>
+    /// 自动降级：钩子回调反复偏慢时，临时切成"直通模式"（不加速、不摊帧），
+    /// 到点自动恢复。宁可少一点加速，也不能让整机输入变卡。
+    /// </summary>
+    private long _degradedUntil;
+
+    /// <summary>连续慢回调计数（> 50ms 记一次，正常回调清零）。</summary>
+    private long _slowStreak;
+
+    /// <summary>正在直通模式里（供诊断/界面显示）。</summary>
+    public bool IsDegraded => Environment.TickCount64 < Interlocked.Read(ref _degradedUntil);
     /// <summary>
     /// 最近一次解析到的目标应用。**故意包成不可变引用**再由 Volatile 交换：
     /// TargetInfo 是 4 个字段的结构体（含两个引用），直接在两个线程间读写会是
@@ -603,6 +615,52 @@ public sealed class WheelEngine : IDisposable
         Log.Info(message);
     }
 
+    private long _fullscreenCheckedMs;
+    private bool _fullscreenForeground;
+
+    /// <summary>
+    /// 前台窗口是不是"独占全屏"（游戏 / 全屏视频）。
+    ///
+    /// <para>
+    /// 这类窗口里加速和摊帧只会添麻烦：帧率敏感、而且它们多数自己处理输入。
+    /// 判定：窗口矩形正好盖住所在显示器、且没有标题栏（WS_CAPTION）。
+    /// 结果缓存 500ms —— 全屏切换不会比这更快，热路径上不能每次都查。
+    /// </para>
+    /// </summary>
+    private bool IsFullscreenForeground(IntPtr hwnd)
+    {
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _fullscreenCheckedMs) < 500)
+            return _fullscreenForeground;
+
+        Interlocked.Exchange(ref _fullscreenCheckedMs, now);
+        var full = false;
+        try
+        {
+            var fg = Native.GetForegroundWindow();
+            if (fg == hwnd && hwnd != IntPtr.Zero)
+            {
+                if (Native.GetWindowRect(hwnd, out var r))
+                {
+                    var style = Native.GetWindowLongPtr(hwnd, Native.GWL_STYLE).ToInt64();
+                    var noCaption = (style & Native.WS_CAPTION) == 0;
+                    var mon = Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST);
+                    var mi = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
+                    if (noCaption && mon != IntPtr.Zero && Native.GetMonitorInfo(mon, ref mi))
+                    {
+                        var m = mi.rcMonitor;
+                        full = r.Left <= m.Left && r.Top <= m.Top
+                            && r.Right >= m.Right && r.Bottom >= m.Bottom;
+                    }
+                }
+            }
+        }
+        catch { /* 判定失败就当不是全屏 */ }
+
+        _fullscreenForeground = full;
+        return full;
+    }
+
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
@@ -640,6 +698,15 @@ public sealed class WheelEngine : IDisposable
             var s = Volatile.Read(ref _settings);
             if (!s.Enabled)
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            /* 自动降级期间：完全直通。细腻模式的行数补偿也不做（那会改距离），
+             * 30 秒后自动恢复。 */
+            if (IsDegraded)
+            {
+                if (_animator.PendingUnits != 0) _animator.Clear();
+                Interlocked.Increment(ref _passed);
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
 
             var delta = (int)(short)((data.mouseData >> 16) & 0xFFFF);
             if (delta == 0)
@@ -680,6 +747,14 @@ public sealed class WheelEngine : IDisposable
              * 换算像素（固定行高），**不经过系统行数**。细腻模式把 delta 乘了 3 倍之后
              * 它会多滚 3 倍 —— 这里乘回去。 */
             if (fineScale > 1 && s.IsOwnExe(target.Exe)) delta /= fineScale;
+
+            /* 独占全屏（游戏/全屏视频）：直通，不加速也不摊帧。 */
+            if (target.Hwnd != IntPtr.Zero && IsFullscreenForeground(target.Hwnd))
+            {
+                if (_animator.PendingUnits != 0) _animator.Clear();
+                Interlocked.Increment(ref _passed);
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
 
             /* 按应用覆盖（v1.8.0）：只换"倍率上限 / 平滑开关"两项，
              * 快照在配置变更时就烘焙好了，这里只做一次字典查找。 */
@@ -1003,6 +1078,28 @@ public sealed class WheelEngine : IDisposable
                  * 这里立刻把钩子轮换掉（异步投递，不在回调里做重活），
                  * 让输入链路马上恢复，并留一条日志作为证据。 */
                 var ms = dt * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+                /* 自动降级：连续 3 次 > 50ms 就切直通 30 秒。
+                 * 50ms 对一次滚轮处理来说已经很慢了（正常是几十微秒），
+                 * 连续出现说明这台机器/这个目标出了问题，继续摊帧只会更糟。 */
+                if (ms > 50)
+                {
+                    if (Interlocked.Increment(ref _slowStreak) >= 3)
+                    {
+                        Interlocked.Exchange(ref _slowStreak, 0);
+                        if (!IsDegraded)
+                        {
+                            Interlocked.Exchange(ref _degradedUntil, Environment.TickCount64 + 30_000);
+                            Log.Warn($"钩子连续偏慢（最近一次 {ms:0} ms），已临时切到直通模式 30 秒：" +
+                                     "这段时间不加速、不摊帧，滚动行为与不装本程序一致。");
+                        }
+                    }
+                }
+                else
+                {
+                    Interlocked.Exchange(ref _slowStreak, 0);
+                }
+
                 if (ms > 150 && Interlocked.Exchange(ref _slowCbWarned, 1) == 0)
                 {
                     Log.Warn($"钩子回调 {ms:0} ms（超过 150ms）：系统可能丢弃排队输入，" +

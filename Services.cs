@@ -143,6 +143,13 @@ internal static class Services
         Updater = new UpdateService(Store);
         UpdateService.SweepLeftovers(); // 清上次更新留下的 .old / .new
 
+        /* --safe：不装钩子。界面照常打开，方便用户排除"是不是它"。 */
+        if (App.SafeMode)
+        {
+            Log.Warn("安全模式（--safe）：不安装滚轮钩子、不修改系统设置。");
+            return;
+        }
+
         var ok = Engine.Start();
         Log.Info(ok ? "引擎已启动" : "引擎启动失败（钩子没装上）");
 
