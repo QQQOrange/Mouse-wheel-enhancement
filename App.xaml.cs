@@ -333,6 +333,11 @@ public partial class App : System.Windows.Application
             catch { /* 进程已经没了：直接还原 */ }
 
             SystemWheelLines.RestoreLines(guardLines);
+
+            /* 还原完把备份清掉：否则下次启动还会"发现上次没退干净"再还原一遍
+             * （虽无害，但日志会误报，也会让用户以为又出问题了）。 */
+            try { SystemWheelLines.ClearBackupAfterGuard(); } catch { }
+
             Shutdown(0);
             Environment.Exit(0);
             return;

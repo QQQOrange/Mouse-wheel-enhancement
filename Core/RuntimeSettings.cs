@@ -73,9 +73,6 @@ public sealed record RuntimeSettings
     /// <summary>Shift+滚轮（横向）也走加速曲线（v1.8.0）。</summary>
     public bool HorizontalBoost { get; init; }
 
-    /// <summary>中键拖拽平移（见 AppConfig.Input.MiddleDragPan）。</summary>
-    public bool MiddleDragPan { get; init; }
-
     /// <summary>加速时在光标旁显示倍率（OSD，v1.8.0）。</summary>
     public bool OsdMultiplier { get; init; }
 
@@ -282,7 +279,6 @@ public sealed record RuntimeSettings
             InvertDirection = c.Input.InvertDirection,
             EnhancePrecisionInput = c.Input.EnhancePrecisionInput,
             HorizontalBoost = c.Input.HorizontalBoost,
-            MiddleDragPan = c.Input.MiddleDragPan,
             OsdMultiplier = c.Behavior.OsdMultiplier,
             ReverseEase = c.Smooth.ReverseEase,
             VelocityStop = c.Smooth.VelocityStop,

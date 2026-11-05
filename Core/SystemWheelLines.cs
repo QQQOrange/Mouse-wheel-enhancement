@@ -407,6 +407,9 @@ public static class SystemWheelLines
         }
     }
 
+    /// <summary>守护进程还原之后清掉备份（给 App 的 --fineguard 分支用）。</summary>
+    public static void ClearBackupAfterGuard() => TryDeleteFineBackup();
+
     private static void TryDeleteFineBackup()
     {
         try { File.Delete(FineBackupPath); }
