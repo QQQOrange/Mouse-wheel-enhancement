@@ -184,6 +184,11 @@ public sealed class WheelEngine : IDisposable
     /// <summary>慢回调只提醒一次（轮换之后不该再出现）。</summary>
     private long _slowCbWarned;
 
+    /// <summary>中键拖拽平移的运行时状态（只在钩子线程读写）。</summary>
+    private bool _panActive;
+    private int _panAnchorY;
+    private int _panAccum;
+
     /// <summary>
     /// 自动降级：钩子回调反复偏慢时，临时切成"直通模式"（不加速、不摊帧），
     /// 到点自动恢复。宁可少一点加速，也不能让整机输入变卡。
@@ -710,6 +715,45 @@ public sealed class WheelEngine : IDisposable
          * 回调就会继续进来。以前这里只看配置里的 Enabled，
          * 于是"停用"之后钩子照旧工作，用户看到的是"关了还是加速"。 */
         if (!_running) return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            /* ── 中键拖拽平移（默认关闭）──
+             * 按住中键上下拖 = 连续滚动：每 40px 折算一格，走直通队列。
+             * 只在开启时接管中键；关闭时完全不碰（见 behavior.middleDragPan）。 */
+            var panSettings = Volatile.Read(ref _settings);
+            if (panSettings.MiddleDragPan)
+            {
+                var msg = (int)wParam;
+                if (msg == 0x0207)                  // WM_MBUTTONDOWN
+                {
+                    _panActive = true;
+                    _panAnchorY = 0;
+                    _panAccum = 0;
+                    return (IntPtr)1;
+                }
+                if (msg == 0x0208)                  // WM_MBUTTONUP
+                {
+                    if (_panActive)
+                    {
+                        _panActive = false;
+                        return (IntPtr)1;
+                    }
+                }
+                if (msg == 0x0200 && _panActive)    // WM_MOUSEMOVE
+                {
+                    var pan = Marshal.PtrToStructure<Native.MSLLHOOKSTRUCT>(lParam);
+                    if (_panAnchorY == 0) _panAnchorY = pan.pt.Y;
+                    _panAccum += pan.pt.Y - _panAnchorY;
+                    _panAnchorY = pan.pt.Y;
+
+                    const int PanStepPx = 40;       // 40px ≈ 一格
+                    while (Math.Abs(_panAccum) >= PanStepPx)
+                    {
+                        var dir = Math.Sign(_panAccum);
+                        _panAccum -= dir * PanStepPx;
+                        _animator.PushPassthrough(-dir * Native.WHEEL_DELTA);
+                    }
+                }
+            }
 
         long t0 = 0;
         try

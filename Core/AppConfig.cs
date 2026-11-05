@@ -257,6 +257,9 @@ public sealed class InputConfig
     /// </summary>
     public bool HorizontalBoost { get; set; } = true;
 
+    /// <summary>中键拖拽平移（默认关闭）：按住中键上下拖动 = 连续滚动。</summary>
+    public bool MiddleDragPan { get; set; }
+
     /// <summary>反转加速方向（给"滚轮反向"鼠标用）。</summary>
     public bool InvertDirection { get; set; } = false;
 
