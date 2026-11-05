@@ -916,8 +916,10 @@ public sealed class WheelEngine : IDisposable
 
                 /* 方向：Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右 —— 所以翻号。 */
                 var units = -hd.OutputUnits * fineScale;
-                if (InputInjector.SendHWheel(units))
+                /* 交给动画器的横向通道：拆成多个事件摊开发，不在钩子里 SendInput。 */
+                if (units != 0)
                 {
+                    _animator.PushH(units);
                     Interlocked.Increment(ref _boosted);
                     Volatile.Write(ref _lastMultiplier, hd.Multiplier);
                     NotifyBoosted(hd.Multiplier, s);

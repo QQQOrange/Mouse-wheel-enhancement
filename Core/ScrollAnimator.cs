@@ -219,6 +219,63 @@ internal sealed class ScrollAnimator : IDisposable
 
     private readonly AutoResetEvent _wake = new(false);
 
+    /* ── 横向滚动（Shift+滚轮）的平滑 ──
+     *
+     * 独立线程 + 独立队列：不碰纵向主循环的任何状态，出问题最多是横向不平滑，
+     * 绝不会把纵向滚动拖死。一个 HWHEEL 拆成最多 8 个事件、每 ~12ms 一个。 */
+    private readonly System.Collections.Concurrent.ConcurrentQueue<int> _hQueue = new();
+    private Thread? _hThread;
+
+    /// <summary>排入一次横向滚动（单位制，120 = 一格）。</summary>
+    public void PushH(int units)
+    {
+        if (units == 0) return;
+        _hQueue.Enqueue(units);
+        _hThread ??= StartHorizontalThread();
+    }
+
+    private Thread StartHorizontalThread()
+    {
+        var t = new Thread(HorizontalLoop)
+        {
+            IsBackground = true,
+            Name = "MouseWheelEnhancement-HScroll",
+        };
+        t.Start();
+        return t;
+    }
+
+    private void HorizontalLoop()
+    {
+        while (_alive)
+        {
+            if (!_hQueue.TryDequeue(out var units))
+            {
+                Thread.Sleep(6);
+                continue;
+            }
+
+            var s = EffectiveSettings();
+            var pieces = Math.Clamp(Math.Abs(units) / Native.WHEEL_DELTA, 1, 8);
+            var sign = Math.Sign(units);
+            var abs = Math.Abs(units);
+            var sent = 0;
+
+            for (var i = 0; i < pieces && _alive; i++)
+            {
+                var take = i == pieces - 1 ? abs - sent : abs / pieces;
+                sent += take;
+                if (take == 0) continue;
+                if (!InputInjector.SendHWheel(sign * take))
+                {
+                    Log.Warn("横向注入失败（错误码 " + Marshal.GetLastWin32Error() + "）");
+                    break;
+                }
+                if (i < pieces - 1) Thread.Sleep(Math.Max(5, (int)(s.FrameIntervalMs * 2)));
+            }
+        }
+    }
+
     /// <summary>
     /// 需要**原样立刻发出**的事件（不做曲线）。
     ///
