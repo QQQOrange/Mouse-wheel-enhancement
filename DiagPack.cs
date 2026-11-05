@@ -129,6 +129,24 @@ internal static class DiagPack
         }
         written.Add("system.txt");
 
+        /* v1.9.2：把「证据文件」一起打包 —— 用户报某个程序手感不对时，
+         * targettrace.txt 直接给出那个窗口被识别成了哪种语义，省一轮来回。 */
+        foreach (var name in new[] { "targettrace.txt", "keyprobe.txt", "selftest.txt",
+                                        "featurecheck.txt", "scrollsmooth.txt", "wheellines.txt" })
+        {
+            try
+            {
+                var evidence = System.IO.Path.Combine(Core.AppPaths.DataDir, name);
+                if (!System.IO.File.Exists(evidence)) continue;
+                if (new System.IO.FileInfo(evidence).Length > 2 * 1024 * 1024) continue;
+                using var es = zip.CreateEntry("diag/" + name).Open();
+                using var src = System.IO.File.OpenRead(evidence);
+                src.CopyTo(es);
+                written.Add("diag/" + name);
+            }
+            catch { /* 单个文件失败不影响整包 */ }
+        }
+
         return written;
     }
 
