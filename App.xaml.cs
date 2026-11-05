@@ -282,6 +282,28 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        /* --fineguard <pid> <lines>：细腻模式的守护进程。
+         * 等主进程退出（正常或被杀）后把系统行数写回去，然后自己结束。
+         * 必须**在单实例检查之前**处理：它不能弹窗口、不能抢互斥量。 */
+        var guardIndex = Array.FindIndex(e.Args, a => a.Equals("--fineguard", StringComparison.OrdinalIgnoreCase));
+        if (guardIndex >= 0 && e.Args.Length > guardIndex + 2
+            && int.TryParse(e.Args[guardIndex + 1], out var guardPid)
+            && int.TryParse(e.Args[guardIndex + 2], out var guardLines))
+        {
+            try
+            {
+                SystemWheelLines.RestoreLines(guardLines);
+                using var main = System.Diagnostics.Process.GetProcessById(guardPid);
+                main.WaitForExit();          // 主进程活着就一直等（不占 CPU）
+            }
+            catch { /* 进程已经没了：直接还原 */ }
+
+            SystemWheelLines.RestoreLines(guardLines);
+            Shutdown(0);
+            Environment.Exit(0);
+            return;
+        }
+
         if (e.Args.Any(a => a.Equals("--safe", StringComparison.OrdinalIgnoreCase)))
         {
             SafeMode = true;

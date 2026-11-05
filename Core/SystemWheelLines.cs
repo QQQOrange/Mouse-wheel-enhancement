@@ -147,6 +147,55 @@ public static class SystemWheelLines
     public static bool HasFineBackup() => File.Exists(FineBackupPath);
 
     /// <summary>
+    /// 退出时要把系统行数还原成几行。<c>0</c> = 用进入细腻模式前记录的原值（默认）。
+    ///
+    /// <para>
+    /// 用户可能在系统设置里说过"滚轮一次三格"，但很多人不知道自己设的是几 ——
+    /// 所以允许显式指定一个固定值（见设置里的「退出时还原为」）。
+    /// </para>
+    /// </summary>
+    public static int RestoreTarget { get; set; }
+
+    /// <summary>直接把系统行数写成指定值（1~10 之外忽略）。</summary>
+    public static void RestoreLines(int lines)
+    {
+        if (lines is < 1 or > 10) return;
+        try { Native.SetWheelScrollLines(lines); }
+        catch (Exception ex) { Log.Warn("还原系统行数失败：" + ex.Message); }
+    }
+
+    /// <summary>
+    /// 启动一个**独立的守护进程**，等主进程退出后把行数还回去。
+    ///
+    /// <para>
+    /// 这是"强制结束 / 崩溃 / 关机"这些场景的唯一可靠兜底：
+    /// 主进程被 Kill 时 ProcessExit 不会触发，RunOnce 要等到下次登录 ——
+    /// 中间这段时间系统会一直停在 1 行。守护进程是独立进程，主进程怎么死都不影响它。
+    /// </para>
+    /// </summary>
+    public static void SpawnGuard(int lines)
+    {
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe)) return;
+
+            var psi = new System.Diagnostics.ProcessStartInfo(exe,
+                $"--fineguard {Environment.ProcessId} {lines}")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("细腻模式守护进程启动失败（仍靠 RunOnce 兜底）：" + ex.Message);
+        }
+    }
+
+    /// <summary>
     /// 进入细腻模式。
     /// </summary>
     /// <returns>
@@ -175,6 +224,10 @@ public static class SystemWheelLines
             Log.Warn("细腻模式写入备份失败，已放弃启用：" + ex.Message);
             return 0;
         }
+
+        /* 先起守护：主进程无论怎么死（Kill/崩溃/关机），它负责把行数还回去。
+         * 放在写入之前也行，但写在之后更符合"已经开始改了"的语义。 */
+        SpawnGuard(RestoreTarget > 0 ? RestoreTarget : current);
 
         if (!Native.SetWheelScrollLines(FineLines))
         {
@@ -245,7 +298,8 @@ public static class SystemWheelLines
             var now = Native.GetWheelScrollLines();
             if (now == FineLines)
             {
-                if (Native.SetWheelScrollLines(original))
+                var target = RestoreTarget > 0 ? RestoreTarget : original;
+            if (Native.SetWheelScrollLines(target))
                 {
                     wrote = true;
                     Log.Info($"细腻模式已关闭：系统滚动行数还原为 {original}");

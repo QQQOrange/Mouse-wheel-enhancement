@@ -330,6 +330,12 @@ public sealed class AppBehaviorConfig
     public bool RunAtLogin { get; set; } = false;
 
     /// <summary>
+    /// 细腻模式退出时把系统"每次滚动几行"还原成几行。<c>0</c> = 用进入前记录的原值（推荐）。
+    /// 用户明确知道自己要几行时，可以在这里写死（1~10）。
+    /// </summary>
+    public int FineRestoreLines { get; set; }
+
+    /// <summary>
     /// 细腻模式（v1.8.17，实验）：运行期间把系统「每次滚动几行」临时压到 1 行，
     /// 注入侧按原行数补偿距离，退出时按备份还原。
     ///
@@ -594,6 +600,7 @@ public sealed class AppConfig
         // 老式按 zDelta/120 取整的程序也不会把小数部分吃掉。
         Smooth.FramesPerNotch = NearestDivisorOf120(Smooth.FramesPerNotch);
         Smooth.TailTauMs = Whole(Clamp(Smooth.TailTauMs, 5, 200));
+        Behavior.FineRestoreLines = (int)Clamp(Behavior.FineRestoreLines, 0, 10);
         Smooth.MaxBacklogNotches = Whole(Clamp(Smooth.MaxBacklogNotches, 1, 20));
         Smooth.GlideMs = Whole(Clamp(Smooth.GlideMs, 0, 800));
         Smooth.GlideDelayMs = Whole(Clamp(Smooth.GlideDelayMs, 10, 150));

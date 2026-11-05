@@ -125,6 +125,9 @@ internal static class Services
         }
 
         Engine = new WheelEngine();
+        /* 细腻模式退出时还原成几行：0 = 原值，其余用用户指定的固定值。 */
+        SystemWheelLines.RestoreTarget = Store.Config.Behavior.FineRestoreLines;
+
         Engine.Apply(Store.Config);
 
         /* 订阅要放在 Engine 建好之后：这个回调会用到 Engine，
