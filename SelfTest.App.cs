@@ -551,6 +551,21 @@ internal static partial class SelfTest
             u.LatestWeb == "https://github.com/QQQOrange/Mouse-wheel-enhancement/releases/latest", u.LatestWeb);
     }
 
+    private static void TestUpdateChannel()
+    {
+        Section("更新通道");
+
+        var bad = AppConfig.Default();
+        bad.UpdateChannel = "nightly";
+        bad.Normalize();
+        Check("非法更新通道被收敛为 stable", bad.UpdateChannel == "stable", bad.UpdateChannel);
+
+        var beta = AppConfig.Default();
+        beta.UpdateChannel = "beta";
+        beta.Normalize();
+        Check("beta 通道原样保留", beta.UpdateChannel == "beta", beta.UpdateChannel);
+    }
+
     private static void TestConfigRoundTrip()
     {
         Section("配置读写");

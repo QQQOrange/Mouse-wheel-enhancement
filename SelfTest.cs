@@ -45,6 +45,7 @@ internal static partial class SelfTest
             TestTokenSanitize();
             TestFilter();
             TestRepoNormalize();
+            TestUpdateChannel();
             TestConfigRoundTrip();
             TestStableEntry();
             TestLayoutJudgement();

@@ -454,6 +454,278 @@ public partial class App
         return code;
     }
 
+    /* ══════════════ UI 像素基线（--uibase / --uicheck） ══════════════ */
+
+    /// <summary>
+    /// 基线目录 <c>tools/ui-baseline</c>。
+    ///
+    /// <para>
+    /// 优先按当前工作目录找（从仓库根运行 CLI 时就是它）；找不到再从 exe 目录
+    /// 向上找项目文件 —— 直接双击 <c>bin\Release\...</c> 里的 exe 时，当前目录
+    /// 往往是 exe 目录，只认 cwd 会把基线写到 bin 里，下次就"没有基线"了。
+    /// </para>
+    /// </summary>
+    private static string UiBaselineDir()
+    {
+        try
+        {
+            var cwd = Directory.GetCurrentDirectory();
+            if (Directory.Exists(Path.Combine(cwd, "tools")))
+                return Path.Combine(cwd, "tools", "ui-baseline");
+        }
+        catch { }
+
+        try
+        {
+            for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
+            {
+                if (File.Exists(Path.Combine(dir.FullName, "MouseWheelEnhancement.csproj")))
+                    return Path.Combine(dir.FullName, "tools", "ui-baseline");
+                if (Directory.Exists(Path.Combine(dir.FullName, "tools")))
+                    return Path.Combine(dir.FullName, "tools", "ui-baseline");
+            }
+        }
+        catch { }
+
+        return Path.Combine(AppContext.BaseDirectory, "tools", "ui-baseline");
+    }
+
+    /// <summary>
+    /// `--uibase`：把 light/dark 两套、页面 0..7 的截图复制到
+    /// <c>tools/ui-baseline/page{n}-{mode}.png</c>（覆盖旧基线）。
+    /// </summary>
+    private static int CaptureUiBaseline(MainWindow w)
+    {
+        var sb = new StringBuilder();
+        var code = 0;
+        var dir = UiBaselineDir();
+        sb.AppendLine("UI 像素基线生成");
+        sb.AppendLine($"输出目录：{dir}");
+
+        try
+        {
+            Directory.CreateDirectory(dir);
+            foreach (var mode in new[] { Theme.Light, Theme.Dark })
+            {
+                var shotCode = ShotAllPages(w, mode, -1);
+                if (shotCode != 0)
+                {
+                    code = shotCode;
+                    sb.AppendLine($"✗ {mode} 渲染失败（{shotCode}）");
+                }
+
+                for (var tab = 0; tab < 8; tab++)
+                {
+                    var src = Path.Combine(AppPaths.DataDir, $"uishot-{mode}-{tab}.png");
+                    var dst = Path.Combine(dir, $"page{tab}-{mode}.png");
+                    try
+                    {
+                        if (!File.Exists(src))
+                        {
+                            sb.AppendLine($"✗ page{tab}-{mode}.png：没有生成截图");
+                            code = 31;
+                            continue;
+                        }
+                        File.Copy(src, dst, overwrite: true);
+                        sb.AppendLine($"✓ page{tab}-{mode}.png");
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine($"✗ page{tab}-{mode}.png：{ex.Message}");
+                        code = 31;
+                    }
+                }
+            }
+
+            sb.AppendLine(code == 0 ? "完成。" : "完成，但有失败项。");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("uibase 失败", ex);
+            sb.AppendLine("失败：" + ex.Message);
+            code = 31;
+        }
+
+        return WriteCliResult("uibase.txt", sb.ToString(), code);
+    }
+
+    /// <summary>
+    /// `--uicheck`：重新渲染 light/dark × 页面 0..7，与
+    /// <c>tools/ui-baseline</c> 里的基线逐像素比较。尺寸不同或差异像素占比
+    /// 超过 0.3% 判失败，并列出前 5 个 32×32 网格热区。全部通过退出码 0。
+    /// </summary>
+    private static int CheckUiBaseline(MainWindow w)
+    {
+        var sb = new StringBuilder();
+        var dir = UiBaselineDir();
+        sb.AppendLine("UI 像素基线检查");
+        sb.AppendLine($"基线目录：{dir}");
+
+        /* 目录不存在（或存在但一张基线都没有）时不是"回归失败"，而是
+         * "还没建基线"。按需求给 2，让脚本能区分这两种情况。 */
+        var present = 0;
+        if (Directory.Exists(dir))
+        {
+            for (var tab = 0; tab < 8; tab++)
+                foreach (var mode in new[] { Theme.Light, Theme.Dark })
+                    if (File.Exists(Path.Combine(dir, $"page{tab}-{mode}.png"))) present++;
+        }
+        if (present == 0)
+        {
+            sb.AppendLine("没有基线，先跑 --uibase");
+            Log.Warn("uicheck: 没有基线，先跑 --uibase");
+            return WriteCliResult("uicheck.txt", sb.ToString(), 2);
+        }
+
+        var code = 0;
+        var failures = 0;
+        try
+        {
+            foreach (var mode in new[] { Theme.Light, Theme.Dark })
+            {
+                var shotCode = ShotAllPages(w, mode, -1);
+                if (shotCode != 0)
+                {
+                    code = 1;
+                    failures++;
+                    sb.AppendLine($"✗ {mode} 渲染失败（{shotCode}）");
+                }
+
+                for (var tab = 0; tab < 8; tab++)
+                {
+                    var label = $"page{tab}-{mode}.png";
+                    var actual = Path.Combine(AppPaths.DataDir, $"uishot-{mode}-{tab}.png");
+                    var baseline = Path.Combine(dir, label);
+                    if (!File.Exists(baseline))
+                    {
+                        sb.AppendLine($"✗ {label}：基线文件缺失");
+                        code = 1;
+                        failures++;
+                        continue;
+                    }
+                    if (!CompareUiShot(actual, baseline, label, sb))
+                    {
+                        code = 1;
+                        failures++;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("uicheck 失败", ex);
+            sb.AppendLine("失败：" + ex.Message);
+            code = 2;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine(failures == 0 ? "全部通过。" : $"失败 {failures} 页/项。");
+        Log.Info($"uicheck: {(failures == 0 ? "全部通过" : $"失败 {failures} 页/项")}");
+        return WriteCliResult("uicheck.txt", sb.ToString(), code);
+    }
+
+    /// <summary>解码 PNG 成统一的 BGRA32 字节数组，供逐像素比较。</summary>
+    private static (int Width, int Height, byte[] Pixels) DecodePng(string path)
+    {
+        using var fs = File.OpenRead(path);
+        var decoder = new PngBitmapDecoder(fs, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+        BitmapSource frame = decoder.Frames[0];
+        if (frame.Format != PixelFormats.Bgra32)
+        {
+            var converted = new FormatConvertedBitmap();
+            converted.BeginInit();
+            converted.Source = frame;
+            converted.DestinationFormat = PixelFormats.Bgra32;
+            converted.EndInit();
+            frame = converted;
+        }
+
+        var width = frame.PixelWidth;
+        var height = frame.PixelHeight;
+        var stride = width * 4;
+        var pixels = new byte[stride * height];
+        frame.CopyPixels(pixels, stride, 0);
+        return (width, height, pixels);
+    }
+
+    /// <summary>比较一张本次截图和对应基线；失败时写清尺寸/占比/热区。</summary>
+    private static bool CompareUiShot(string actualPath, string baselinePath, string label, StringBuilder sb)
+    {
+        try
+        {
+            if (!File.Exists(actualPath))
+            {
+                sb.AppendLine($"✗ {label}：没有生成本次截图");
+                return false;
+            }
+
+            var a = DecodePng(actualPath);
+            var b = DecodePng(baselinePath);
+            if (a.Width != b.Width || a.Height != b.Height)
+            {
+                sb.AppendLine($"✗ {label}：尺寸不同（本次 {a.Width}×{a.Height}，基线 {b.Width}×{b.Height}）");
+                return false;
+            }
+
+            var width = a.Width;
+            var height = a.Height;
+            var total = (long)width * height;
+            long diff = 0;
+            var cells = new Dictionary<(int X, int Y), long>();
+
+            for (var y = 0; y < height; y++)
+            {
+                var row = y * width * 4;
+                for (var x = 0; x < width; x++)
+                {
+                    var i = row + x * 4;
+                    if (a.Pixels[i] == b.Pixels[i] &&
+                        a.Pixels[i + 1] == b.Pixels[i + 1] &&
+                        a.Pixels[i + 2] == b.Pixels[i + 2] &&
+                        a.Pixels[i + 3] == b.Pixels[i + 3]) continue;
+
+                    diff++;
+                    var key = (x / 32, y / 32);
+                    cells[key] = cells.TryGetValue(key, out var n) ? n + 1 : 1;
+                }
+            }
+
+            var ratio = total == 0 ? 0 : (double)diff / total;
+            if (ratio > 0.003)
+            {
+                sb.AppendLine($"✗ {label}：差异 {diff}/{total} 像素（{ratio:P3}），超过 0.30%");
+                var hot = cells
+                    .OrderByDescending(kv => kv.Value)
+                    .ThenBy(kv => kv.Key.Y)
+                    .ThenBy(kv => kv.Key.X)
+                    .Take(5)
+                    .ToList();
+                if (hot.Count > 0)
+                {
+                    sb.AppendLine("  前 5 个差异热区（32×32 网格）：");
+                    for (var i = 0; i < hot.Count; i++)
+                    {
+                        var (gx, gy) = hot[i].Key;
+                        var x0 = gx * 32;
+                        var y0 = gy * 32;
+                        var x1 = Math.Min(width - 1, x0 + 31);
+                        var y1 = Math.Min(height - 1, y0 + 31);
+                        sb.AppendLine($"  #{i + 1} 网格({gx},{gy}) x={x0}..{x1} y={y0}..{y1}，差异 {hot[i].Value} 像素");
+                    }
+                }
+                return false;
+            }
+
+            sb.AppendLine($"✓ {label}：差异 {diff} 像素（{ratio:P3}）");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine($"✗ {label}：比较失败（{ex.Message}）");
+            return false;
+        }
+    }
+
     private static int ShotUpdatePage(MainWindow w)
     {
         var code = 0;

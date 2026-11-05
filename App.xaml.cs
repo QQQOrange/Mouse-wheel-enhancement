@@ -41,7 +41,7 @@ public partial class App : System.Windows.Application
     {
         "--selftest", "--measure", "--featurecheck", "--taskcheck", "--frametrace",
         "--dialogtest", "--runtimecheck", "--wheeltest", "--scrollsmooth", "--probe",
-        "--osdshot", "--uishot", "--smoke",
+        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke",
     };
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
 
@@ -247,6 +247,38 @@ public partial class App : System.Windows.Application
             shotWin.Show();
             var code = ShotAllPages(shotWin, mode, only);
             shotWin.Close();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* UI 像素基线：`--uibase` 把 light/dark × 页面 0..7 的截图复制到
+         * tools/ui-baseline/page{n}-{mode}.png，作为回归基线。 */
+        if (e.Args.Any(a => a.Equals("--uibase", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var baseWin = new MainWindow();
+            baseWin.Width = 1120;
+            baseWin.Height = 846;
+            baseWin.Show();
+            var code = CaptureUiBaseline(baseWin);
+            baseWin.Close();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* UI 像素回归：`--uicheck` 重新渲染同样 16 张图，与 tools/ui-baseline
+         * 逐像素比较；没有基线时退出码 2。 */
+        if (e.Args.Any(a => a.Equals("--uicheck", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var checkWin = new MainWindow();
+            checkWin.Width = 1120;
+            checkWin.Height = 846;
+            checkWin.Show();
+            var code = CheckUiBaseline(checkWin);
+            checkWin.Close();
             Shutdown(code);
             Environment.Exit(code);
             return;
