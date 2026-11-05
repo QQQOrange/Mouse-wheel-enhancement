@@ -324,7 +324,9 @@ public partial class App : System.Windows.Application
         {
             try
             {
-                SystemWheelLines.RestoreLines(guardLines);
+                /* ⚠ 这里**不能**先还原：主进程此刻正在用细腻模式（系统=1 行）。
+                 * 之前误写成"启动就还原"，会让细腻模式刚开启就被打回去。
+                 * 只等它退出，退出后再还原。 */
                 using var main = System.Diagnostics.Process.GetProcessById(guardPid);
                 main.WaitForExit();          // 主进程活着就一直等（不占 CPU）
             }

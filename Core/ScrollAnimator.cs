@@ -229,7 +229,7 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>排入一次横向滚动（单位制，120 = 一格）。</summary>
     public void PushH(int units)
     {
-        if (units == 0) return;
+        if (units == 0 || !_alive) return;
         _hQueue.Enqueue(units);
         _hThread ??= StartHorizontalThread();
     }
@@ -247,7 +247,9 @@ internal sealed class ScrollAnimator : IDisposable
 
     private void HorizontalLoop()
     {
-        while (_alive)
+        try
+        {
+            while (_alive)
         {
             if (!_hQueue.TryDequeue(out var units))
             {
@@ -273,6 +275,11 @@ internal sealed class ScrollAnimator : IDisposable
                 }
                 if (i < pieces - 1) Thread.Sleep(Math.Max(5, (int)(s.FrameIntervalMs * 2)));
             }
+            }
+        }
+        finally
+        {
+            _hThread = null;      // 线程退出后清空，下一次 Start 能重新拉起
         }
     }
 
@@ -569,6 +576,10 @@ internal sealed class ScrollAnimator : IDisposable
         {
             if (_alive) return;
             _alive = true;
+
+        /* 横向线程跟着主线程一起起停：否则 Stop/Start 之后再 PushH 会因为
+         * _hThread 非空而永远起不来（横向静默失效）。 */
+        _hThread ??= StartHorizontalThread();
             _thread = new Thread(Loop)
             {
                 IsBackground = true,
