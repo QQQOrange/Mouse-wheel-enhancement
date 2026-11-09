@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.IO;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
 
@@ -370,6 +371,12 @@ namespace MouseWheelEnhancement.Launcher
         /// 版本比较是刻意的：如果缓存里的主程序**比启动器自带的还新**（说明它自己更新过），
         /// 就不要再覆盖回去 —— 否则每次启动都会把用户刚更新好的版本打回旧版。
         /// </para>
+        /// <para>
+        /// 版本相同还要比 SHA256（v1.9.10）：发布脚本重打同一个版本号时，
+        /// 光看版本号会把**旧的缓存**当成命中，装好的 exe 看起来是 1.9.10、
+        /// 实际却还在跑上一次构建。实测踩过一次：装机自检通过，装的却是旧代码。
+        /// 720KB 的哈希每次启动多花 1~2ms，换来"装的确实是这个包"。
+        /// </para>
         /// </summary>
         private static string EnsureAppExtracted()
         {
@@ -384,14 +391,21 @@ namespace MouseWheelEnhancement.Launcher
             if (File.Exists(exe))
             {
                 var cached = ReadFileVersion(exe);
-                if (cached != null && cached >= myVer)
+                if (cached != null)
                 {
-                    /* 命中缓存就直接用 —— 但顺手把更老的版本目录清掉。
-                     * 这里以前直接 return，于是早年的 app\1.4.0\ 之类会一直留着：
-                     * 用户看不见，却会占着几十 MB，而且"计划任务还指着它"这种
-                     * 排查场景里多一层干扰。删不掉就算了（可能正被运行）。 */
-                    CleanOldVersions(Path.GetDirectoryName(root), myVer.ToString(3));
-                    return exe;
+                    /* 缓存比启动器还新：用户/自动更新放的，保留。 */
+                    if (cached > myVer)
+                    {
+                        CleanOldVersions(Path.GetDirectoryName(root), myVer.ToString(3));
+                        return exe;
+                    }
+
+                    /* 版本相同：必须是同一个二进制才算命中。 */
+                    if (cached == myVer && CachedMatchesPayload(exe, asm))
+                    {
+                        CleanOldVersions(Path.GetDirectoryName(root), myVer.ToString(3));
+                        return exe;
+                    }
                 }
             }
 
@@ -454,6 +468,35 @@ namespace MouseWheelEnhancement.Launcher
                 return Version.TryParse(text, out v) ? v : null;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// 缓存里的 exe 和内嵌资源是不是同一个二进制（SHA256）。
+        /// 任何一步读不到都返回 false —— 宁可重新释放，也不要继续用可疑的缓存。
+        /// </summary>
+        private static bool CachedMatchesPayload(string cachedExe, Assembly asm)
+        {
+            try
+            {
+                string cachedHash;
+                using (var fs = new FileStream(cachedExe, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var sha = SHA256.Create())
+                    cachedHash = BitConverter.ToString(sha.ComputeHash(fs));
+
+                string payloadHash;
+                using (var src = asm.GetManifestResourceStream(AppExeName))
+                {
+                    if (src == null) return false;
+                    using (var sha = SHA256.Create())
+                        payloadHash = BitConverter.ToString(sha.ComputeHash(src));
+                }
+
+                return string.Equals(cachedHash, payloadHash, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>清掉缓存里旧版本的目录（正在使用的删不掉，忽略即可）。</summary>
