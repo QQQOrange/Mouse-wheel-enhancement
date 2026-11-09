@@ -34,6 +34,8 @@ internal static partial class SelfTest
             TestBurstGuard();
             TestScrollSemantics();
             TestPrecisionInput();
+            TestInputClassifier();
+            TestTrackpadProfile();
             TestReversal();
             TestRounding();
             TestFrameSpreading();

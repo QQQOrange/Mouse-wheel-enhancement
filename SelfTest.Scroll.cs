@@ -234,17 +234,26 @@ internal static partial class SelfTest
         Check("WinForms 窗口算「按事件滚动」",
             ScrollSemantics.IsPerEventScroll("WindowsForms10.Window.8.app.0.141b42a_r7_ad1"));
 
-        /* 自带平滑动画的框架（v1.8.32）：对它们必须"只发一个事件"。 */
-        Check("Chromium / Electron 认作自带平滑",
-            ScrollSemantics.SelfAnimates("Chrome_WidgetWin_1"));
+        /* 浏览器/Electron/Firefox（v1.9.10 重新归类）：
+         * 实测它们对合成滚轮事件是**立即位移**，不会自己摊帧。
+         * 所以必须归到「按像素比例」，由动画器按帧发亚格 delta ——
+         * 以前当"自带平滑"只发一个大事件，一格就是一次 120~1800px 的硬跳。 */
+        Check("Chromium / Electron 归「按像素比例」",
+            ScrollSemantics.IsProportionalScroll("Chrome_WidgetWin_1"));
         Check("Chromium 的 0 号窗口也认",
-            ScrollSemantics.SelfAnimates("Chrome_WidgetWin_0"));
-        Check("Firefox 认作自带平滑",
-            ScrollSemantics.SelfAnimates("MozillaWindowClass"));
-        Check("WPF 不算自带平滑（它是按事件）",
-            !ScrollSemantics.SelfAnimates("HwndWrapper[App;;1234]"));
-        Check("普通 Win32 窗口不算自带平滑",
-            !ScrollSemantics.SelfAnimates("Notepad"));
+            ScrollSemantics.IsProportionalScroll("Chrome_WidgetWin_0"));
+        Check("Firefox 归「按像素比例」",
+            ScrollSemantics.IsProportionalScroll("MozillaWindowClass"));
+        Check("WPF 不是按像素（它是按事件）",
+            !ScrollSemantics.IsProportionalScroll("HwndWrapper[App;;1234]"));
+        Check("普通 Win32 窗口按像素",
+            ScrollSemantics.IsProportionalScroll("Notepad"));
+        /* 浏览器和 WPF 一样读系统行数（Chrome 的 3 行 ≈ 120px 就是这么来的），
+         * 所以细腻模式要把行数补偿乘回去。 */
+        Check("Chromium 读系统行数（细腻模式补偿）",
+            !ScrollSemantics.IgnoresSystemLines("Chrome_WidgetWin_1"));
+        Check("Firefox 读系统行数",
+            !ScrollSemantics.IgnoresSystemLines("MozillaWindowClass"));
         /* v1.9.0：语义表驱动 —— 表里每一条都必须自洽（分类 + 是否补偿系统行数）。 */
         var ruleCount = 0;
         foreach (var (prefix, kind, ignoreLines) in ScrollSemantics.AllRules())
@@ -262,7 +271,7 @@ internal static partial class SelfTest
         Check("语义表已覆盖主要框架（Qt/PP 走专用判定，不在表内）", ruleCount >= 6, ruleCount.ToString());
 
         Check("两个语义互斥（不会同时成立）",
-            !(ScrollSemantics.SelfAnimates("Chrome_WidgetWin_1")
+            !(ScrollSemantics.IsProportionalScroll("Chrome_WidgetWin_1")
               && ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1")));
 
         Check("Chrome / Electron 不算（按像素比例）",
@@ -468,8 +477,130 @@ internal static partial class SelfTest
         Check("打开开关后高精度输入也能增强", d.Boosted, $"mult={d.Multiplier:0.00}");
     }
 
-    private static void TestReversal()
+    /// <summary>
+    /// 触控板/自由滚轮的高频流判定。这条判据决定"要不要接管这条流"，
+    /// 错了就会把触控板原生手感拆碎，或者漏掉真正的快滚。
+    /// </summary>
+    private static void TestInputClassifier()
     {
+        Section("触控板输入流分类");
+
+        Check("非整格 delta（15/30/40）立刻判为高精度",
+            WheelInputClassifier.LooksPrecision(15)
+            && WheelInputClassifier.LooksPrecision(30)
+            && WheelInputClassifier.LooksPrecision(40));
+        Check("整格 120 不因为大小被误判",
+            !WheelInputClassifier.LooksPrecision(120));
+        Check("多格 240 也不算高精度",
+            !WheelInputClassifier.LooksPrecision(240));
+        Check("高频间隔阈值：10ms 是、50ms 不是",
+            WheelInputClassifier.LooksHighRate(10) && !WheelInputClassifier.LooksHighRate(50));
+
+        var c = new WheelInputClassifier();
+        var p1 = c.Observe(120, 1000);
+        Check("普通滚轮第一格不算高精度", !p1.IsPrecision && !p1.HighRate);
+        var p2 = c.Observe(120, 1012);
+        Check("只有一个短间隔时还不急着判（防双击）", !p2.IsPrecision);
+        var p3 = c.Observe(120, 1024);
+        Check("连续两个短间隔后判为触控板流", p3.IsPrecision && p3.HighRate,
+            $"precision={p3.IsPrecision} highRate={p3.HighRate}");
+        var p4 = c.Observe(120, 1100);
+        Check("保持窗口内继续原样放行", p4.IsPrecision);
+
+        var p5 = c.Observe(120, 1400);
+        Check("超过保持窗口后回到普通判定", !p5.IsPrecision);
+
+        c.Reset();
+        var slowAllNative = true;
+        for (var i = 0; i < 6; i++)
+        {
+            var p = c.Observe(120, 5000 + i * 100);
+            if (p.IsPrecision) slowAllNative = false;
+        }
+        Check("每 100ms 一格的普通滚轮永不被当成触控板", slowAllNative);
+
+        c.Reset();
+        var tiny = c.Observe(15, 9000);
+        Check("单个 15 单位事件也按高精度放行", tiny.IsPrecision);
+
+        c.Reset();
+        WheelInputProfile last = default;
+        for (var i = 0; i < 8; i++)
+            last = c.Observe(120, 12000 + i * 10);
+        Check("高频流估算出的速率接近 100 格/秒", Math.Abs(last.NotchesPerSec - 100) < 15,
+            $"{last.NotchesPerSec:0.0} 格/秒");
+    }
+
+    /// <summary>
+    /// 单格滚动在 160Hz 上的真实形状：必须像触控板一样"90~110ms 内连续推进"，
+    /// 而不是旧「触控板」预设的 40ms 冲完（首帧就能到十几像素）。
+    /// </summary>
+    private static void TestTrackpadProfile()
+    {
+        Section("触控板级单格曲线");
+
+        var slow = SimulatePixelFollow(120, 160, 45, 30, out var sent45);
+        var fast = SimulatePixelFollow(120, 160, 16, 30, out var sent16);
+
+        Check("τ=45 单格总量不差", sent45 is >= 119 and <= 120, $"发出 {sent45}");
+        Check("τ=45 单格用时 80~130ms（触控板一拍）",
+            slow.Count > 0 && slow[^1].AtMs is >= 80 and <= 130,
+            slow.Count == 0 ? "没有帧" : $"末帧 {slow[^1].AtMs:0.0}ms / {slow.Count} 帧");
+        Check("τ=45 首帧不超过 8 单位（起步不窜）",
+            slow.Count > 0 && slow[0].Units <= 8,
+            slow.Count == 0 ? "没有帧" : $"首帧 {slow[0].Units}");
+        Check("τ=45 单帧不超过 18 单位（160Hz 下不跳段）",
+            slow.Count > 0 && slow.Max(f => f.Units) <= 18,
+            slow.Count == 0 ? "没有帧" : $"最大 {slow.Max(f => f.Units)}");
+        Check("τ=45 明显比旧 τ=16 慢（≥1.6 倍时长）",
+            fast.Count == 0 || slow[^1].AtMs >= fast[^1].AtMs * 1.6,
+            $"45→{(slow.Count == 0 ? 0 : slow[^1].AtMs):0}ms / 16→{(fast.Count == 0 ? 0 : fast[^1].AtMs):0}ms");
+
+        /* 整格模式（WPF/Qt）的节奏：第一档立即发，之后每帧最多一档。 */
+        Check("整格第一档立即发（首行不等待曲线）",
+            ScrollAnimator.WholeNotchFirstImmediate(0, 120));
+        Check("整格后续档不能绕过节奏",
+            !ScrollAnimator.WholeNotchFirstImmediate(1, 120));
+        Check("整格按 160Hz 帧间隔排档（6.25ms）",
+            ScrollAnimator.WholeNotchDue(120, 6.3, 120, 6.25));
+        Check("整格不会在帧内提前发",
+            !ScrollAnimator.WholeNotchDue(120, 6.0, 120, 6.25));
+    }
+
+    /// <summary>复刻真实 Loop 的"跟手 τ + 两级速度低通 + 零头累积"（不含滑行）。</summary>
+    private static List<SimFrame> SimulatePixelFollow(double pending, double fps, double tau,
+        int upf, out int sent)
+    {
+        const double VelTau = 14.0;
+        var dt = 1000.0 / fps;
+        var p = pending;
+        var carry = 0.0;
+        var sw = 0.0;
+        var sw2 = 0.0;
+        var t = 0.0;
+        var fr = new List<SimFrame>();
+        var guard = 0;
+
+        while (p >= 1 && guard++ < 1000)
+        {
+            t += dt;
+            var want = ScrollAnimator.FrameAmount(p, dt, tau, upf, true);
+            var k = 1.0 - Math.Exp(-dt / VelTau);
+            sw += (want - sw) * k;
+            sw2 += (sw - sw2) * k;
+            var e = ScrollAnimator.Quantize(sw2, carry, out carry);
+            if (e > p) e = (int)p;
+            if (e <= 0) continue;
+            p -= e;
+            fr.Add(new SimFrame(t, e));
+        }
+
+        // 收尾剩余 <1 单位的零头（真实循环直接丢弃；这里允许 119/120）。
+        sent = (int)Math.Round(pending - p);
+        return fr;
+    }
+
+    private static void TestReversal()    {
         Section("反向纠正");
         var cfg = AppConfig.Default().Boost;
         var t = new WheelVelocityTracker();
@@ -694,7 +825,7 @@ internal static partial class SelfTest
         c.Smooth.GlideMs = 9999;
         c.Smooth.GlideDelayMs = 1;
         c.Normalize();
-        Check("越界的滑行参数会被夹回", c.Smooth.GlideMs == 800 && c.Smooth.TailTauMs >= 5,
+        Check("越界的滑行参数会被夹回", c.Smooth.GlideMs == 600 && c.Smooth.TailTauMs >= 30,
             $"{c.Smooth.GlideMs} / {c.Smooth.TailTauMs}");
     }
 

@@ -230,10 +230,11 @@ internal static class FeatureCheck
 
             var units = new List<int>();
             var stamps = new List<long>();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             var anim = engine.Animator;
             anim.FrameSink = (u, _, _) =>
             {
-                lock (units) { units.Add(u); stamps.Add(Environment.TickCount64); }
+                lock (units) { units.Add(u); stamps.Add(clock.ElapsedTicks); }
             };
 
             anim.Start();
@@ -246,14 +247,16 @@ internal static class FeatureCheck
             Thread.Sleep(40);
 
             int count, total;
-            long minGap;
+            double minGap;
             lock (units)
             {
                 count = units.Count;
                 total = units.Sum();
-                minGap = long.MaxValue;
-                for (var i = 1; i < stamps.Count; i++) minGap = Math.Min(minGap, stamps[i] - stamps[i - 1]);
-                if (stamps.Count > 0) minGap = Math.Min(minGap, long.MaxValue);
+                minGap = double.MaxValue;
+                for (var i = 1; i < stamps.Count; i++)
+                    minGap = Math.Min(minGap,
+                        (stamps[i] - stamps[i - 1]) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+                if (stamps.Count == 0) minGap = 0;
             }
 
             var allWhole = true;
@@ -263,7 +266,10 @@ internal static class FeatureCheck
             bad += Line(sb, count == 3, "3 档 → 正好 3 帧", $"{count} 帧");
             bad += Line(sb, total == 360, "总位移 = 360（一单位不差）", $"{total} 单位");
             bad += Line(sb, allWhole, "每帧都是整档（120 的倍数）", allWhole ? "是" : "出现了亚格 delta");
-            bad += Line(sb, minGap >= 8, "两档之间至少隔 8ms（不是一帧糊完）", $"{minGap} ms");
+            /* 160Hz 下帧间隔 6.25ms；用 Stopwatch 才能测出这个量级。要求 ≥4ms
+             * 就是"没有三档糊在同一帧里"，不再拿旧 12ms 节奏当标准。 */
+            bad += Line(sb, minGap >= 4, "两档之间至少隔 4ms（不是一帧糊完）",
+                $"{minGap:0.0} ms");
         }
         catch (Exception ex)
         {

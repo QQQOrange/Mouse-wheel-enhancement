@@ -380,6 +380,7 @@ public partial class MainWindow
     {
         if (_loading) return;
         Services.Config.Smooth.GlideMs = (int)Math.Round(e.NewValue);
+        UpdateCurveSummary();
         Commit();
     }
 
@@ -387,7 +388,16 @@ public partial class MainWindow
     {
         if (_loading) return;
         Services.Config.Smooth.TailTauMs = Math.Round(e.NewValue);
+        UpdateCurveSummary();
         Commit();
+    }
+
+    /// <summary>「手感曲线」卡片下面那行当前值。让用户点完预设/拖完滑块能立刻看到生效值。</summary>
+    private void UpdateCurveSummary()
+    {
+        if (CurveSummary == null || TauSlider == null || GlideSlider == null) return;
+        var glide = GlideSlider.Value <= 0 ? "关闭" : $"{GlideSlider.Value:0} ms";
+        CurveSummary.Text = $"当前：跟手 {TauSlider.Value:0} ms · 惯性 {glide}";
     }
 
     private void Backlog_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)

@@ -314,6 +314,7 @@ public partial class MainWindow : Window
             TauSlider.Value = c.Smooth.TailTauMs;
             GlideSlider.Value = c.Smooth.GlideMs;
             BacklogSlider.Value = c.Smooth.MaxBacklogNotches;
+            UpdateCurveSummary();
 
             ModeBlack.IsChecked = c.Filter.Mode == FilterMode.Blacklist;
             ModeWhite.IsChecked = c.Filter.Mode == FilterMode.Whitelist;
@@ -842,21 +843,24 @@ public partial class MainWindow : Window
 
         var (tau, glide) = key switch
         {
-            "crisp" => (20.0, 120.0),
-            "long" => (45.0, 400.0),
-            "trackpad" => (16.0, 600.0),
-            _ => (30.0, 300.0),
+            "crisp" => (30.0, 100.0),
+            "long" => (60.0, 450.0),
+            /* 实测触控板手势：120 单位 ≈ 100ms 的连续推进，约 8px/帧（160Hz）。
+             * τ=45ms 配合速度域二阶低通，单格正好落在 90~110ms；16ms 会在
+             * 40~50ms 内冲完，首帧跳到半格，是"和触控板相去甚远"的主因。 */
+            "trackpad" => (45.0, 300.0),
+            _ => (40.0, 320.0),
         };
 
         if (key == "trackpad-plus")
         {
-            /* 一步到位：手感参数 + 细腻模式。
+            /* 一步到位：实测触控板曲线 + 细腻模式。
              * 细腻模式会改系统设置，所以走的是用户已经点过的那条路（FineModeSwitch 的 Checked 事件），
              * 包括它的确认弹窗和还原机制 —— 这里不重复实现。 */
-            TauSlider.Value = 16;
-            GlideSlider.Value = 600;
+            TauSlider.Value = 45;
+            GlideSlider.Value = 300;
             if (FineModeSwitch.IsChecked != true) FineModeSwitch.IsChecked = true;
-            SetFooterHint("已应用「触控板级」：16ms 跟手 + 600ms 惯性 + 细腻模式");
+            SetFooterHint("已应用「触控板级」：45ms 跟手 + 300ms 惯性 + 细腻模式");
             return;
         }
 

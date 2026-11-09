@@ -198,7 +198,7 @@ namespace MouseWheelEnhancement.Launcher
         {
             "--selftest", "--frametrace", "--smoke", "--measure",
             "--taskcheck", "--checkupdate", "--apply-startup",
-            "--featurecheck", "--wheeltest", "--scrollsmooth",
+            "--featurecheck", "--wheeltest", "--scrollsmooth", "--wheelcapture",
         };
 
         private static bool IsSelfTerminating(string[] args)

@@ -41,7 +41,7 @@ public partial class App : System.Windows.Application
     {
         "--selftest", "--measure", "--featurecheck", "--taskcheck", "--frametrace",
         "--dialogtest", "--runtimecheck", "--wheeltest", "--scrollsmooth", "--probe",
-        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke",
+        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke", "--wheelcapture",
     };
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
 
@@ -108,6 +108,16 @@ public partial class App : System.Windows.Application
         if (e.Args.Any(a => a.Equals("--selftest", StringComparison.OrdinalIgnoreCase)))
         {
             var code = SelfTest.Run();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* 真实滚轮/触控板输入采集：只读，不装引擎、不改设置。
+         * 放在所有模式之前，已有实例在跑也能用。 */
+        if (e.Args.Any(a => a.StartsWith("--wheelcapture", StringComparison.OrdinalIgnoreCase)))
+        {
+            var code = WheelCaptureDiagnostic.Run(e.Args);
             Shutdown(code);
             Environment.Exit(code);
             return;

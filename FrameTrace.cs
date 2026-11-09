@@ -23,11 +23,10 @@ namespace MouseWheelEnhancement;
 /// </para>
 ///
 /// <para>
-/// 断言（任一条不过 → 退出码非 0）：① 首帧不超过 8 单位；② 总量守恒；
-/// ③ 单帧不超过 <c>UnitsPerFrame × 4</c>；④ 末尾不回升（曲线单调收尾）；
-/// ④b 末帧间隔 ≤ 70 ms（最后一帧不拖）；④c 落地段 ≤ 150 ms（收尾不拖）；
-/// ④d 中段步长起伏 ≤ 3.5×（不一顿一顿）；⑤ 能停下来（不残留积压）；
-/// ⑥ 末 6 帧平均速度 ≤ 72 单位/秒。
+/// 断言（任一条不过 → 退出码非 0）：① 首帧不超过 30 单位；② 总量守恒；
+/// ③ 单帧不超过 <c>min(UnitsPerFrame×2, 180)</c>；④ 末尾不回升；
+/// ④b 末帧间隔 ≤ 70 ms；④c 落地段 ≤ 预算；④d 中段步长起伏 ≤ 3.5×；
+/// ⑤ 能停下来；⑥ 单格滚动用时 80~160 ms（触控板一拍）；⑦ 末段 τ 不骤变。
 /// </para>
 /// </summary>
 internal static class FrameTrace
@@ -52,33 +51,31 @@ internal static class FrameTrace
     private const double MaxFirstDtMs = 20.0;
 
     /// <summary>
-    /// 末 6 个发帧的平均速度上限（单位/秒）—— 只作粗兜底。
+    /// 末 6 个发帧的平均速度上限（单位/秒）—— 只作**极粗**的兜底。
     ///
     /// <para>
-    /// **v1.8.11 起口径变了。** 以前这一条是"结尾砸停"的主判据（72 单位/秒），
-    /// 前提是收尾会一路爬到 25~35 单位/秒才停。但现在尾段一旦算出来
-    /// "下一跳会慢到 >12ms"就直接收尾（见 <see cref="ScrollAnimator.TailGapMs"/>），
-    /// 末尾速度自然落在 80~120 单位/秒 —— 那**不是砸停**，因为每一步只有 1 单位
-    /// （0.8 px），肉眼看到的位移是亚像素级的。
-    /// </para>
-    /// <para>
-    /// 真正该守的不变式换成了 <see cref="MaxTailStepUnits"/>：末段单步必须足够小。
-    /// 这里只留 160 单位/秒（1.3 格/秒）作粗兜底，防止"整格整格地砸下来"。
+    /// v1.9.10 起单格不再有"爬到 1 单位/帧"的长尾：τ40 的曲线在约 90ms 内
+    /// 一口气推进完，末段速度自然在 1000~5000 单位/秒。这不是砸停 ——
+    /// 触控板手势本身就是 100ms 走完 120px。真正该守的是"末段不回升"和
+    /// 视觉上的 <c>--scrollsmooth</c>。这里只留 8000 单位/秒兜"整格整格猛掉"。
     /// </para>
     /// </summary>
-    private const double MaxTailRateUnits = 320.0;
+    private const double MaxTailRateUnits = 8000.0;
 
     /// <summary>
-    /// 末 6 个发帧的**最大单步**（单位）。
+    /// 末 3 个发帧的最大单步（单位）。
     ///
     /// <para>
-    /// 2 单位 = 0.017 格 ≈ 1.6 px。收尾阶段只要每步都不超过它，
-    /// "最后一帧"就不可能是肉眼可见的一跳 —— 这才是"不砸停"的本质，
-    /// 而不是"末段速度必须很慢"（慢到 25 单位/秒的爬行会被读作"已经停了"，
-    /// 反而产生"停住之后又挪了一下"）。
+    /// 60 = 半格。触控板的 120px 手势在 160Hz 上是 8px/帧；这里允许到半格，
+    /// 拦的是"最后一帧突然跨一整格以上"。旧值 2 是给"长尾爬行"模型用的，
+    /// 新的有限时长曲线本来就会以 8~35 单位收尾。
     /// </para>
     /// </summary>
-    private const int MaxTailStepUnits = 2;
+    private const int MaxTailStepUnits = 60;
+
+    /// <summary>单格滚动（1 个 notch）的目标时长窗口（毫秒）。触控板实测约 100ms。</summary>
+    private const double SingleNotchMinMs = 80.0;
+    private const double SingleNotchMaxMs = 160.0;
 
     /// <summary>
     /// 相邻两次发送之间的最大间隔（毫秒）。
@@ -155,7 +152,7 @@ internal static class FrameTrace
             sb.AppendLine(
                 $"　　　滑行 {s.GlideMs:0} ms / 松手判定 {s.GlideDelayMs:0} ms" +
                 $"　积压上限 {s.MaxBacklogUnits:0} 单位　平滑 {(s.SmoothEnabled ? "开" : "关")}");
-            sb.AppendLine($"　　　单帧上限 {s.UnitsPerFrame * 4} 单位（单帧量 × 4）");
+            sb.AppendLine($"　　　单帧上限 {Math.Min(s.UnitsPerFrame * 2, 180)} 单位（单帧量×2，绝对上限 180）");
             if (jitterMs > 0) sb.AppendLine($"　　　⚠ 模拟慢帧：每帧额外 {jitterMs:0} ms");
             sb.AppendLine();
 
@@ -233,7 +230,7 @@ internal static class FrameTrace
             Math.Abs(lost) <= MaxTailDrop, $"差 {lost:+#;-#;0} 单位，超过允许的 {MaxTailDrop}");
 
         /* ③ 单帧上限。连甩时靠它保证"一帧不会跨大半格"。 */
-        var cap = s.UnitsPerFrame * 4;
+        var cap = Math.Max(1.0, Math.Min(s.UnitsPerFrame * 2.0, 180.0));
         var maxFrame = frames.Max(f => Math.Abs(f.Units));
         fail += Check(sb, $"单帧不超过 {cap} 单位（实测 {maxFrame}）", maxFrame <= cap,
             $"最大单帧 {maxFrame} 单位");
@@ -311,6 +308,16 @@ internal static class FrameTrace
         /* ⑤ 收得住：不该留下尾巴一直慢慢爬。 */
         fail += Check(sb, $"能停下来（{drainMs:0} ms 内发完）", drainMs > 0 && drainMs < 4000,
             $"{drainMs:0} ms 后仍在发");
+
+        /* ⑤b 单格滚动的总时长：触控板实测 120px ≈ 100ms。太快就是"窜一下"，
+         * 太慢就是"发飘"。只在单格场景检查（多格连甩本来就更长）。 */
+        if (Math.Abs(total) == Native.WHEEL_DELTA)
+        {
+            fail += Check(sb,
+                $"单格用时 {drainMs:0} ms（{SingleNotchMinMs:0}~{SingleNotchMaxMs:0} ms，触控板一拍）",
+                drainMs >= SingleNotchMinMs && drainMs <= SingleNotchMaxMs,
+                $"{drainMs:0} ms 落在目标窗口外");
+        }
 
         /* ⑥ **收尾不砸停**：末 6 个发帧之间的平均速度。
          *

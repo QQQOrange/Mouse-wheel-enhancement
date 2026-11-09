@@ -26,6 +26,24 @@ public sealed class WheelEngine : IDisposable
 
     /// <summary>横向（Shift+滚轮）专用的速度跟踪器，见钩子里的横向分支。</summary>
     private readonly WheelVelocityTracker _trackerH = new();
+
+    /// <summary>
+    /// 输入流分类器：区分普通刻度滚轮和触控板/自由滚轮的高频流。
+    /// 只有普通刻度滚轮才接管；高精度流默认原样放行（见 <see cref="WheelInputClassifier"/>）。
+    /// </summary>
+    private readonly WheelInputClassifier _input = new();
+
+    /// <summary>上一次判定时的目标标识（exe|class）。换程序就重置速度/输入状态。</summary>
+    private string _lastTargetKey = "";
+    private long _lastPrecisionLogMs;
+
+    /// <summary>
+    /// 高精度输入的时间基准。**不能用 Environment.TickCount64**：它只有约 15.6ms
+    /// 分辨率，判 60~125Hz 的触控板流会把 8ms 间隔量化成 0 或 16ms，
+    /// 连续短间隔的判定会时灵时不灵。QPC/Stopwatch 的亚毫秒分辨率才够。
+    /// </summary>
+    private readonly System.Diagnostics.Stopwatch _inputClock = System.Diagnostics.Stopwatch.StartNew();
+
     private readonly ScrollAnimator _animator = new();
     private readonly ManualResetEventSlim _hookReady = new(false);
 
@@ -151,9 +169,8 @@ public sealed class WheelEngine : IDisposable
     {
         if (!target.IsKnown) return;
         var key = target.Exe + "|" + target.Class;
-        var semantics = target.IgnoresSystemLines ? "按事件·不读行数"
-            : target.ScrollsOncePerEvent ? "按事件"
-            : target.SelfAnimatesScroll ? "自带平滑"
+        var semantics = target.ScrollsOncePerEvent
+            ? (target.IgnoresSystemLines ? "按事件·不读行数" : "按事件")
             : "按像素";
 
         lock (RecentLock)
@@ -617,6 +634,9 @@ public sealed class WheelEngine : IDisposable
     private bool ForwardRaw(int units)
     {
         if (Volatile.Read(ref _fineScale) <= 1) return false;
+        /* 动画线程不在时**绝不能吞事件**：入队没人发 = 整个滚轮停摆。
+         * 交给调用方原样放行，看门狗会负责把线程拉起来。 */
+        if (!_animator.IsAlive) return false;
         /* 入队，由动画线程真正注入：在钩子回调里 SendInput 会让整机鼠标卡住（见 ScrollAnimator._passthrough）。 */
         _animator.PushPassthrough(units);
         Interlocked.Increment(ref _passed);
@@ -630,6 +650,7 @@ public sealed class WheelEngine : IDisposable
     private bool ForwardWhole(int units)
     {
         if (Volatile.Read(ref _fineScale) <= 1) return false;
+        if (!_animator.IsAlive) return false;
         var notches = Math.Max(1, Math.Abs(units) / Native.WHEEL_DELTA);
         var sign = Math.Sign(units);
         if (sign == 0) return false;
@@ -780,10 +801,34 @@ public sealed class WheelEngine : IDisposable
             var target = _targets.ResolveForWheel(s.NeedsTitle);
             Volatile.Write(ref _lastTargetBox, new TargetBox(target));
 
+            /* 分类器用亚毫秒时钟；速度跟踪器沿用整数毫秒（它的 dt 下限是 8ms，
+             * 整数足够，而且历史断言都按整数写）。 */
+            var nowHighResMs = _inputClock.Elapsed.TotalMilliseconds;
+            var nowMs = (long)nowHighResMs;
+
+            /* 换了一个程序就重置速度/输入状态。
+             *
+             * 以前这些状态是全局的：在 A 程序里快滚到 5×，光标一到 B 程序再滚一格，
+             * 这一格会继承 A 的速度直接顶格，甚至触发甩动补页 —— 用户读作
+             * "有时候一滚就飞、有时候又正常"，完全无法复现。窗口类/进程没变时不重置，
+             * 所以在同一个浏览器里切标签页、同一个应用里换子窗口都不受影响。 */
+            var targetKey = target.Exe + "|" + target.Class;
+            if (!string.Equals(targetKey, _lastTargetKey, StringComparison.Ordinal))
+            {
+                _lastTargetKey = targetKey;
+                _tracker.Reset();
+                _trackerH.Reset();
+                _input.Reset();
+                if (_animator.PendingUnits != 0) _animator.Clear();
+                if (_animator.WholeNotch) _animator.WholeNotch = false;
+            }
+
             /* 自己的窗口是特例：它的滚动由 App.OnPreviewMouseWheelScroll 直接按 delta
              * 换算像素（固定行高），**不经过系统行数**。细腻模式把 delta 乘了 3 倍之后
-             * 它会多滚 3 倍 —— 这里乘回去。 */
-            if (fineScale > 1 && s.IsOwnExe(target.Exe)) delta /= fineScale;
+             * 它会多滚 3 倍 —— 这里乘回去。PPT/WPS 演示一格翻一页、也不读行数，同理。 */
+            if (fineScale > 1 &&
+                (s.IsOwnExe(target.Exe) || target.IgnoresSystemLines))
+                delta /= fineScale;
 
             /* 独占全屏（游戏/全屏视频）：直通，不加速也不摊帧。 */
             if (target.Hwnd != IntPtr.Zero && IsFullscreenForeground(target.Hwnd))
@@ -846,6 +891,42 @@ public sealed class WheelEngine : IDisposable
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
+            /* ── 触控板 / 自由滚轮：默认原样放行 ──
+             *
+             * 高精度设备发的是 60~125Hz 的连续小步（或者 120 但间隔只有十几毫秒）。
+             * 这条流本身就是"真正的触控板手感"，我们再按普通滚轮的"一格一动画"
+             * 去处理，只会把它拆碎、加速、发飘。
+             *
+             * 所以默认**不接管**：连细腻模式的 ×N 都不做（浏览器/触控板按像素走），
+             * 直接把原始事件交还系统。想放大触控板的人可以在设置里打开
+             * 「也增强高精度输入」，那时才会走下面的加速/摊帧路径。 */
+            var profile = _input.Observe(rawDelta, nowHighResMs);
+            if (profile.IsPrecision && !s.EnhancePrecisionInput)
+            {
+                /* 统计口径也要算上：概览页的"已放行"和最近识别程序应包含触控板流。 */
+                Interlocked.Increment(ref _events);
+                TrackRecent(target, false);
+                TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} precision=1" +
+                            $" rate={profile.NotchesPerSec:0.0} → 原样放行";
+
+                /* 只清"模式"不清积压：积压是上一两个普通滚轮格的量，
+                 * 直接丢掉会少滚一截；让动画器把这点尾巴发完即可。 */
+                if (_animator.WholeNotch && _animator.PendingUnits == 0)
+                    _animator.WholeNotch = false;
+
+                var wallNow = Environment.TickCount64;
+                if (wallNow - Interlocked.Read(ref _lastPrecisionLogMs) > 60_000)
+                {
+                    Interlocked.Exchange(ref _lastPrecisionLogMs, wallNow);
+                    Log.Info($"高精度输入：{target.Exe}（{target.Class}）" +
+                             $"约 {profile.NotchesPerSec:0} 格/秒，已原样放行（保留设备原生手感）");
+                }
+
+                if (ForwardRaw(delta)) return (IntPtr)1;
+                Interlocked.Increment(ref _passed);
+                return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+            }
+
             /* ── Shift + 滚轮 = 横向加速（v1.8.0） ──
              *
              * 用**独立的**速度跟踪器：横竖混用同一个会让"先上下滚两下再按住 Shift"
@@ -855,8 +936,7 @@ public sealed class WheelEngine : IDisposable
              * 所以这里发的是"放大后的整段位移"——定位是更快到目标，不是更顺。 */
             if (shiftDown && s.HorizontalBoost)
             {
-                var hNow = Environment.TickCount64;
-                var hd = _trackerH.Sample(rawDelta, hNow,
+                var hd = _trackerH.Sample(rawDelta, nowMs,
                     s.BoostEnabled ? s.BoostView : NoBoostView,
                     s.InvertDirection, s.EnhancePrecisionInput, s.BoostScale);
 
@@ -870,7 +950,8 @@ public sealed class WheelEngine : IDisposable
                 }
 
                 /* 方向：Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右 —— 所以翻号。 */
-                var units = -hd.OutputUnits * fineScale;
+                var units = -hd.OutputUnits *
+                            ((s.IsOwnExe(target.Exe) || target.IgnoresSystemLines) ? 1 : fineScale);
                 /* 交给动画器的横向通道：拆成多个事件摊开发，不在钩子里 SendInput。 */
                 if (units != 0)
                 {
@@ -886,7 +967,6 @@ public sealed class WheelEngine : IDisposable
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
-            var nowMs = Environment.TickCount64;
             var decision = _tracker.Sample(rawDelta, nowMs,
                 s.BoostEnabled ? s.BoostView : NoBoostView,
                 s.InvertDirection, s.EnhancePrecisionInput, s.BoostScale);
@@ -898,7 +978,7 @@ public sealed class WheelEngine : IDisposable
 
             TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} fine={fineScale}" +
                         $" | boosted={decision.Boosted} mult={decision.Multiplier:0.00} out={decision.OutputUnits}" +
-                        $" | whole={(target.ScrollsOncePerEvent ? 1 : 0)} self={(target.SelfAnimatesScroll ? 1 : 0)}" +
+                        $" | whole={(target.ScrollsOncePerEvent ? 1 : 0)}" +
                         $" ignoreLines={(target.IgnoresSystemLines ? 1 : 0)}";
 
             /* ── 动画线程不在了 → 一律原样放行 ──
@@ -940,63 +1020,14 @@ public sealed class WheelEngine : IDisposable
             /* 覆盖优先：同一个 WPF 窗口里，ScrollViewer 认 delta 比例、ListBox 只认事件个数，
              * 从外面分不出来（都是 HwndWrapper）。所以默认按类名走保守的整格，
              * 用户可以在右键菜单里给某个程序切成"按像素"。 */
-            /* ── 自带平滑动画的框架（Chromium / Electron / Firefox）──
+
+            /* 浏览器/Electron/Firefox（Chrome_WidgetWin_ / MozillaWindowClass）现在归到
+             * "按像素比例"：实测它们收到合成滚轮事件是立即位移，并不自己摊帧。
              *
-             * 它们收到一个事件后会自己摊成 150~250ms 的动画。我们若把一格拆成几十个小事件，
-             * 它们就会对每个小事件各起一段动画 —— 动画排队、互相打断，结果比不装还难滚
-             * （用户实测：DeepSeek Harness、Electron 系应用）。
-             *
-             * 所以这里**不拆**：加速了就发一个事件，delta 直接乘以倍率，
-             * 平滑交给它们自己。distance 由 delta 决定，所以总量仍然准确。
-             *
-             * 不做细腻模式补偿：这类框架不看系统行数（Chromium 用自己的每格像素），
-             * 按 1/N 补偿会变成 N 倍过冲。 */
-            if (target.SelfAnimatesScroll && s.ForceWholeNotch != true && !s.IsOwnExe(target.Exe))
-            {
-                if (_animator.WholeNotch) _animator.WholeNotch = false;
-                if (_animator.PendingUnits != 0) _animator.Clear();
-
-                if (!decision.Boosted)
-                {
-                    /* 细腻模式下系统行数是 1：对这类框架**原样放行**会让它只滚 1/N
-                     * （实测：DeepSeek Harness 开着细腻模式时明显变慢）。
-                     * 所以这里也必须把补偿量转发出去 —— delta 此时已经是 × N 的。 */
-                    if (fineScale > 1)
-                    {
-                        _animator.PushPassthrough(delta);
-                        Interlocked.Increment(ref _passed);
-                        return (IntPtr)1;
-                    }
-
-                    Interlocked.Increment(ref _passed);
-                    return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
-                }
-
-                Volatile.Write(ref _lastMultiplier, decision.Multiplier);
-
-                /* 诊断用：把"判定的原始速度 / 细腻倍数 / 倍率"记下来。
-                 * 以后有人报"稍微动一下就加速"，看这一行就知道是速度估高了还是阈值配低了。 */
-                LogOncePerExe(target.Exe, $"加速判定：{target.Exe} 速度 {decision.RatePerSec:0.0} 格/秒" +
-                    $"（阈值 {s.BoostView.FastThresholdPerSec:0}）→ {decision.Multiplier:0.00}×，细腻 ×{fineScale}");
-                /* 这类框架**确实**读系统行数（用户实测：细腻模式下明显变慢），
-                 * 所以加速输出同样要乘回细腻倍数。 */
-                var units = decision.OutputUnits * fineScale;
-                if (units == 0) units = delta;
-                if (units != 0)
-                {
-                    _animator.PushPassthrough(units);
-                    if (!string.Equals(_notchLogged, target.Exe, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _notchLogged = target.Exe;
-                        Log.Info($"原生平滑：{target.Exe}（{target.Class}）" +
-                                 $"倍率 {decision.Multiplier:0.00}× → 单个事件 {units} 单位");
-                    }
-
-                    Interlocked.Increment(ref _boosted);
-                    NotifyBoosted(decision.Multiplier, s);
-                    return (IntPtr)1;
-                }
-            }
+             * 以前这里把一整格（甚至 5× 的 600 单位）作为**一个事件**发过去，
+             * 浏览器就会一步跳 120~1800px —— 这正是用户说的"和触控板相去甚远"。
+             * 现在让它走下面的按比例路径，由动画器按显示器刷新率拆成每帧几像素，
+             * 和真实触控板的事件流同构。 */
 
             var wholeSemantics = s.ForceWholeNotch ?? target.ScrollsOncePerEvent;
             if (wholeSemantics && !s.IsOwnExe(target.Exe))
@@ -1077,10 +1108,20 @@ public sealed class WheelEngine : IDisposable
             Volatile.Write(ref _lastMultiplier, decision.Multiplier);
 
             /* 按比例滚动的框架：算出来多少就发多少，一格 = 120 单位。
-             * 摊帧（每格 4~8 帧）带来的平滑全在这一步。 */
-            var outUnits = decision.OutputUnits * fineScale;
+             * 摊帧（每格 4~8 帧）带来的平滑全在这一步。
+             *
+             * 细腻模式的补偿只对**读系统行数**的目标做：
+             *   · 自己的设置页自己会乘 FineScale（App.ScrollPage），这里再乘就是 9 倍；
+             *   · PPT/WPS 演示一格翻一页，与行数无关，乘了就是 N 倍翻页。 */
+            var needsFineCompensation = !s.IsOwnExe(target.Exe) && !target.IgnoresSystemLines;
+            var outUnits = decision.OutputUnits * (needsFineCompensation ? fineScale : 1);
             var flick = FlickExtraNotches(s, decision);
             if (flick > 0) outUnits += Math.Sign(outUnits) * flick * Native.WHEEL_DELTA;
+
+            if (decision.Boosted)
+                LogOncePerExe(target.Exe, $"按帧摊送：{target.Exe}（{target.Class}）" +
+                    $"倍率 {decision.Multiplier:0.00}× → {outUnits} 单位，" +
+                    $"{s.FrameIntervalMs:0.0}ms/帧（不再整事件甩给浏览器）");
 
             _animator.Push(outUnits, s);
             Interlocked.Increment(ref _boosted);

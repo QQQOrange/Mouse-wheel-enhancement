@@ -237,7 +237,7 @@ internal static partial class SelfTest
         /* ⑨ v1.8.0 新增开关的默认值与 schema */
         var d8 = AppConfig.Default();
         d8.Normalize();
-        Check("schema 已推进到 8", d8.SchemaVersion >= 8, d8.SchemaVersion.ToString());
+        Check("schema 已推进到 9", d8.SchemaVersion >= 9, d8.SchemaVersion.ToString());
         Check("横向加速默认开", d8.Input.HorizontalBoost);
         Check("倍率浮层默认开", d8.Behavior.OsdMultiplier);
         Check("钩子看门狗默认开", d8.Behavior.HookWatchdog);
@@ -344,7 +344,7 @@ internal static partial class SelfTest
         legacy.Normalize();
         Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
         // v1 的配置会一路迁移到当前版本（v2 自排除 + v3 平滑范围 + v4 滑行语义）
-        Check("迁移后 schemaVersion 记为当前版本 8", legacy.SchemaVersion == 8, legacy.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为当前版本 9", legacy.SchemaVersion == 9, legacy.SchemaVersion.ToString());
 
         // 已经是 v2 之后，用户自己打开就不再被覆盖
         var kept = AppConfig.Default();
@@ -363,7 +363,7 @@ internal static partial class SelfTest
         scope2.Normalize();
         Check("v2 老配置的平滑范围被纠正为所有滚动", scope2.Smooth.Scope == SmoothScope.Always,
             scope2.Smooth.Scope.ToString());
-        Check("迁移后 schemaVersion 记为 8", scope2.SchemaVersion == 8, scope2.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为 9", scope2.SchemaVersion == 9, scope2.SchemaVersion.ToString());
 
         // v3 之后用户自己选回「仅加速时」不再被覆盖
         var keptScope = AppConfig.Default();
@@ -381,7 +381,7 @@ internal static partial class SelfTest
         oldGlide.Normalize();
         Check("v3 老配置的滑行时长换算成新默认值（v8 已拉长到 420）", oldGlide.Smooth.GlideMs == 420,
             oldGlide.Smooth.GlideMs.ToString());
-        Check("v4 迁移后 schemaVersion 记为 8", oldGlide.SchemaVersion == 8, oldGlide.SchemaVersion.ToString());
+        Check("v4 迁移后 schemaVersion 记为 9", oldGlide.SchemaVersion == 9, oldGlide.SchemaVersion.ToString());
 
         var glideOff = AppConfig.Default();
         glideOff.SchemaVersion = 3;
@@ -400,7 +400,7 @@ internal static partial class SelfTest
         oldFrames.Normalize();
         Check("v4 老配置的 8 帧/格 不被改动", oldFrames.Smooth.FramesPerNotch == 8,
             oldFrames.Smooth.FramesPerNotch.ToString());
-        Check("v5 迁移后 schemaVersion 记为 8", oldFrames.SchemaVersion == 8,
+        Check("v5 迁移后 schemaVersion 记为 9", oldFrames.SchemaVersion == 9,
             oldFrames.SchemaVersion.ToString());
 
         var oldFrames6 = AppConfig.Default();
@@ -424,6 +424,48 @@ internal static partial class SelfTest
         keptFrames.Normalize();
         Check("v5 之后用户选回 8 帧/格 不再被覆盖", keptFrames.Smooth.FramesPerNotch == 8,
             keptFrames.Smooth.FramesPerNotch.ToString());
+
+        /* ── v8 → v9：用实测触控板曲线重定平滑参数 ──
+         * 旧「触控板」预设 τ=16 / 惯性 400~600 的实际观感是"40ms 冲完再飘 400ms"，
+         * 和触控板相反。升级时把这种预设指纹重映射到 45 / 300。 */
+        var oldTrackpad = AppConfig.Default();
+        oldTrackpad.SchemaVersion = 8;
+        oldTrackpad.Smooth.TailTauMs = 16;
+        oldTrackpad.Smooth.GlideMs = 400;
+        oldTrackpad.Smooth.GlideDelayMs = 30;
+        oldTrackpad.Normalize();
+        Check("旧「触控板」预设 τ 16 → 45", Math.Abs(oldTrackpad.Smooth.TailTauMs - 45) < 0.01,
+            oldTrackpad.Smooth.TailTauMs.ToString());
+        Check("旧「触控板」预设 惯性 400 → 300", oldTrackpad.Smooth.GlideMs == 300,
+            oldTrackpad.Smooth.GlideMs.ToString());
+        Check("停手判定 30 → 60ms", oldTrackpad.Smooth.GlideDelayMs == 60,
+            oldTrackpad.Smooth.GlideDelayMs.ToString());
+
+        var oldDefaultTau = AppConfig.Default();
+        oldDefaultTau.SchemaVersion = 8;
+        oldDefaultTau.Smooth.TailTauMs = 30;
+        oldDefaultTau.Normalize();
+        Check("旧默认 τ 30 → 40", Math.Abs(oldDefaultTau.Smooth.TailTauMs - 40) < 0.01,
+            oldDefaultTau.Smooth.TailTauMs.ToString());
+
+        var keptTau = AppConfig.Default();
+        keptTau.SchemaVersion = 9;
+        keptTau.Smooth.TailTauMs = 50;
+        keptTau.Smooth.GlideMs = 250;
+        keptTau.Smooth.GlideDelayMs = 80;
+        keptTau.Normalize();
+        Check("v9 之后用户自己调的平滑参数不再被覆盖",
+            Math.Abs(keptTau.Smooth.TailTauMs - 50) < 0.01
+            && keptTau.Smooth.GlideMs == 250
+            && keptTau.Smooth.GlideDelayMs == 80,
+            $"{keptTau.Smooth.TailTauMs}/{keptTau.Smooth.GlideMs}/{keptTau.Smooth.GlideDelayMs}");
+
+        var fresh = AppConfig.Default();
+        Check("新默认手感：τ 40 / 惯性 320 / 停手 60",
+            Math.Abs(fresh.Smooth.TailTauMs - 40) < 0.01
+            && fresh.Smooth.GlideMs == 320
+            && fresh.Smooth.GlideDelayMs == 60,
+            $"{fresh.Smooth.TailTauMs}/{fresh.Smooth.GlideMs}/{fresh.Smooth.GlideDelayMs}");
     }
 
     /// <summary>

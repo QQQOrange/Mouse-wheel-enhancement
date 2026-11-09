@@ -107,6 +107,7 @@ internal static class ScrollSmooth
             if (sv == null)
             {
                 sb.AppendLine("失败：帮助页里找不到滚动容器");
+                Finish(sb, 2);
                 return 2;
             }
 
@@ -117,6 +118,7 @@ internal static class ScrollSmooth
             if (!Native.SetCursorPos((int)p.X, (int)p.Y))
             {
                 sb.AppendLine("失败：光标挪不过去（会话可能被锁）");
+                Finish(sb, 3);
                 return 3;
             }
             try { w.Activate(); w.Topmost = true; w.Topmost = false; } catch { }
@@ -144,6 +146,7 @@ internal static class ScrollSmooth
             if (root != myHwnd)
             {
                 sb.AppendLine("失败：光标位置被别的窗口占着（把本程序放到最前面再跑）");
+                Finish(sb, 3);
                 return 3;
             }
 
@@ -170,6 +173,7 @@ internal static class ScrollSmooth
             if (samples.Count < 4)
             {
                 sb.AppendLine("✗ 采样太少（窗口可能被遮挡或没有渲染）");
+                Finish(sb, 4);
                 return 4;
             }
 
@@ -186,6 +190,7 @@ internal static class ScrollSmooth
             if (steps.Count < 4)
             {
                 sb.AppendLine($"✗ 位移步数太少（{steps.Count} 步），测不出来");
+                Finish(sb, 5);
                 return 5;
             }
 
@@ -198,18 +203,25 @@ internal static class ScrollSmooth
             fail += Check(sb, $"有位移（{total:0.#} px）", total > 1, "几乎没有滚动");
             if (fail > 0) { Finish(sb, fail); return fail; }
 
-            /* ①' 总量对不对（v1.8.29）：用**基准单格**折算，而不是用 PixelsPerLine 猜。
+            /* ①' 总量是否"没有重复投递"（v1.8.29 / v1.9.10）。
              *
-             * 之前出现过一次"8 格滚了 1235px（154/格）而不是 705px（88/格）"的异常，
-             * 说明某一步被投递了两次。曲线上看不出这种错，只有对总量才抓得到。 */
+             * 注意这里**不能**拿慢速单格基准去要求快滚 8 格的总量严格相等：
+             * 8 格 @45ms 会触发加速，本来就会多滚。旧断言直接 `基准×8` 比较，
+             * 加速一生效就报"重复投递"，是测试口径错了，不是程序错了。
+             * 现在只验证区间：至少是原生距离，且不超过"满倍率×1.3"的上界
+             * （超过就说明真的重复投递了）。 */
             if (oneNotch > 0)
             {
-                var expected = oneNotch * injections;
-                var drift = Math.Abs(total - expected) / Math.Max(1, expected);
+                var maxMult = Math.Max(1.0, Services.Config.Boost.MaxMultiplier);
+                var nativeTotal = oneNotch * injections;
+                var upper = nativeTotal * maxMult * 1.30;
+                var ok = total >= nativeTotal * 0.75 && total <= upper;
                 fail += Check(sb,
-                    $"总量 {total:0.#} px（基准 {oneNotch:0.#}×{injections} 格 = {expected:0.#}，偏差 {drift:P0} ≤ 25%）",
-                    drift <= 0.25,
-                    $"疑似重复投递：{injections} 格实际滚了 {total:0.#} px");
+                    $"总量 {total:0.#} px（原生基准 {nativeTotal:0.#}，允许上限 {upper:0.#} = 基准×{maxMult:0.#}×1.3）",
+                    ok,
+                    total > upper
+                        ? $"超过满倍率上限，疑似重复投递：{injections} 格滚了 {total:0.#} px"
+                        : $"总量明显偏小：{injections} 格只滚了 {total:0.#} px");
             }
             else
             {

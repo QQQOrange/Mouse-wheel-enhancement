@@ -151,7 +151,7 @@ public sealed class SmoothConfig
     /// <summary>
     /// 指数衰减时间常数（毫秒）。越大尾巴越长、越"绵"。
     /// </summary>
-    public double TailTauMs { get; set; } = 30.0;
+    public double TailTauMs { get; set; } = 40.0;
 
     /// <summary>允许积压多少格。防止连续甩动时积雪越滚越远。</summary>
     public double MaxBacklogNotches { get; set; } = 5.0;
@@ -171,7 +171,7 @@ public sealed class SmoothConfig
     /// </para>
     /// </summary>
     [JsonPropertyName("glideTauMs")]
-    public int GlideMs { get; set; } = 420;
+    public int GlideMs { get; set; } = 320;
 
     /// <summary>
     /// 停止输入多少毫秒算"松手"、可以开始滑行。
@@ -180,7 +180,7 @@ public sealed class SmoothConfig
     /// 太大则松手后要愣一下才开始滑，像卡了一下。30ms 大约是两帧。
     /// </para>
     /// </summary>
-    public int GlideDelayMs { get; set; } = 30;
+    public int GlideDelayMs { get; set; } = 60;
 
     /// <summary>
     /// 反向滚动时给一小段"减速再反向"的过渡（v1.8.0）。
@@ -571,7 +571,36 @@ public sealed class AppConfig
             SchemaVersion = 8;
         }
 
-        SchemaVersion = Math.Max(8, SchemaVersion);
+        /* ── v9 迁移：用真实触控板/浏览器实测重定"平滑"曲线 ──
+         *
+         * 实测（--scrollsmooth + Chromium 手势）：
+         *   · 一个 120 单位的格，在触控板上是 ~100ms 的连续推进；
+         *   · 旧「触控板」预设 τ=16ms 会在 40~50ms 内一口气冲完，首帧就能到
+         *     半格，读作"窜一下"；再配 400~600ms 惯性，就变成"窜完还飘"。
+         *
+         * 所以把旧预设/旧默认值重映射到实测曲线：
+         *   τ 16~20 + 惯性 ≥300  → 45ms + 300ms（真正的触控板手感）
+         *   旧默认 τ=30          → 40ms
+         *   停手判定 <60ms       → 60ms（普通滚轮两格之间就有 50~150ms，30ms 会误判）
+         *
+         * 只动这些"旧预设指纹"，用户自己调的其他值一律保留。 */
+        if (SchemaVersion < 9)
+        {
+            if (Smooth.TailTauMs <= 20 && Smooth.GlideMs >= 300)
+            {
+                Smooth.TailTauMs = 45;
+                Smooth.GlideMs = 300;
+            }
+            else if (Math.Abs(Smooth.TailTauMs - 30) < 0.01)
+            {
+                Smooth.TailTauMs = 40;
+            }
+
+            if (Smooth.GlideDelayMs < 60) Smooth.GlideDelayMs = 60;
+            SchemaVersion = 9;
+        }
+
+        SchemaVersion = Math.Max(9, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
 
         /* 窗口大小/位置：0 表示"没记录"（首次启动），按默认居中。
@@ -608,11 +637,11 @@ public sealed class AppConfig
         // 每格帧数只接受 120 的约数：这样每帧发出去的都是 120 的整数分之几，
         // 老式按 zDelta/120 取整的程序也不会把小数部分吃掉。
         Smooth.FramesPerNotch = NearestDivisorOf120(Smooth.FramesPerNotch);
-        Smooth.TailTauMs = Whole(Clamp(Smooth.TailTauMs, 5, 200));
+        Smooth.TailTauMs = Whole(Clamp(Smooth.TailTauMs, 30, 120));
         Behavior.FineRestoreLines = (int)Clamp(Behavior.FineRestoreLines, 0, 10);
         Smooth.MaxBacklogNotches = Whole(Clamp(Smooth.MaxBacklogNotches, 1, 20));
-        Smooth.GlideMs = Whole(Clamp(Smooth.GlideMs, 0, 800));
-        Smooth.GlideDelayMs = Whole(Clamp(Smooth.GlideDelayMs, 10, 150));
+        Smooth.GlideMs = Whole(Clamp(Smooth.GlideMs, 0, 600));
+        Smooth.GlideDelayMs = Whole(Clamp(Smooth.GlideDelayMs, 20, 150));
 
         if (Filter.Apps == null) Filter.Apps = new();
         Filter.Apps = Filter.Apps
@@ -653,8 +682,8 @@ public sealed class AppConfig
         var mode = (o.ScrollMode ?? "").Trim().ToLowerInvariant();
         o.ScrollMode = mode is "pixel" or "whole" ? mode : null;
 
-        if (o.TauMs is double tau) o.TauMs = Math.Clamp(tau, 5, 120);
-        if (o.GlideMs is int glide) o.GlideMs = Math.Clamp(glide, 0, 800);
+        if (o.TauMs is double tau) o.TauMs = Math.Clamp(tau, 30, 120);
+        if (o.GlideMs is int glide) o.GlideMs = Math.Clamp(glide, 0, 600);
 
         if (!o.MaxMultiplier.HasValue && !o.Smooth.HasValue && o.ScrollMode == null
             && !o.TauMs.HasValue && !o.GlideMs.HasValue) return null;

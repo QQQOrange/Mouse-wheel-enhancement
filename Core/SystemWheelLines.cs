@@ -302,11 +302,11 @@ public static class SystemWheelLines
             if (Native.SetWheelScrollLines(target))
                 {
                     wrote = true;
-                    Log.Info($"细腻模式已关闭：系统滚动行数还原为 {original}");
+                    Log.Info($"细腻模式已关闭：系统滚动行数还原为 {target}");
                 }
                 else
                 {
-                    Log.Warn($"细腻模式还原失败（目标 {original} 行），下次启动/下次登录会再试");
+                    Log.Warn($"细腻模式还原失败（目标 {target} 行），下次启动/下次登录会再试");
                     return false;       // 备份和 RunOnce 都留着，等下次机会
                 }
             }

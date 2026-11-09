@@ -586,7 +586,7 @@
                                     <StackPanel>
                                         <TextBlock Text="细腻模式（实验性）" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
-                                                   Text="运行期间把系统「每次滚动几行」临时改成 1 行，退出时自动还原。量化从 0.5px 降到 0.17px，尾巴能一直顺到 20~30px/s。代价：这期间所有滚动都由本程序转发；少数不读系统行数的程序（部分 Electron/Qt 应用）滚起来会偏快，不合适就关掉。" />
+                                                   Text="运行期间把系统「每次滚动几行」临时改成 1 行，退出时自动还原。适合 WPF / WinForms / Qt 这类按行滚的窗口：每档从 3 行降到 1 行，逐行推进更细。代价：这期间系统行数被你改了；触控板/自由滚轮如果被本程序接管，距离也会按这个倍数变化。不确定就保持关闭。" />
                                     </StackPanel>
                                     <ToggleButton x:Name="FineModeSwitch" Grid.Column="1"
                                                   Style="{StaticResource Switch}" VerticalAlignment="Center"
@@ -632,8 +632,8 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
                                         <TextBlock Text="也增强高精度输入" FontWeight="SemiBold" />
-                                        <TextBlock Style="{StaticResource Caption}"
-                                                   Text="触控板、自由滚轮、部分鼠标的精细档会发出很小的滚动量，本身已经很顺。默认不接管，打开可能导致这类设备滚动过快。" />
+                                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                                   Text="触控板、自由滚轮通常会以 60~125Hz 连续发小步（有时看起来也是整格 120）。默认不接管：这类流本身就是触控板手感，拆帧/加速只会把它弄碎。打开后才会按倍率放大；如果发现触控板变飘或过快，关掉即可。" />
                                     </StackPanel>
                                     <ToggleButton x:Name="PrecisionSwitch" Grid.Column="1"
                                                   Style="{StaticResource Switch}" VerticalAlignment="Center"
@@ -671,24 +671,26 @@
                             <StackPanel>
                                 <TextBlock Text="手感曲线" Style="{StaticResource H2}" />
                                 <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,10"
-                                           Text="不想逐个调滑块就选一个现成的：四档只改「收尾时间常数」和「惯性长度」，其余参数不动。" />
+                                           Text="不想逐个调滑块就选一个现成的：下面几档只改「跟手时间」和「惯性长度」，其余参数不动。" />
                                 <WrapPanel>
                                     <Button Content="干脆" Style="{StaticResource GhostButton}" Tag="crisp"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
-                                            ToolTip="收尾快、惯性短（τ 20ms / 惯性 120ms）" />
+                                            ToolTip="收尾快、惯性短（τ 30ms / 惯性 100ms）" />
                                     <Button Content="顺滑" Style="{StaticResource GhostButton}" Tag="smooth"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
-                                            ToolTip="默认手感（τ 30ms / 惯性 420ms）" />
+                                            ToolTip="默认手感（τ 40ms / 惯性 320ms）" />
                                     <Button Content="触控板" Style="{StaticResource GhostButton}" Tag="trackpad"
                                             Click="CurvePreset_Click"
-                                            ToolTip="低延迟跟手 + 长惯性收尾（τ 16ms / 惯性 600ms），最接近触控板的连续减速" />
+                                            ToolTip="按真实触控板实测重定（τ 45ms / 惯性 300ms）：单格约 100ms 连续推进，慢滚不飘" />
                                     <Button Content="触控板级" Style="{StaticResource GhostButton}" Tag="trackpad-plus"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
-                                            ToolTip="一步到位：低延迟手感 + 打开细腻模式（每档 60px → 20px，量化 0.5px → 0.17px）" />
+                                            ToolTip="触控板曲线 + 细腻模式（每档 60px → 20px），WPF/Qt 里也能逐行推进" />
                                     <Button Content="悠长" Style="{StaticResource GhostButton}" Tag="long"
                                             Click="CurvePreset_Click"
-                                            ToolTip="收得更慢、滑得更远（τ 45ms / 惯性 400ms）" />
+                                            ToolTip="收得更慢、滑得更远（τ 60ms / 惯性 450ms）" />
                                 </WrapPanel>
+                                <TextBlock x:Name="CurveSummary" Style="{StaticResource Caption}"
+                                           Margin="0,10,0,0" Text="当前：跟手 40 ms · 惯性 320 ms" />
                             </StackPanel>
                         </Border>
 
@@ -717,7 +719,7 @@
                                     <StackPanel>
                                         <TextBlock Text="每格滚动格数" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
-                                                   Text="一个滚轮刻度滚几行。这一项直接写进系统设置，和系统面板是同一个值：这里调多少，系统鼠标设置里就变成多少；在系统里改，这里也会跟着变。软件启动、退出时都不会去动它。" />
+                                                   Text="一个滚轮刻度滚几行。这一项直接写进系统设置，和系统面板是同一个值：这里调多少，系统鼠标设置里就变成多少；在系统里改，这里也会跟着变。普通情况下软件启动、退出都不会去动它——只有打开下面的「细腻模式」时，运行期间才会临时改成 1 行，退出/崩溃时还原。" />
                                     </StackPanel>
                                     <TextBlock x:Name="WheelLinesValue" Grid.Column="1" Style="{StaticResource Value}"
                                                Text="3 行" />
@@ -753,7 +755,7 @@
                                         <TextBlock Style="{StaticResource Caption}"
                                                    Text="「所有滚动」是默认：慢慢拨一格也会被拆成几帧滑上去；「仅加速时」则只处理快滚，普通滚动完全交给系统。" />
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                                   Text="注意：WPF / WinForms 写的程序（很多国产工具、自研软件）滚动时只看方向、不看增量，一个消息就滚固定一档。对它们会自动改用「整格」方式，所以那些程序里没有摊帧的平滑感——这是框架限制，不这么做就会一滚一整页。" />
+                                                   Text="注意：WPF / WinForms / Qt 写的程序滚动时只看方向、不看增量，一个消息就滚固定一档。对它们会自动改用「整格」方式：第一档立刻发，之后每帧最多一档，所以不会一滚一整页；但框架的最小粒度就是一格，做不到浏览器那种亚像素推进。" />
                                     </StackPanel>
                                     <Border Grid.Column="1" Style="{StaticResource SegGroup}" VerticalAlignment="Center">
                                         <StackPanel Orientation="Horizontal">
@@ -843,19 +845,19 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
-                                        <TextBlock Text="惯性长度（时间常数）" FontWeight="SemiBold" />
+                                        <TextBlock Text="跟手时间（τ）" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}"
-                                                   Text="越大尾巴越长、越「绵」；越小越干脆利落。30~60 之间最像触控板。" />
+                                                   Text="越小越跟手、越大越绵。按实测触控板节奏，40~60ms 最像：一个普通滚轮格约 100ms 连续推进。" />
                                     </StackPanel>
                                     <TextBlock x:Name="TauValue" Grid.Column="1" Style="{StaticResource Value}"
                                                Text="45 ms" />
                                 </Grid>
                                 <Slider x:Name="TauSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
-                                        Minimum="5" Maximum="120" SmallChange="5" LargeChange="5"
+                                        Minimum="30" Maximum="120" SmallChange="5" LargeChange="5"
                                         TickFrequency="5" IsSnapToTickEnabled="True"
                                         ValueChanged="Tau_Changed" />
                                 <Grid Margin="0,3,9,0">
-                                    <TextBlock Text="5 ms · 干脆" Style="{StaticResource Caption}" FontSize="10.5"
+                                    <TextBlock Text="30 ms · 紧跟" Style="{StaticResource Caption}" FontSize="10.5"
                                                HorizontalAlignment="Left" />
                                     <TextBlock Text="120 ms · 很绵" Style="{StaticResource Caption}" FontSize="10.5"
                                                HorizontalAlignment="Right" />
@@ -873,19 +875,19 @@
                                     <StackPanel>
                                         <TextBlock Text="松手后的惯性" FontWeight="SemiBold" />
                                         <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
-                                                   Text="滚轮停下之后，内容还会顺着原方向滑这么久再停住。0 = 不额外滑行；调大尾巴更长、更接近触控板。滑行是按曲线自然减速到停，不会在末尾「补一下」。" />
+                                                   Text="只有「甩」才给惯性：慢滚一格不会飘，快甩才顺着原方向滑这么久。0 = 不额外滑行。" />
                                     </StackPanel>
                                     <TextBlock x:Name="GlideValue" Grid.Column="1" Style="{StaticResource Value}"
                                                Text="300 ms" />
                                 </Grid>
                                 <Slider x:Name="GlideSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
-                                        Minimum="0" Maximum="400" SmallChange="10" LargeChange="20"
+                                        Minimum="0" Maximum="600" SmallChange="10" LargeChange="20"
                                         TickFrequency="10" IsSnapToTickEnabled="True"
                                         ValueChanged="Glide_Changed" />
                                 <Grid Margin="0,3,9,0">
                                     <TextBlock Text="0 · 关闭滑行" Style="{StaticResource Caption}" FontSize="10.5"
                                                HorizontalAlignment="Left" />
-                                    <TextBlock Text="400 ms · 飘得较远" Style="{StaticResource Caption}" FontSize="10.5"
+                                    <TextBlock Text="600 ms · 飘得较远" Style="{StaticResource Caption}" FontSize="10.5"
                                                HorizontalAlignment="Right" />
                                 </Grid>
                                 <!-- 两项参数打架时给一句人话：光开滑行没用，跟手期得有量留下 -->

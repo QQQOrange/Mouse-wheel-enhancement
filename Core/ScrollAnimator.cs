@@ -184,19 +184,24 @@ internal sealed class ScrollAnimator : IDisposable
      *   · <see cref="MaxLandTauMs"/> —— 落地段的 τ。
      * 自检与 --frametrace 都按这两个口径验收。 */
 
-    /// <summary>追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（ UnitsPerFrame 已含倍率容量，
-    /// 见 <see cref="RuntimeSettings.UnitsPerFrameFor"/>）。</summary>
+    /// <summary>
+    /// 追赶时单帧最多发 <c>UnitsPerFrame × 这个倍数</c>（UnitsPerFrame 已含倍率容量，
+    /// 见 <see cref="RuntimeSettings.UnitsPerFrameFor"/>）。
+    ///
     /// <para>
-    /// 3 → 4（v1.7.4）：用户配置 8 帧/格 × 5× 时单帧量是 75，3 倍上限（225 单位/帧）
-    /// 在 160 Hz 上折合 36000 单位/秒 = 300 格/秒。听着够，但**τ 曲线本身要的
-    /// 峰值**在猛甩时超过它：曲线按"手里还剩多少"给量，积压越大给得越快，
-    /// 反复触顶的形态是「这一帧发满 225 → 下一帧又发满 225」——
-    /// 节奏被拉成等间隔大步，看着就是一段一段的"段落感"。
-    /// 放到 4 倍（300 单位/帧 = 400 格/秒）后曲线峰值不再触顶，出帧回到自然衰减。
-    /// 一帧 300 单位 = 2.5 格，仍在"看得见是连贯滚动"的范围里（旧注释担心的
-    /// "一帧跨好几格"指的是 5+ 格的大跳）。
+    /// v1.9.10 从 4 收到 2，并加 <see cref="MaxUnitsPerFrame"/> 绝对上限 180：
+    /// 旧值在 5× 配置下允许 300~600 单位/帧 = 2.5~5 格，猛甩时肉眼就是"一帧跳一大段"。
+    /// 现在一帧最多 1.5 格（160Hz 上 240 格/秒），仍能覆盖 8× × 30 格/秒的输入，
+    /// 但不会再出现瞬移。
     /// </para>
-    private const double MaxCatchUpFactor = 4.0;
+    /// </summary>
+    private const double MaxCatchUpFactor = 2.0;
+
+    /// <summary>
+    /// 单帧绝对上限（单位）。180 = 1.5 格；160Hz 上折合 240 格/秒，
+    /// 足够覆盖 8× 加速下 30 格/秒的猛甩，又不会出现"一帧跨 5 格"的瞬移。
+    /// </summary>
+    private const double MaxUnitsPerFrame = 180.0;
 
     /// <summary>死区（单位）：这一帧该走的量小于它，就认为已经收敛。1 单位 ≈ 0.5px。</summary>
     private const double DeadZoneUnits = 1.0;
@@ -214,8 +219,27 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>收尾 τ 的封顶（毫秒）。见 Loop 里那段"只允许比跟手值慢一点点"。</summary>
     private const double MaxGlideTauMsSoft = 140.0;
 
-    /// <summary>「惯性长度」的基准值（默认 180ms）：等于它时收尾 τ 与跟手值相同。</summary>
+    /// <summary>「惯性长度」的基准值（180ms）：等于它时收尾 τ 与跟手值相同。</summary>
     private const double GlideReferenceMs = 180.0;
+
+    /// <summary>
+    /// 跟手 τ 的下限（毫秒）。低于它，一个普通滚轮格会在 40~50ms 内冲完，
+    /// 首帧步长能达到半格 —— 读作"窜一下"，和触控板的连续推进完全不同。
+    /// 30ms 是实测下限：再低就必须靠更重的速度滤波去压，反而增加延迟。
+    /// </summary>
+    private const double MinFollowTauMs = 30.0;
+
+    /// <summary>两次输入间隔超过它就算新的一段（用于判断这次是不是"甩动"）。</summary>
+    private const double InputBurstJoinMs = 150.0;
+
+    /// <summary>滑行至少等这么久（毫秒）。30ms 会把普通滚轮两格之间的空隙误判成松手。</summary>
+    private const double MinGlideDelayMs = 60.0;
+
+    /// <summary>这次连续滚动至少要有这么多格，才值得给"甩动惯性"。</summary>
+    private const double FlickMinNotches = 1.6;
+
+    /// <summary>峰值速度至少这么多格/秒，才认为是"甩"而不是慢慢拨。</summary>
+    private const double FlickMinNotchesPerSec = 18.0;
 
     private readonly AutoResetEvent _wake = new(false);
 
@@ -331,6 +355,7 @@ internal sealed class ScrollAnimator : IDisposable
 
     private Thread? _thread;
     private volatile bool _alive;
+    private bool _disposed;
 
     /// <summary>待发量，单位是"unit × 1000"。</summary>
     private long _pendingMilli;
@@ -417,6 +442,13 @@ internal sealed class ScrollAnimator : IDisposable
     /// <summary>最近一次推送的速度（单位/秒，EMA）。决定松手之后给多少惯性。</summary>
     private long _pushRateMilli;
 
+    /// <summary>这一段连续滚动累计的绝对量（毫单位），以及峰值速度（单位/秒）。</summary>
+    private long _burstUnitsMilli;
+    private long _burstPeakRateMilli;
+
+    /// <summary>这一段连续滚动开始的时刻（QPC）。</summary>
+    private long _burstStartTicks;
+
     /// <summary>上一次推送的时刻（QPC）。</summary>
     private long _lastPushTicks;
     private bool _timerPrecision;
@@ -485,6 +517,11 @@ internal sealed class ScrollAnimator : IDisposable
     /// <para>
     /// 12 ms 的取法：三档 36 ms（看得出是三小步）、八档 96 ms（还不至于拖在手后面）。
     /// </para>
+    /// </summary>
+    /// <summary>
+    /// 整格模式两档之间的**默认**间隔（毫秒），只作为纯函数测试的默认值。
+    /// 实际运行时用显示器帧间隔（见 <see cref="WholeNotchStep"/>）：
+    /// 160Hz 上 6.25ms 一档，滚动条才会和屏幕同节奏地推进。
     /// </summary>
     private const double WholeStepMs = 12.0;
 
@@ -582,7 +619,7 @@ internal sealed class ScrollAnimator : IDisposable
     {
         lock (_lifecycle)
         {
-            if (_alive) return;
+            if (_disposed || _alive) return;
             _alive = true;
 
         /* 横向线程跟着主线程一起起停：否则 Stop/Start 之后再 PushH 会因为
@@ -734,12 +771,20 @@ internal sealed class ScrollAnimator : IDisposable
     /// <paramref name="msSinceLast"/> 传负数表示“还没发过第一档”（首档立即发）。
     /// </para>
     /// </summary>
-    public static bool WholeNotchDue(double accumUnits, double msSinceLast, double pendingUnits)
+    public static bool WholeNotchDue(double accumUnits, double msSinceLast, double pendingUnits,
+        double stepMs = WholeStepMs)
     {
         if (Math.Abs(pendingUnits) < Native.WHEEL_DELTA) return false;
         if (Math.Abs(accumUnits) < Native.WHEEL_DELTA) return false;
-        return msSinceLast < 0 || msSinceLast >= WholeStepMs;
+        return msSinceLast < 0 || msSinceLast >= stepMs;
     }
+
+    /// <summary>
+    /// 整格模式下，这是不是本轮第一档、且手里至少有一格 —— 是就立刻发。
+    /// 纯函数，便于自检钉住"第一行不能等曲线欠够"这条响应性要求。
+    /// </summary>
+    public static bool WholeNotchFirstImmediate(double msSinceLast, double pendingUnits) =>
+        msSinceLast == 0 && Math.Abs(pendingUnits) >= Native.WHEEL_DELTA;
 
     /// <summary>
     /// 整格模式的一帧：把曲线这一帧“该走的距离”累起来，攒够一格、且离上一档够久，才发一档。
@@ -756,17 +801,32 @@ internal sealed class ScrollAnimator : IDisposable
     /// </summary>
     private int WholeNotchStep(double pendingUnits, double dtMs, double tauMs, RuntimeSettings s, long nowTicks)
     {
+        var nowMs = TicksToMs(nowTicks);
+        var last = Interlocked.Read(ref _lastWholeMs);
+
+        /* 一段新的滚动：第一档**立刻**发。
+         *
+         * 这类框架里一档就是一整行（WPF 默认 3 行、约 60px）。如果还等曲线
+         * "欠够一格"再发，第一行会晚 50~80ms 才动 —— 读作"滚了但没反应"。
+         * 先把这一档立刻落地，后面的档再按帧节奏推进；总量仍然精确。 */
+        if (WholeNotchFirstImmediate(last, pendingUnits))
+        {
+            var sign0 = Math.Sign(pendingUnits);
+            _wholeAccum = 0;
+            Interlocked.Exchange(ref _lastWholeMs, (long)nowMs);
+            return sign0 * Native.WHEEL_DELTA;
+        }
+
         var want = FrameAmount(pendingUnits, dtMs, tauMs, s.UnitsPerFrame, s.SmoothEnabled);
 
         _wholeAccum += want;
         var cap = 4.0 * Native.WHEEL_DELTA;
         if (Math.Abs(_wholeAccum) > cap) _wholeAccum = Math.Sign(_wholeAccum) * cap;
 
-        var nowMs = TicksToMs(nowTicks);
-        var last = Interlocked.Read(ref _lastWholeMs);
         var since = last == 0 ? -1.0 : nowMs - last;
+        var stepMs = Math.Max(5.0, s.FrameIntervalMs);
 
-        if (WholeNotchDue(_wholeAccum, since, pendingUnits))
+        if (WholeNotchDue(_wholeAccum, since, pendingUnits, stepMs))
         {
             var sign = Math.Sign(pendingUnits);
             _wholeAccum -= sign * Native.WHEEL_DELTA;
@@ -826,7 +886,7 @@ internal sealed class ScrollAnimator : IDisposable
          * 超过 2 格多就会和"手指滚一格"混淆。4 倍标准帧量（默认 30 / 用户 75）
          * 折合 1~2.5 格，在 160 Hz 上每秒最多倒 400 格，曲线峰值不再触顶
          * （触顶的形态是"发满→等→发满"，读作段落感）。 */
-        var cap = Math.Max(1.0, unitsPerFrame * MaxCatchUpFactor);
+        var cap = Math.Max(1.0, Math.Min(unitsPerFrame * MaxCatchUpFactor, MaxUnitsPerFrame));
         if (Math.Abs(emit) > cap) emit = Math.Sign(pendingUnits) * cap;
 
         if (Math.Abs(emit) > Math.Abs(pendingUnits)) emit = pendingUnits;
@@ -962,6 +1022,12 @@ internal sealed class ScrollAnimator : IDisposable
                     _slowFrames = 0;
                     _degraded = false;
                     Interlocked.Exchange(ref _reverseHoldTicks, 0);
+                    /* 速度域低通的状态也归零：上一轮末尾可能停在 0.5 单位/帧，
+                     * 留到下一轮第一帧会让起步多出半格。 */
+                    _smoothWant = 0;
+                    _smoothWant2 = 0;
+                    Interlocked.Exchange(ref _burstUnitsMilli, 0);
+                    Interlocked.Exchange(ref _burstPeakRateMilli, 0);
 
                     /* 这一轮真的结束了：把按应用覆盖带进来的那份快照放掉，
                      * 下一次没有覆盖的投递就自动回到全局设置。 */
@@ -1046,43 +1112,43 @@ internal sealed class ScrollAnimator : IDisposable
 
                 /* 松手判定：超过 GlideDelayMs 没有新输入，就认为滚轮停了。
                  *
-                 * 松手后不再"另换一套曲线"，只是把 τ 从跟手值平滑挪到滑行值：
-                 * 滑行 τ 由 GlideMs 反解（到点只剩 1 个单位），过渡用 55ms 的
-                 * smoothstep —— τ 一步跳变会让速率瞬间掉一半，听起来就是"咔"。 */
-                /* ══════════════ 出帧：一级低通 + 死区收尾（Mos 模型） ══════════════
+                 * v1.9.10 的关键修正：**只有"甩"才给惯性**。
+                 * 旧代码对每一格都进入滑行 —— 普通滚轮两格之间本来就有 50~150ms 空隙，
+                 * 30ms 的滑行延迟几乎每次都会触发；于是慢慢拨一格也拖出一条 200ms 的尾巴，
+                 * 读作"发飘/橡皮筋"。触控板的规律是：慢速拖动 = 手指停在哪就停在哪，
+                 * 只有快速一甩才有惯性。
                  *
-                 * 参考 Caldis/Mos 的做法：目标量（积压）累积，每帧只走
-                 * `(target - emitted) * k`（k 由时间常数 τ 决定，见 FrameAmount）；
-                 * 当**这一帧的步长**已经小于死区（1 单位 ≈ 0.5px）时，
-                 * 把剩下的零头一次补齐（≤4 单位 = 2px）或者直接丢弃并结束。
-                 *
-                 * 旧实现是四层叠加：跟手 τ → 滑行 τ（更大）→ 落地 τ（更大）→
-                 * 尾段再按 τ·ln(p/(p-1)) 逐个排空。每一层都在**减速的末端把速度再压一次**，
-                 * 于是尾巴长达 100~150ms、每步只有 0.5px（读作"又慢又黏"），
-                 * 而终止那一刻仍是从非零速度归零 —— 于是又慢又突兀。
-                 * 现在只有一个 τ、一条曲线，结束时是"步长收敛到看不见 → 补齐/丢弃 → 停"。
-                 */
-
-                var tau = s.TauMs;
+                 * 现在只有同时满足「这一段滚够了格数」+「峰值速度够快」才进入滑行，
+                 * 慢速单格只用跟手 τ 平滑落地。 */
+                var followTau = Math.Max(s.TauMs, MinFollowTauMs);
+                var tau = followTau;
                 if (s.SmoothEnabled && s.GlideMs > 0)
                 {
                     var idleMs = TicksToMs(now - Interlocked.Read(ref _lastInputTicks));
-                    if (idleMs > s.GlideDelayMs)
+
+                    var peakNotchesPerSec = Interlocked.Read(ref _burstPeakRateMilli) /
+                                            1000.0 / Native.WHEEL_DELTA;
+                    var burstNotches = Interlocked.Read(ref _burstUnitsMilli) /
+                                       (Milli * Native.WHEEL_DELTA);
+                    var isFlick = burstNotches >= FlickMinNotches
+                                  && peakNotchesPerSec >= Math.Max(FlickMinNotchesPerSec,
+                                      s.FastThresholdPerSec * 1.2);
+
+                    var glideDelay = Math.Max(s.GlideDelayMs, MinGlideDelayMs);
+                    if (s.VelocityStop && peakNotchesPerSec > 20)
+                        glideDelay = Math.Min(glideDelay * 1.5, 150);
+
+                    if (isFlick && idleMs > glideDelay)
                     {
                         if (Interlocked.Read(ref _glideStartTicks) == 0)
                         {
                             Interlocked.Exchange(ref _glideStartTicks, now);
 
-                            /* 松手后的惯性**按这一次的手速缩放** —— 这是"触控板感"的另一半：
-                             *   · 慢慢拨一格（<5 格/秒）→ τ 只取基线的 50%，60~90ms 就落地，
-                             *     读作跟手、利落，而不是每滚一格都飘一下；
-                             *   · 连甩（≥40 格/秒）→ 给满基线 τ，尾巴才够长。
-                             * 以前 τ 只由「惯性长度」决定、与手速无关，所以"慢慢滚"也被拖出
-                             * 200ms 的尾巴 —— 这正是发飘/橡胶感的来源。 */
-                            var rateUnits = Interlocked.Read(ref _pushRateMilli);           // 单位/秒
-                            var notchesPerSec = rateUnits / 1000.0 / Native.WHEEL_DELTA;
-                            var speedFactor = Math.Clamp(0.5 + 0.5 * notchesPerSec / 40.0, 0.5, 1.0);
-                            _glideTauMs = Math.Clamp(ReleaseTau(s.TauMs, s.GlideMs) * speedFactor,
+                            /* 滑行 τ 按**峰值**手速缩放：慢慢拨不会走到这里；
+                             * 真甩起来时尾巴才够长，而且滑行长度仍由用户的「惯性长度」定。 */
+                            var speedFactor = Math.Clamp(
+                                peakNotchesPerSec / Math.Max(20.0, s.SaturationPerSec), 0.5, 1.2);
+                            _glideTauMs = Math.Clamp(ReleaseTau(followTau, s.GlideMs) * speedFactor,
                                 MinGlideTauMs, MaxGlideTauMsSoft);
                         }
 
@@ -1090,10 +1156,10 @@ internal sealed class ScrollAnimator : IDisposable
                         var w = Math.Clamp(
                             TicksToMs(now - Interlocked.Read(ref _glideStartTicks)) / GlideRampMs, 0, 1);
                         w = w * w * (3 - 2 * w);
-                        tau = s.TauMs + (_glideTauMs - s.TauMs) * w;
+                        tau = followTau + (_glideTauMs - followTau) * w;
 
                         /* 掉帧时别再加长尾巴。 */
-                        if (_degraded) tau = Math.Min(tau, s.TauMs);
+                        if (_degraded) tau = Math.Min(tau, followTau);
                     }
                 }
 
@@ -1232,6 +1298,18 @@ internal sealed class ScrollAnimator : IDisposable
     {
         var now = _clock.ElapsedTicks;
         var last = Interlocked.Exchange(ref _lastPushTicks, now);
+        var gapMs = last == 0 ? double.MaxValue : TicksToMs(now - last);
+
+        /* 新的一段：清掉上一段的累计量/峰值。普通滚轮两格之间 50~200ms，
+         * 超过 150ms 才算"手停了"，不会把连续滚动切碎。 */
+        if (last == 0 || gapMs > InputBurstJoinMs)
+        {
+            Interlocked.Exchange(ref _burstUnitsMilli, 0);
+            Interlocked.Exchange(ref _burstPeakRateMilli, 0);
+            Interlocked.Exchange(ref _burstStartTicks, now);
+        }
+        Interlocked.Add(ref _burstUnitsMilli, (long)Math.Abs(units) * (long)Milli);
+
         if (last == 0) return;
 
         var dtMs = TicksToMs(now - last);
@@ -1242,9 +1320,13 @@ internal sealed class ScrollAnimator : IDisposable
             return;
         }
 
-        var rate = Math.Abs(units) / dtMs * 1000.0;
+        var instRate = Math.Abs(units) / dtMs * 1000.0;
+        var peak = Interlocked.Read(ref _burstPeakRateMilli);
+        if (instRate > peak)
+            Interlocked.Exchange(ref _burstPeakRateMilli, (long)instRate);
+
         var cur = Interlocked.Read(ref _pushRateMilli);
-        var ema = cur <= 0 ? rate : cur + (rate - cur) * 0.4;
+        var ema = cur <= 0 ? instRate : cur + (instRate - cur) * 0.4;
         Interlocked.Exchange(ref _pushRateMilli, (long)ema);
     }
 
@@ -1336,12 +1418,21 @@ internal sealed class ScrollAnimator : IDisposable
     {
         lock (_lifecycle)
         {
-            if (!_alive) return;
+            if (_disposed) return;
+            _disposed = true;
+
+            /* 线程已经异常退出时也要走到这里：以前 `if (!_alive) return;` 会跳过
+             * _wake.Dispose()，每崩一次就漏一个内核事件对象。 */
             _alive = false;
             _wake.Set();
             try { _thread?.Join(600); } catch { /* 退出阶段不纠缠 */ }
             _thread = null;
+
+            /* 横向线程独立循环，_alive=false 后最多 6ms 自己退出；
+             * 给它一点时间，避免进程退出时还在注入。 */
+            try { _hThread?.Join(300); } catch { }
+            _hThread = null;
         }
-        _wake.Dispose();
+        try { _wake.Dispose(); } catch { /* 已经释放过 */ }
     }
 }

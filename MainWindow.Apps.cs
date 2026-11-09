@@ -146,9 +146,9 @@ public partial class MainWindow
             feelRoot.Items.Add(mi);
         }
         AddFeel("跟随全局", null, null);
-        AddFeel("跟手（τ16 / 惯性 200）", 16, 200);
-        AddFeel("标准（τ30 / 惯性 420）", 30, 420);
-        AddFeel("悠长（τ45 / 惯性 600）", 45, 600);
+        AddFeel("跟手（τ30 / 惯性 150）", 30, 150);
+        AddFeel("标准（τ40 / 惯性 320）", 40, 320);
+        AddFeel("悠长（τ55 / 惯性 500）", 55, 500);
         menu.Items.Add(feelRoot);
 
         menu.Items.Add(new Separator());
