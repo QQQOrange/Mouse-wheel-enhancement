@@ -920,6 +920,28 @@ public partial class App
     /// </para>
     /// </summary>
     /// <summary>
+    /// <c>--exporthelp [path]</c>：把帮助页数据导出为 JSON。
+    /// 不传路径时写到数据目录 HelpContent.json。
+    /// </summary>
+    private static int ExportHelpCli(string[] args)
+    {
+        var path = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
+        if (string.IsNullOrWhiteSpace(path))
+            path = Path.Combine(AppPaths.DataDir, "HelpContent.json");
+        try
+        {
+            File.WriteAllText(path, HelpContent.ExportJson(), new UTF8Encoding(false));
+            Console.Out.Write("已导出：" + path + Environment.NewLine);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Out.Write("导出失败：" + ex.Message + Environment.NewLine);
+            return 3;
+        }
+    }
+
+    /// <summary>
     /// <c>--benchhook</c>：钩子热路径的分配/耗时基准。
     /// 只测纯托管部分（分类器、最近目标、自身判定），不装全局钩子。
     /// </summary>

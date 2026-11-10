@@ -1,4 +1,7 @@
 // 帮助页的文案与数据（v1.9.11 从 HelpContent.cs 拆出）
+using System.Text.Encodings.Web;
+using System.Text.Json;
+
 namespace MouseWheelEnhancement;
 
 internal static partial class HelpContent
@@ -16,7 +19,23 @@ internal static partial class HelpContent
 
     /* ══════════════ 文案 ══════════════ */
 
-    private static IReadOnlyList<Section> Sections() => new List<Section>
+    /// <summary>把当前帮助数据导出为 JSON（翻译/审阅用；也用于生成 HelpContent.json 资源）。</summary>
+    internal static string ExportJson()
+    {
+        var payload = new
+        {
+            sections = Sections(),
+            faqs = Faqs().Select(f => new { q = f.Q, a = f.A }),
+            presets = Presets(),
+        };
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        });
+    }
+
+    private static IReadOnlyList<Section> FallbackSections() => new List<Section>
     {
         new("加速",
             "这一组决定「什么时候开始加速」和「最多加速多少」。日常只需要关心前两项。",
@@ -196,7 +215,7 @@ internal static partial class HelpContent
             }),
     };
 
-    private static IReadOnlyList<(string Q, string A)> Faqs() => new List<(string, string)>
+    private static IReadOnlyList<(string Q, string A)> FallbackFaqs() => new List<(string, string)>
     {
         ("装上之后一点感觉都没有？",
             "先看「概览」页第一项「钩子」是不是「运行中」，再看「当前目标应用」是不是在黑名单里。如果一切正常，那是你的滚动速度还没超过触发阈值 —— 试着连续快拨几下，或者把触发阈值暂时调到 6 试试。"),
@@ -345,7 +364,7 @@ internal static partial class HelpContent
     internal sealed record Preset(string Name, string Desc, double Mult, double Threshold,
         double Sat, bool Smooth, double Tau);
 
-    private static IReadOnlyList<Preset> Presets() => new List<Preset>
+    private static IReadOnlyList<Preset> FallbackPresets() => new List<Preset>
     {
         new("看长文档 / 代码为主", "倍率 4×　触发阈值 10　满速点 40　平滑：所有滚动　跟手 45 ms", 4, 10, 40, true, 45),
         new("日常网页浏览", "倍率 3×　触发阈值 12　满速点 40　平滑：所有滚动　跟手 40 ms", 3, 12, 40, true, 40),
@@ -353,5 +372,82 @@ internal static partial class HelpContent
         new("想更「滑」一点", "倍率 3×　触发阈值 10　满速点 35　平滑：所有滚动　跟手 55 ms", 3, 10, 35, true, 55),
     };
 
+    /* ══════════════ JSON 资源 ══════════════
+     * 文案以嵌入资源 HelpContent.json 为准；解析失败（文件缺失/格式坏）时
+     * 回退到上面的 C# 数据，帮助页不会白屏。`--exporthelp` 可重新导出。 */
 
+    private sealed class SectionDto
+    {
+        public string Title { get; set; } = "";
+        public string Intro { get; set; } = "";
+        public List<Param> Items { get; set; } = new();
+    }
+
+    private sealed class FaqDto
+    {
+        public string Q { get; set; } = "";
+        public string A { get; set; } = "";
+    }
+
+    private sealed class HelpBundle
+    {
+        public List<SectionDto> Sections { get; set; } = new();
+        public List<FaqDto> Faqs { get; set; } = new();
+        public List<Preset> Presets { get; set; } = new();
+    }
+
+    private static readonly Lazy<HelpBundle?> Bundle = new(LoadBundle, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static HelpBundle? LoadBundle()
+    {
+        try
+        {
+            using var stream = typeof(HelpContent).Assembly
+                .GetManifestResourceStream("MouseWheelEnhancement.HelpContent.json");
+            if (stream == null) return null;
+            return JsonSerializer.Deserialize<HelpBundle>(stream, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+            });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<Section> Sections()
+    {
+        var data = Bundle.Value;
+        if (data?.Sections is { Count: > 0 })
+        {
+            return data.Sections
+                .Select(s => new Section(s.Title, s.Intro, s.Items))
+                .ToList();
+        }
+        return FallbackSections();
+    }
+
+    /// <summary>自检：帮助文案是否真的从嵌入 JSON 读到（不是回退到 C# 数据）。</summary>
+    internal static bool UsingJsonResource => Bundle.Value?.Sections is { Count: > 0 };
+
+    /// <summary>自检：帮助页数据段数。</summary>
+    internal static int SectionCount => Sections().Count;
+
+    private static IReadOnlyList<(string Q, string A)> Faqs()
+    {
+        var data = Bundle.Value;
+        if (data?.Faqs is { Count: > 0 })
+            return data.Faqs.Select(f => (f.Q, f.A)).ToList();
+        return FallbackFaqs();
+    }
+
+    private static IReadOnlyList<Preset> Presets()
+    {
+        var data = Bundle.Value;
+        if (data?.Presets is { Count: > 0 })
+            return data.Presets;
+        return FallbackPresets();
+    }
 }
+

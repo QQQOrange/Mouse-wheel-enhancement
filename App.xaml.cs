@@ -41,7 +41,7 @@ public partial class App : System.Windows.Application
     {
         "--selftest", "--measure", "--featurecheck", "--taskcheck", "--frametrace",
         "--dialogtest", "--runtimecheck", "--wheeltest", "--scrollsmooth", "--probe",
-        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke", "--wheelcapture", "--uiaprobe", "--benchhook",
+        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke", "--wheelcapture", "--uiaprobe", "--benchhook", "--exporthelp",
     };
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
 
@@ -164,6 +164,16 @@ public partial class App : System.Windows.Application
         {
             Services.Init();
             var code = BenchHookCli();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* 帮助数据导出（翻译/审阅；也用于生成 HelpContent.json）。 */
+        if (e.Args.Any(a => a.Equals("--exporthelp", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var code = ExportHelpCli(e.Args);
             Shutdown(code);
             Environment.Exit(code);
             return;

@@ -325,6 +325,12 @@ internal static partial class SelfTest
             !ScrollSemantics.IgnoresSystemLines("HwndWrapper[App;;1]"));
         Check("记事本（系统 Edit）不算", !ScrollSemantics.IsPerEventScroll("Notepad"));
 
+        /* 帮助页文案改为嵌入 JSON 资源；资源缺失/解析失败会静默回退 C# 数据，
+         * 这条断言保证发布物里真的带上了 HelpContent.json。 */
+        Check("帮助文案从嵌入 JSON 加载", HelpContent.UsingJsonResource);
+        Check("帮助页至少 5 个数据段", HelpContent.SectionCount >= 5,
+            HelpContent.SectionCount.ToString());
+
         /* Qt = 按事件滚动（v1.7.14）
          *
          * QScrollBar::wheelEvent 是 `angleDelta().y() / 120` 的**整数除法**：

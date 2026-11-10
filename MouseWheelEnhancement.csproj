@@ -88,6 +88,11 @@
     <Using Include="System.Collections.ObjectModel" />
   </ItemGroup>
 
+  <!-- 帮助页文案：数据与渲染分离；JSON 作为嵌入资源，翻译/审阅可直接改这个文件。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="HelpContent.json" />
+  </ItemGroup>
+
   <!-- UI Automation：WPF 文档型 ScrollViewer 能按 delta 滚，ListBox/DataGrid 不能。
        只看窗口类名分不出来，需要按光标下的控件做一次后台探测（见 WpfSemanticProbe）。
        UIAutomationClient/Types 由 WindowsDesktop 框架隐式提供，不要手工加 Reference。 -->

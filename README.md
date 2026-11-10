@@ -123,10 +123,13 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ## 自检
 
 ```bash
-# 443 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、
+# 445 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、
 # 触控板流分类、τ45 单格曲线、UWP/Java/Tk 语义、主题、自我增强、版本比较、令牌清洗、
 # 名单匹配、配置读写、按应用覆盖派生、窗口记忆、schema 迁移
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全部通过
+
+# 帮助页文案导出为 JSON（翻译/审阅；资源文件 HelpContent.json）
+MouseWheelEnhancement.App.exe --exporthelp
 
 # 钩子热路径基准：分类器 / 最近目标 / 自身判定，10 万次级别的分配与耗时
 MouseWheelEnhancement.App.exe --benchhook
@@ -215,3 +218,4 @@ MouseWheelEnhancement.App.exe --taskcheck
 ## 许可证
 
 [MIT](LICENSE) © 2026 QQQOrange
+
