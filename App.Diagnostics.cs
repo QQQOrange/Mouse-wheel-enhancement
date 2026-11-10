@@ -933,19 +933,26 @@ public partial class App
 
         static long AllocBytes() => GC.GetAllocatedBytesForCurrentThread();
 
-        /* ① 分类器 */
+        /* ① 分类器：跑三轮取最小值。第一轮可能撞上 tiered JIT/OSR，
+         * 单轮结果会把“运行时一次性分配”误算成逐事件分配。 */
         var classifier = new WheelInputClassifier();
-        for (var i = 0; i < 1000; i++) classifier.Observe(120, i * 10.0);
+        for (var i = 0; i < 2000; i++) classifier.Observe(120, i * 10.0);
         classifier.Reset();
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
-        var b0 = AllocBytes();
-        var sw = Stopwatch.StartNew();
-        for (var i = 0; i < 100_000; i++) classifier.Observe(120, i * 10.0);
-        sw.Stop();
-        var classBytes = AllocBytes() - b0;
-        var classNs = sw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        long classBytes = long.MaxValue;
+        var classNs = 0.0;
+        for (var round = 0; round < 3; round++)
+        {
+            classifier.Reset();
+            var b0 = AllocBytes();
+            var sw = Stopwatch.StartNew();
+            for (var i = 0; i < 100_000; i++) classifier.Observe(120, i * 10.0);
+            sw.Stop();
+            classBytes = Math.Min(classBytes, AllocBytes() - b0);
+            classNs = sw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        }
         pass &= classBytes <= 4096;
         sb.AppendLine($"输入分类器：{classBytes} B / 100k，{classNs:0} ns/次，{classBytes / 100_000.0:0.00} B/次");
 
@@ -953,24 +960,34 @@ public partial class App
         var target = new TargetInfo(IntPtr.Zero, 0, "mousewheelenhancement.app.exe",
             "", "HwndWrapper[App;;1]", false);
         for (var i = 0; i < 100; i++) WheelEngine.TrackRecentForBenchmark(target, false);
-        b0 = AllocBytes();
-        sw.Restart();
-        for (var i = 0; i < 100_000; i++) WheelEngine.TrackRecentForBenchmark(target, false);
-        sw.Stop();
-        var recentBytes = AllocBytes() - b0;
-        var recentNs = sw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        long recentBytes = long.MaxValue;
+        var recentNs = 0.0;
+        for (var round = 0; round < 3; round++)
+        {
+            var rb0 = AllocBytes();
+            var rsw = Stopwatch.StartNew();
+            for (var i = 0; i < 100_000; i++) WheelEngine.TrackRecentForBenchmark(target, false);
+            rsw.Stop();
+            recentBytes = Math.Min(recentBytes, AllocBytes() - rb0);
+            recentNs = rsw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        }
         pass &= recentBytes <= 4096;
         sb.AppendLine($"最近目标记录：{recentBytes} B / 100k，{recentNs:0} ns/次");
 
         /* ③ 自身 exe 判定（TargetInfo.Exe 已归一化时走快路径） */
         var s = RuntimeSettings.From(AppConfig.Default());
         for (var i = 0; i < 100; i++) _ = s.IsOwnExe(target.Exe);
-        b0 = AllocBytes();
-        sw.Restart();
-        for (var i = 0; i < 100_000; i++) _ = s.IsOwnExe(target.Exe);
-        sw.Stop();
-        var ownBytes = AllocBytes() - b0;
-        var ownNs = sw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        long ownBytes = long.MaxValue;
+        var ownNs = 0.0;
+        for (var round = 0; round < 3; round++)
+        {
+            var ob0 = AllocBytes();
+            var osw = Stopwatch.StartNew();
+            for (var i = 0; i < 100_000; i++) _ = s.IsOwnExe(target.Exe);
+            osw.Stop();
+            ownBytes = Math.Min(ownBytes, AllocBytes() - ob0);
+            ownNs = osw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        }
         pass &= ownBytes <= 4096;
         sb.AppendLine($"自身 exe 判定：{ownBytes} B / 100k，{ownNs:0} ns/次");
 

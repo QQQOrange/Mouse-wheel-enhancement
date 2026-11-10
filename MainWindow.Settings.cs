@@ -378,8 +378,15 @@ public partial class MainWindow
         Commit();
     }
 
-    private void Glide_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void AdvancedBacklog_Click(object sender, RoutedEventArgs e)
     {
+        if (AdvancedBacklogPanel == null || AdvancedBacklogToggle == null) return;
+        var show = AdvancedBacklogPanel.Visibility != Visibility.Visible;
+        AdvancedBacklogPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        AdvancedBacklogToggle.Content = show ? "收起：积压上限" : "高级参数：积压上限";
+    }
+
+    private void Glide_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)    {
         if (_loading) return;
         Services.Config.Smooth.GlideMs = (int)Math.Round(e.NewValue);
         ClearPresetSelection();

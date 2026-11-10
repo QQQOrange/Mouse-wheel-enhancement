@@ -909,6 +909,11 @@
                             </StackPanel>
                         </Border>
 
+                        <Button x:Name="AdvancedBacklogToggle" Content="高级参数：积压上限"
+                                Style="{StaticResource LinkButton}" HorizontalAlignment="Left"
+                                Margin="2,0,0,2" Click="AdvancedBacklog_Click" />
+
+                        <StackPanel x:Name="AdvancedBacklogPanel" Visibility="Collapsed">
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
@@ -937,6 +942,7 @@
                                 </Grid>
                             </StackPanel>
                         </Border>
+                        </StackPanel>
 
                     </StackPanel>
                 </ScrollViewer>
