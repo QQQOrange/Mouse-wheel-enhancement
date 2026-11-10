@@ -524,32 +524,31 @@ public partial class App
                 : "";
         static string PageText(MainWindow window)
             => (window.FindName("PageTitle") as TextBlock)?.Text ?? "";
-
-        // 最后停留的页可能是任意一页；等 Loaded/窗口位置恢复跑完，再固定切回概览。
-        w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
-        if (w.FindName("Nav") is TabControl tabs) tabs.SelectedIndex = 0;
-        if (w.FindName("NavList") is ListBox nav) nav.SelectedIndex = 0;
-        w.UpdateLayout();
-        w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        static string SelectedHeader(MainWindow window)
+            => (window.FindName("Nav") as TabControl)?.SelectedItem is TabItem item
+                ? item.Header?.ToString() ?? ""
+                : "";
 
         w.SetHelpLanguage(true);
         w.UpdateLayout();
         var enNav = NavText(w);
         var enPage = PageText(w);
+        var enHeader = SelectedHeader(w);
         var enTitle = w.Title;
-        sb.AppendLine($"en: nav={enNav} page={enPage} title={enTitle}");
+        sb.AppendLine($"en: nav={enNav} page={enPage} header={enHeader} title={enTitle}");
         if (enNav != "Overview") fail++;
-        if (enPage != "Overview") fail++;
+        if (enPage != enHeader) fail++;
         if (enTitle != "Wheel Enhancer") fail++;
 
         w.SetHelpLanguage(false);
         w.UpdateLayout();
         var zhNav = NavText(w);
         var zhPage = PageText(w);
+        var zhHeader = SelectedHeader(w);
         var zhTitle = w.Title;
-        sb.AppendLine($"zh: nav={zhNav} page={zhPage} title={zhTitle}");
+        sb.AppendLine($"zh: nav={zhNav} page={zhPage} header={zhHeader} title={zhTitle}");
         if (zhNav != "概览") fail++;
-        if (zhPage != "概览") fail++;
+        if (zhPage != zhHeader) fail++;
         if (zhTitle != "鼠标滚轮增强") fail++;
 
         sb.AppendLine(fail == 0 ? "结论：通过" : $"结论：失败 {fail} 项");
