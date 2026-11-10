@@ -31,7 +31,6 @@ public partial class MainWindow : Window
     private bool _updatingFromUi;
 
     private readonly DispatcherTimer _tick;
-    private readonly ObservableCollection<AppRuleRowData> _rows = new();
 
     /// <summary>画刷缓存：每 400 ms 的刷新里不必反复走资源字典查找。</summary>
     private readonly Dictionary<string, Brush> _brushes = new();
@@ -42,11 +41,8 @@ public partial class MainWindow : Window
     /// <summary>曲线重绘合并标记：拖动滑块时一次布局只重画一次。</summary>
     private bool _curvePending;
 
-    /// <summary>名单内容的指纹，用来避免"拖一下滑块就把列表重建一遍"。</summary>
-    private string _appsSignature = "\u0000";
-
-    /// <summary>名单页未打开时置位；切到该页再真正枚举进程/取图标。</summary>
-    private bool _appsDirty = true;
+    /// <summary>「应用名单」页第一次被选中时才构造（内容见 UI/AppsPage.xaml）。</summary>
+    private AppsPage? AppsPageView;
 
     /// <summary>「关于」页第一次被选中时才构造。</summary>
     private AboutPage? AboutPageView;
@@ -63,8 +59,6 @@ public partial class MainWindow : Window
         InitializeComponent();
         var initMs = bootSw.ElapsedMilliseconds;
 
-        AppsList.ItemsSource = _rows;
-
         SubtitleText.Text = $"{Services.AppTitleEn} · v{Services.Version}";
         PageBadge.Text = $"v{Services.Version}";
         CurrentVersionText.Text = $"v{Services.Version}";
@@ -74,7 +68,6 @@ public partial class MainWindow : Window
 
         LoadFromConfig();
         RefreshStats();
-        RefreshApps();
         RefreshTokenUi();
         RedrawCurve();
         RestoreWindowPlacement();
@@ -330,9 +323,7 @@ public partial class MainWindow : Window
             BacklogSlider.Value = c.Smooth.MaxBacklogNotches;
             UpdateCurveSummary();
 
-            ModeBlack.IsChecked = c.Filter.Mode == FilterMode.Blacklist;
-            ModeWhite.IsChecked = c.Filter.Mode == FilterMode.Whitelist;
-            TitleRegexBox.Text = c.Filter.TitleRegex;
+            AppsPageView?.SyncFromConfig();
 
             var th = Theme.Normalize(c.Appearance.Theme);
             ThemeSystem.IsChecked = th == Theme.System;
@@ -361,8 +352,7 @@ public partial class MainWindow : Window
             CurveHint == null || TauValue == null ||
             BacklogValue == null || FpsValue == null || FpsManualGroup == null ||
             GlideValue == null || GlideSlider == null ||
-            ThemeNow == null || ThemeSystem == null ||
-            RegexHint == null)
+            ThemeNow == null || ThemeSystem == null)
             return;
 
         var c = Services.Config;
@@ -404,24 +394,8 @@ public partial class MainWindow : Window
 
         UpdateThemeHints();
 
-        var pattern = c.Filter.TitleRegex;
-        if (string.IsNullOrWhiteSpace(pattern))
-        {
-            RegexHint.Visibility = Visibility.Collapsed;
-        }
-        else
-        {
-            try
-            {
-                _ = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                RegexHint.Visibility = Visibility.Collapsed;
-            }
-            catch (ArgumentException ex)
-            {
-                RegexHint.Text = "这个正则写错了，暂时不生效：" + ex.Message;
-                RegexHint.Visibility = Visibility.Visible;
-            }
-        }
+        /* 正则写错与否不再由主窗口判断 —— 输入框和提示行归应用名单页所有。 */
+        AppsPageView?.UpdateRegexHint();
     }
 
     /// <summary>「最近识别的程序」：每次刷新重建最多 6 行（数量很小，重建比增量维护简单可靠）。</summary>
@@ -549,13 +523,13 @@ public partial class MainWindow : Window
         if (!_updatingFromUi) LoadFromConfig();
 
         UpdateDerivedLabels();
-        RefreshApps();
+        AppsPageView?.Invalidate();
         RefreshStats();
         InvalidateCurve();
     }
 
     /// <summary>界面改动 → 写配置 → 通知引擎 → 合并写盘。</summary>
-    private void Commit(bool refreshDerived = true)
+    internal void Commit(bool refreshDerived = true)
     {
         if (Services.Store == null || ThresholdValue == null) return;
 
@@ -733,7 +707,16 @@ public partial class MainWindow : Window
         }
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
-        if (Nav.SelectedIndex == AppsTabIndex && _appsDirty) RefreshApps();
+        if (Nav.SelectedIndex == AppsTabIndex)
+        {
+            if (AppsPageView == null)
+            {
+                Log.Info("「应用名单」页首次选中，按需构造");
+                AppsPageView = new AppsPage(this);
+                AppsTab.Content = AppsPageView;
+            }
+            AppsPageView.OnActivated();
+        }
         if (Nav.SelectedIndex == AboutTabIndex && AboutPageView == null)
         {
             Log.Info("「关于」页首次选中，按需构造");
@@ -826,6 +809,9 @@ public partial class MainWindow : Window
     internal const int AppsTabIndex = 3;
     internal const int AboutTabIndex = 6;
 
+    /// <summary>应用名单页是不是当前页（页面据此决定要不要立刻重建列表）。</summary>
+    internal bool IsAppsTabSelected => Nav != null && Nav.SelectedIndex == AppsTabIndex;
+
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
@@ -833,7 +819,7 @@ public partial class MainWindow : Window
         if (WheelLinesSlider != null) SyncWheelLinesFromSystem();
     }
 
-    private void SetFooterHint(string text) => SetFooterHint(text, true);
+    internal void SetFooterHint(string text) => SetFooterHint(text, true);
 
     /// <summary>同上，但可以标出这是"成功"还是"失败"（只影响一行字的颜色，不弹窗）。</summary>
     private void SetFooterHint(string text, bool success)
@@ -903,117 +889,6 @@ public partial class MainWindow : Window
         MarkPreset(b);
         SetFooterHint($"已应用「{b.Content}」手感");
     }
-
-    private void ApplyOverride(AppRule rule, Action<AppOverride> mutate, bool clear = false)
-    {
-        if (clear)
-        {
-            rule.Override = null;
-        }
-        else
-        {
-            rule.Override ??= new AppOverride();
-            mutate(rule.Override);
-            // 两项都空 → 当成没设，配置文件更干净
-            if (rule.Override.MaxMultiplier == null && rule.Override.Smooth == null)
-                rule.Override = null;
-        }
-
-        Services.Store.Touch();
-        RefreshApps();
-    }
-
-    private void AddApp_Click(object sender, RoutedEventArgs e)
-    {
-        var raw = AddAppBox.Text;
-        var name = AppRuleName.Normalize(raw);
-        if (name.Length == 0)
-        {
-            /* 提示写在**底栏**（常驻、切页也看得见）。
-             * 以前写进「更新」页的 UpdateStatus —— 用户在名单页点「添加」，
-             * 屏幕上不会有任何变化，只能怀疑按钮坏了。 */
-            SetFooterHint("先填一个程序名，例如 chrome.exe");
-            return;
-        }
-
-        var apps = Services.Config.Filter.Apps;
-        if (apps.Any(a => string.Equals(a.Exe, name, StringComparison.OrdinalIgnoreCase)))
-        {
-            SetFooterHint($"{name} 已经在名单里了");
-            return;
-        }
-
-        apps.Add(new AppRule { Exe = name, Note = "手动添加" });
-        AddAppBox.Text = "";
-        Commit();
-        SetFooterHint($"已加入名单：{name}");
-    }
-
-    private void RemoveApp_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button b || b.Tag is not string exe) return;
-        var apps = Services.Config.Filter.Apps;
-        var hit = apps.FirstOrDefault(a => string.Equals(a.Exe, exe, StringComparison.OrdinalIgnoreCase));
-        if (hit == null) return;
-        apps.Remove(hit);
-        Commit();
-        SetFooterHint($"已从名单移除：{exe}");
-    }
-
-    private void TitleRegex_Changed(object sender, TextChangedEventArgs e)
-    {
-        if (_loading) return;
-        Services.Config.Filter.TitleRegex = TitleRegexBox.Text.Trim();
-        Commit();
-    }
-
-    /// <summary>"从运行中的应用选择"：列当前有可见窗口的进程。</summary>
-    private void PickRunning_Click(object sender, RoutedEventArgs e)
-    {
-        var menu = new ContextMenu { PlacementTarget = PickRunningBtn };
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        IEnumerable<Process> procs;
-        try { procs = Process.GetProcesses(); }
-        catch { procs = Array.Empty<Process>(); }
-
-        var items = new List<(string Exe, string Title)>();
-        foreach (var p in procs)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(p.MainWindowTitle)) continue;
-                var exe = AppRuleName.Normalize(p.MainModule?.FileName ?? p.ProcessName);
-                if (exe.Length == 0 || !seen.Add(exe)) continue;
-                items.Add((exe, p.MainWindowTitle));
-            }
-            catch { /* 受保护进程读不到 MainModule，跳过 */ }
-            finally { p.Dispose(); }
-        }
-
-        if (items.Count == 0)
-        {
-            menu.Items.Add(new MenuItem { Header = "（没有找到带窗口的程序）", IsEnabled = false });
-        }
-        else
-        {
-            foreach (var (exe, title) in items.OrderBy(i => i.Exe).Take(50))
-            {
-                var mi = new MenuItem { Header = $"{exe}    —    {Trim(title, 46)}" };
-                mi.Click += (_, _) =>
-                {
-                    AddAppBox.Text = exe;
-                    AddAppBox.Focus();
-                    AddAppBox.CaretIndex = AddAppBox.Text.Length;
-                };
-                menu.Items.Add(mi);
-            }
-        }
-
-        menu.IsOpen = true;
-    }
-
-    private static string Trim(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     /* ══════════════ 事件：更新 ══════════════ */
 
@@ -1357,7 +1232,7 @@ public partial class MainWindow : Window
 
         Services.Store.ResetToDefaults();
         LoadFromConfig();
-        RefreshApps();
+        AppsPageView?.Invalidate();
         RefreshTokenUi();
         RedrawCurve();
         SetFooterHint("已恢复默认设置。");
@@ -1572,17 +1447,4 @@ public partial class MainWindow : Window
         try { PopupCleanup.CloseCurrentToolTip(); }
         catch { /* 关不掉提示气泡无害 */ }
     }
-}
-
-/// <summary>应用名单列表里的一行（给 DataTemplate 绑定用，必须是可反射访问的类型）。</summary>
-internal sealed class AppRuleRowData
-{
-    public string Exe { get; init; } = "";
-    public string Note { get; init; } = "";
-
-    /// <summary>覆盖摘要（v1.8.0），例如"· 上限 3× · 平滑关"。空串 = 完全跟随全局。</summary>
-    public string Override { get; init; } = "";
-
-    /// <summary>运行中程序的图标；没在运行/取不到时为 null，模板显示占位符。</summary>
-    public ImageSource? Icon { get; init; }
 }

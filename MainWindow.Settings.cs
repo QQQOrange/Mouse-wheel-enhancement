@@ -547,15 +547,4 @@ public partial class MainWindow
         Commit();
     }
 
-    /* ══════════════ 事件：应用名单 ══════════════ */
-
-    private void Mode_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        Services.Config.Filter.Mode = ModeWhite.IsChecked == true
-            ? FilterMode.Whitelist
-            : FilterMode.Blacklist;
-        Commit();
-    }
-
 }
