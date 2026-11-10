@@ -77,6 +77,10 @@ internal static partial class SelfTest
             Localization.Normalize("fr-FR") == Localization.Chinese &&
             Localization.Normalize(null) == Localization.Chinese);
 
+        Check("主界面英文资源可用", UiText.HasEnglish);
+        Check("主界面英文词条数量", UiText.Count >= 200, UiText.Count.ToString());
+        Check("主界面中文查表", UiText.EnglishFor("触发阈值") == "Trigger threshold");
+
         // ② 强制的意思就是"不看系统"
         Check("强制浅色不受系统影响", Theme.ResolveIsLight(Theme.Light));
         Check("强制深色不受系统影响", !Theme.ResolveIsLight(Theme.Dark));

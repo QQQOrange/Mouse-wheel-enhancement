@@ -71,6 +71,7 @@ public partial class MainWindow : Window
         RefreshTokenUi();
         RedrawCurve();
         RestoreWindowPlacement();
+        UiText.Apply(this);
 
         if (Services.Store.LoadWarning != null) UpdateStatus.Text = Services.Store.LoadWarning;
         if (Services.PendingUpdate is { Newer: true } pending) ShowUpdateInfo(pending, fromAutoCheck: true);
@@ -410,7 +411,7 @@ public partial class MainWindow : Window
             panel.Children.Clear();
             var empty = new TextBlock
             {
-                Text = "还没识别到程序 —— 在别的窗口里滚一下就会出现。",
+                Text = UiText.Translate("还没识别到程序 —— 在别的窗口里滚一下就会出现。"),
                 Opacity = 0.6,
                 Margin = new Thickness(0, 2, 0, 0),
             };
@@ -463,7 +464,7 @@ public partial class MainWindow : Window
         var e = Services.Engine;
         var running = e.IsRunning;
 
-        StatHook.Text = running ? "运行中" : "未运行";
+        StatHook.Text = UiText.Translate(running ? "运行中" : "未运行");
         StatHook.Foreground = running
             ? B("SuccessBrush")
             : B("DangerBrush");
@@ -474,7 +475,9 @@ public partial class MainWindow : Window
         StatCount.Text = $"{e.BoostedCount} / {e.PassedCount}";
 
         var rate = e.LastRatePerSec;
-        StatRate.Text = rate > 0.05 ? $"{rate:0.0} 格/秒" : "—";
+        StatRate.Text = rate > 0.05
+            ? (UiText.IsEnglish ? $"{rate:0.0} notches/s" : $"{rate:0.0} 格/秒")
+            : "—";
         var barValue = Math.Min(40.0, Math.Max(0.0, rate));
         // 值变化时用 260ms 补间，进度条不会每 400ms 硬跳一下
         if (Math.Abs(_rateBarTarget - barValue) > 0.3)
@@ -492,19 +495,23 @@ public partial class MainWindow : Window
         MasterSwitch.IsChecked = on;
         _loading = false;
 
-        StatusText.Text = !on ? "已暂停" : running ? "已启用" : "钩子异常";
+        StatusText.Text = UiText.Translate(!on ? "已暂停" : running ? "已启用" : "钩子异常");
         StatusDot.Fill = B(!on ? "TextMuted" : running ? "SuccessBrush" : "DangerBrush");
         if (StatusPillText != null)
         {
-            StatusPillText.Text = !on ? "已暂停" : running ? "增强中" : "钩子异常";
+            StatusPillText.Text = UiText.Translate(!on ? "已暂停" : running ? "增强中" : "钩子异常");
             StatusPillText.Foreground = B(!on ? "TextMuted" : running ? "AccentHover" : "DangerBrush");
         }
         HookHint.Text = !on
-            ? "总开关关闭 · 完全走系统默认"
+            ? UiText.Translate("总开关关闭 · 完全走系统默认")
             : running
-                ? $"钩子正常 · 已接管 {e.BoostedCount} 次"
-                : "钩子未启动，滚动不受影响";
-        var today = $"本次已接管 {e.BoostedCount} 次 · 放行 {e.PassedCount} 次";
+                ? (UiText.IsEnglish
+                    ? $"Hook OK · {e.BoostedCount} boosted"
+                    : $"钩子正常 · 已接管 {e.BoostedCount} 次")
+                : UiText.Translate("钩子未启动，滚动不受影响");
+        var today = UiText.IsEnglish
+            ? $"{e.BoostedCount} boosted · {e.PassedCount} passed"
+            : $"本次已接管 {e.BoostedCount} 次 · 放行 {e.PassedCount} 次";
         if (StatusToday.Text != today) StatusToday.Text = today;
 
         /* 有临时提示正在显示时不要覆盖：RefreshStats 每 400ms 跑一次，

@@ -40,6 +40,7 @@ public partial class AppsPage : UserControl
         AppsList.ItemsSource = _rows;
         SyncFromConfig();
         UpdateRegexHint();
+        UiText.Apply(this);
     }
 
     /* ══════════════ 配置 → 界面 ══════════════ */
@@ -76,7 +77,7 @@ public partial class AppsPage : UserControl
         }
         catch (ArgumentException ex)
         {
-            RegexHint.Text = "这个正则写错了，暂时不生效：" + ex.Message;
+            RegexHint.Text = (UiText.IsEnglish ? "Invalid regex, disabled for now: " : "这个正则写错了，暂时不生效：") + ex.Message;
             RegexHint.Visibility = Visibility.Visible;
         }
     }
@@ -127,12 +128,12 @@ public partial class AppsPage : UserControl
             _rows.Add(new AppRuleRowData
             {
                 Exe = a.Exe,
-                Note = string.IsNullOrWhiteSpace(a.Note) ? "（无备注）" : a.Note,
+                Note = string.IsNullOrWhiteSpace(a.Note) ? UiText.Translate("（无备注）") : a.Note,
                 Override = OverrideSummary(a.Override),
                 Icon = TryIconFor(a.Exe, paths),
             });
 
-        AppsCount.Text = $"{apps.Count} 项";
+        AppsCount.Text = UiText.IsEnglish ? $"{apps.Count} items" : $"{apps.Count} 项";
         AppsEmpty.Visibility = apps.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         ApplyAppsFilter();
     }
@@ -176,10 +177,12 @@ public partial class AppsPage : UserControl
     {
         if (o == null) return "";
         var parts = new List<string>();
-        if (o.MaxMultiplier is double m) parts.Add($"上限 {m:0}×");
-        if (o.Smooth is bool sm) parts.Add(sm ? "平滑开" : "平滑关");
-        if (o.ScrollMode == "pixel") parts.Add("按像素");
-        else if (o.ScrollMode == "whole") parts.Add("整格");
+        if (o.MaxMultiplier is double m)
+            parts.Add(UiText.IsEnglish ? $"max {m:0}×" : $"上限 {m:0}×");
+        if (o.Smooth is bool sm)
+            parts.Add(UiText.IsEnglish ? (sm ? "smooth on" : "smooth off") : (sm ? "平滑开" : "平滑关"));
+        if (o.ScrollMode == "pixel") parts.Add(UiText.IsEnglish ? "pixel" : "按像素");
+        else if (o.ScrollMode == "whole") parts.Add(UiText.IsEnglish ? "whole notch" : "整格");
         return parts.Count == 0 ? "" : "· " + string.Join(" · ", parts);
     }
 

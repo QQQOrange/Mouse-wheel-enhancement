@@ -154,8 +154,11 @@ public partial class MainWindow
 
         if (adminTask && !wantTask)
         {
-            message = "计划任务还在，但设置里已经关掉了「开机自启 + 以管理员身份运行」—— " +
-                      "它会让你下次登录时仍然被拉起来（而且是管理员）。点「立即修复」按当前设置清理。";
+            message = UiText.IsEnglish
+                ? "A scheduled task still exists, but \"Start with Windows + Run as administrator\" is now off — " +
+                  "it will still launch this app at your next sign-in (with elevation). Click Fix now to clean it up."
+                : "计划任务还在，但设置里已经关掉了「开机自启 + 以管理员身份运行」—— " +
+                  "它会让你下次登录时仍然被拉起来（而且是管理员）。点「立即修复」按当前设置清理。";
         }
         else if (adminTask)
         {

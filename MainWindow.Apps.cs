@@ -140,8 +140,8 @@ public partial class MainWindow
 
     /// <summary>底部右侧那行小字的正式内容（版本 + 权限）。</summary>
     private static string FooterInfo() => Services.IsElevated
-        ? $"v{Services.Version} · 管理员"
-        : $"v{Services.Version} · 普通权限";
+        ? $"v{Services.Version} · {(UiText.IsEnglish ? "Administrator" : "管理员")}"
+        : $"v{Services.Version} · {(UiText.IsEnglish ? "Standard user" : "普通权限")}";
 
     /// <summary>
     /// 底部右侧那行小字临时换成一句提示，6 秒后自动还原。

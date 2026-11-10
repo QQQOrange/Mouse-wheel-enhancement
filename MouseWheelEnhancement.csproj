@@ -92,6 +92,7 @@
   <ItemGroup>
     <EmbeddedResource Include="HelpContent.json" />
     <EmbeddedResource Include="HelpContent-en.json" Condition="Exists('HelpContent-en.json')" />
+    <EmbeddedResource Include="UiTextEnglish.json" Condition="Exists('UiTextEnglish.json')" />
   </ItemGroup>
 
   <!-- UI Automation：WPF 文档型 ScrollViewer 能按 delta 滚，ListBox/DataGrid 不能。

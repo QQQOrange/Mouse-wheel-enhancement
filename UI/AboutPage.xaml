@@ -37,9 +37,9 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="帮助页语言" Style="{StaticResource Caption}" />
+                                    <TextBlock Text="界面语言" Style="{StaticResource Caption}" />
                                     <TextBlock Grid.Column="1" Style="{StaticResource Caption}"
-                                               Text="主界面暂为中文；帮助页可切换英文（JSON 资源）" Margin="0,0,10,0" />
+                                               Text="主界面与帮助页；切换后立即生效" Margin="0,0,10,0" />
                                     <Border Grid.Column="2" Style="{StaticResource SegGroup}">
                                         <StackPanel Orientation="Horizontal">
                                             <RadioButton x:Name="LangZh" GroupName="lang" Content="简体中文"

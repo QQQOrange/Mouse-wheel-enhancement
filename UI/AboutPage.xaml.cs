@@ -31,6 +31,7 @@ public partial class AboutPage : UserControl
 
         SyncLanguage();
         RefreshElevation();
+        UiText.Apply(this);
         Loaded += (_, _) => RefreshElevation();
         Unloaded += (_, _) => StopInputMonitor();
     }
@@ -58,10 +59,14 @@ public partial class AboutPage : UserControl
         var elevated = Services.IsElevated;
         var wantsAdmin = Services.Config.Behavior.RunAsAdmin;
         AboutElevation.Text = elevated
-            ? "管理员（可以接管以管理员身份运行的窗口）"
+            ? UiText.Translate("管理员") + (UiText.IsEnglish ? " (can capture elevated windows)" : "（可以接管以管理员身份运行的窗口）")
             : wantsAdmin
-                ? "普通用户 —— 设置里已开启「以管理员身份运行」，但这次启动没拿到权限"
-                : "普通用户（管理员窗口内的滚动不会被增强）";
+                ? (UiText.IsEnglish
+                    ? "Standard user — \"Run as administrator\" is on, but this launch did not get elevation"
+                    : "普通用户 —— 设置里已开启「以管理员身份运行」，但这次启动没拿到权限")
+                : (UiText.IsEnglish
+                    ? "Standard user (scrolling inside elevated windows is not enhanced)"
+                    : "普通用户（管理员窗口内的滚动不会被增强）");
     }
 
     /* ══════════════ 动作：转给主窗口（窗口所有者/页脚状态都在主窗口） ══════════════ */
