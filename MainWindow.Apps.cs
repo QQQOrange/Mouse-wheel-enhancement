@@ -25,6 +25,15 @@ public partial class MainWindow
 {
     private void RefreshApps()
     {
+        /* 懒加载：应用名单没打开时不做进程枚举/图标提取/列表重建。
+         * 这些在启动时并不需要，等用户真的切到这一页再做；切页时再补。 */
+        if (!IsLoaded || Nav == null || Nav.SelectedIndex != AppsTabIndex)
+        {
+            _appsDirty = true;
+            return;
+        }
+        _appsDirty = false;
+
         var apps = Services.Config.Filter.Apps;
 
         /* 指纹没变就直接返回。

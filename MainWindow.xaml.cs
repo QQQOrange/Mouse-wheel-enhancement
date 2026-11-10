@@ -44,6 +44,9 @@ public partial class MainWindow : Window
     /// <summary>名单内容的指纹，用来避免"拖一下滑块就把列表重建一遍"。</summary>
     private string _appsSignature = "\u0000";
 
+    /// <summary>名单页未打开时置位；切到该页再真正枚举进程/取图标。</summary>
+    private bool _appsDirty = true;
+
     /// <summary>置位后关闭窗口就是真的销毁（释放资源），而不是退回托盘。</summary>
     private bool _allowClose;
     private UpdateInfo? _info;
@@ -730,6 +733,7 @@ public partial class MainWindow : Window
         }
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
+        if (Nav.SelectedIndex == AppsTabIndex && _appsDirty) RefreshApps();
         if (Nav.SelectedIndex == 1) InvalidateCurve();
         if (Nav.SelectedIndex == 2) InvalidateSmoothPreview();
 
@@ -813,6 +817,7 @@ public partial class MainWindow : Window
 
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
     internal const int HelpTabIndex = 5;
+    internal const int AppsTabIndex = 3;
 
     protected override void OnActivated(EventArgs e)
     {
