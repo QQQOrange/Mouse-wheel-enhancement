@@ -975,6 +975,22 @@ public partial class App
         sb.AppendLine($"自身 exe 判定：{ownBytes} B / 100k，{ownNs:0} ns/次");
 
         sb.AppendLine("------------------------------------------------------------");
+
+        /* 崩溃取证自检：MiniDumpWriteDump 在当前进程写一份小 dump，确认 P/Invoke 可用。
+         * 失败只报告，不影响热路径结论（某些受限环境 dbghelp 会被拦）。 */
+        try
+        {
+            var dump = Path.Combine(Path.GetTempPath(), "mwe-bench-" + Guid.NewGuid().ToString("N") + ".dmp");
+            var dumpOk = Core.CrashDump.TryWrite(dump);
+            var dumpSize = File.Exists(dump) ? new FileInfo(dump).Length : 0;
+            try { if (File.Exists(dump)) File.Delete(dump); } catch { }
+            sb.AppendLine($"崩溃 minidump：{(dumpOk ? "可写" : "不可用")}（{dumpSize:N0} B）");
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine("崩溃 minidump 自检异常：" + ex.Message);
+        }
+
         sb.AppendLine(pass ? "结论：通过（热路径无逐事件分配）" : "结论：未通过（存在逐事件分配）");
         return WriteCliResult("benchhook.txt", sb.ToString(), pass ? 0 : 1);
     }
