@@ -41,7 +41,7 @@ public partial class App : System.Windows.Application
     {
         "--selftest", "--measure", "--featurecheck", "--taskcheck", "--frametrace",
         "--dialogtest", "--runtimecheck", "--wheeltest", "--scrollsmooth", "--probe",
-        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke", "--wheelcapture", "--uiaprobe", "--benchhook", "--exporthelp",
+        "--osdshot", "--uishot", "--uibase", "--uicheck", "--langcheck", "--smoke", "--wheelcapture", "--uiaprobe", "--benchhook", "--exporthelp",
     };
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
 
@@ -303,6 +303,21 @@ public partial class App : System.Windows.Application
             baseWin.Show();
             var code = CaptureUiBaseline(baseWin);
             baseWin.Close();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* 中英文切换的运行时检查：建窗口、切英文、检查导航/标题，再切回中文。 */
+        if (e.Args.Any(a => a.Equals("--langcheck", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var langWin = new MainWindow();
+            langWin.Width = 1120;
+            langWin.Height = 846;
+            langWin.Show();
+            var code = CheckLanguageSwitch(langWin);
+            langWin.Close();
             Shutdown(code);
             Environment.Exit(code);
             return;

@@ -509,6 +509,60 @@ public partial class App
     /// `--uibase`：把 light/dark 两套、页面 0..7 的截图复制到
     /// <c>tools/ui-baseline/page{n}-{mode}.png</c>（覆盖旧基线）。
     /// </summary>
+    /// <summary>
+    /// `--langcheck`：不依赖截图，直接切语言并读控件文本。
+    /// 重点验证 ApplyAll 是否覆盖了导航、页面标题和窗口标题，以及切回中文是否恢复。
+    /// </summary>
+    private static int CheckLanguageSwitch(MainWindow w)
+    {
+        var sb = new StringBuilder();
+        var fail = 0;
+
+        static string NavText(MainWindow window)
+            => (window.FindName("NavList") as ListBox)?.Items.Count > 0
+                ? ((window.FindName("NavList") as ListBox)!.Items[0] as ListBoxItem)?.Content?.ToString() ?? ""
+                : "";
+        static string PageText(MainWindow window)
+            => (window.FindName("PageTitle") as TextBlock)?.Text ?? "";
+
+        // 最后停留的页可能是任意一页；等 Loaded/窗口位置恢复跑完，再固定切回概览。
+        w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        if (w.FindName("Nav") is TabControl tabs) tabs.SelectedIndex = 0;
+        if (w.FindName("NavList") is ListBox nav) nav.SelectedIndex = 0;
+        w.UpdateLayout();
+        w.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+
+        w.SetHelpLanguage(true);
+        w.UpdateLayout();
+        var enNav = NavText(w);
+        var enPage = PageText(w);
+        var enTitle = w.Title;
+        sb.AppendLine($"en: nav={enNav} page={enPage} title={enTitle}");
+        if (enNav != "Overview") fail++;
+        if (enPage != "Overview") fail++;
+        if (enTitle != "Wheel Enhancer") fail++;
+
+        w.SetHelpLanguage(false);
+        w.UpdateLayout();
+        var zhNav = NavText(w);
+        var zhPage = PageText(w);
+        var zhTitle = w.Title;
+        sb.AppendLine($"zh: nav={zhNav} page={zhPage} title={zhTitle}");
+        if (zhNav != "概览") fail++;
+        if (zhPage != "概览") fail++;
+        if (zhTitle != "鼠标滚轮增强") fail++;
+
+        sb.AppendLine(fail == 0 ? "结论：通过" : $"结论：失败 {fail} 项");
+        try
+        {
+            File.WriteAllText(Path.Combine(AppPaths.DataDir, "langcheck.txt"), sb.ToString(),
+                new UTF8Encoding(false));
+        }
+        catch { }
+        Log.Info("langcheck: " + (fail == 0 ? "全部通过" : $"失败 {fail} 项"));
+        return fail == 0 ? 0 : 1;
+    }
+
     private static int CaptureUiBaseline(MainWindow w)
     {
         var sb = new StringBuilder();
