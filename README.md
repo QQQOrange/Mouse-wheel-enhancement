@@ -95,11 +95,13 @@ Mouse wheel enhancement data\      你的设置和日志（第一次运行后生
 > 必须有一个不依赖 .NET 10 的进程先跑起来（这个 exe 的外壳是 .NET Framework 4.8，
 > Win10/11 内置）。把主程序嵌进去，就既能弹窗、又只需要一个文件。
 
-打包产物 `MouseWheelEnhancement-win-x64.zip` 里就是上面这个目录结构，整包解压即可。
+打包产物 `MouseWheelEnhancement-win-x64.zip`（或 `win-arm64`）里就是上面这个目录结构，整包解压即可。
 
 > 编译启动器需要 .NET Framework 4.8 参考程序集（装了 Visual Studio 的机器都有）。
 
 默认装到 **`D:\software\myself`**（`-OutDir` 换目录，`-NoInstall` 只发布不覆盖）。
+`-Architecture arm64` 可交叉编译 Windows on ARM 主程序；交叉产物会跳过本机自检。
+如果存在 `tools\sign.ps1`，发布脚本会在打包前调用它做 Authenticode/自定义签名。
 也可以手动：
 
 ```bash
@@ -121,10 +123,16 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ## 自检
 
 ```bash
-# 421 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、
-# 触控板流分类、τ45 单格曲线、主题、自我增强、版本比较、令牌清洗、名单匹配、
-# 配置读写、按应用覆盖派生、窗口记忆、schema 迁移
+# 443 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、
+# 触控板流分类、τ45 单格曲线、UWP/Java/Tk 语义、主题、自我增强、版本比较、令牌清洗、
+# 名单匹配、配置读写、按应用覆盖派生、窗口记忆、schema 迁移
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全部通过
+
+# 钩子热路径基准：分类器 / 最近目标 / 自身判定，10 万次级别的分配与耗时
+MouseWheelEnhancement.App.exe --benchhook
+
+# WPF 控件级语义探测：真开 ScrollViewer 和 ListBox 两个窗口，验证 UIA 判定
+MouseWheelEnhancement.App.exe --uiaprobe
 
 # 功能链路检查：把「逻辑对、接线可能错」的地方跑一遍（自己 new 引擎、装一次钩子再拆掉，
 # 用临时目录做配置，不碰你的真实设置）。覆盖：按应用覆盖在钩子里真的命中 / 钩子轮换通道 /

@@ -155,9 +155,11 @@ public sealed record RuntimeSettings
     public bool IsOwnExe(string? exe) =>
         OwnExe.Length > 0
         && !string.IsNullOrEmpty(exe)
-        /* 归一化必须在这里做：调用方传进来的可能是完整路径（Environment.ProcessPath），
-         * 也可能是裸文件名（从 pid 取到的那种），不能指望调用方先处理好。 */
-        && string.Equals(AppRuleName.Normalize(exe), OwnExe, StringComparison.OrdinalIgnoreCase);
+        /* TargetResolver 给的 exe 已经归一化过（小写文件名），所以绝大多数调用
+         * 在这里一次比较就命中，不再每个事件分配一个 Normalize 字符串。
+         * 仍保留归一化兜底：调用方也可能传完整路径（Environment.ProcessPath）。 */
+        && (string.Equals(exe, OwnExe, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(AppRuleName.Normalize(exe), OwnExe, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>给速度判定用的倍率配置（独立副本，不受用户后续改配置影响）。</summary>
     public BoostConfig BoostView { get; init; } = new();

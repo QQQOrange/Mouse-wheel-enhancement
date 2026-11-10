@@ -12,8 +12,8 @@
     <!-- 启动器占用 MouseWheelEnhancement.exe，主程序是 .App.exe -->
     <AssemblyName>MouseWheelEnhancement.App</AssemblyName>
     <RootNamespace>MouseWheelEnhancement</RootNamespace>
-    <Version>1.9.10</Version>
-    <FileVersion>1.9.10.0</FileVersion>
+    <Version>1.9.11</Version>
+    <FileVersion>1.9.11.0</FileVersion>
     <Product>鼠标滚轮增强</Product>
     <AssemblyTitle>鼠标滚轮增强</AssemblyTitle>
     <Company>QQQOrange</Company>
@@ -41,7 +41,7 @@
         tools\publish.ps1 -SelfContained
   -->
   <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
   </PropertyGroup>
 
   <!-- 自包含才有"压缩"和"提取原生库"这两件事；框架依赖时设了会直接报 NETSDK1176 -->
@@ -87,5 +87,9 @@
     <Using Include="System.Net.Http" />
     <Using Include="System.Collections.ObjectModel" />
   </ItemGroup>
+
+  <!-- UI Automation：WPF 文档型 ScrollViewer 能按 delta 滚，ListBox/DataGrid 不能。
+       只看窗口类名分不出来，需要按光标下的控件做一次后台探测（见 WpfSemanticProbe）。
+       UIAutomationClient/Types 由 WindowsDesktop 框架隐式提供，不要手工加 Reference。 -->
 
 </Project>

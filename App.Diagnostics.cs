@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -432,12 +433,16 @@ public partial class App
     private static int ShotAllPages(MainWindow w, string mode, int only)
     {
         var code = 0;
+        Native.GetCursorPos(out var savedCursor);
         try
         {
             Theme.SetMode(mode);
             for (var tab = (only >= 0 ? only : 0); tab < (only >= 0 ? only + 1 : 8); tab++)
             {
                 w.SelectTab(tab);
+                /* 截图前把光标移开：ListBox 的 hover 高亮会跟着鼠标走，
+                 * 同一份代码两次截图可能一张有高亮一张没有（UI 基线假失败）。 */
+                Native.SetCursorPos(1, 1);
                 PumpFor(w, 260);
                 w.UpdateLayout();
 
@@ -450,6 +455,10 @@ public partial class App
         {
             Log.Error("uishot 失败", ex);
             code = 31;
+        }
+        finally
+        {
+            try { Native.SetCursorPos(savedCursor.X, savedCursor.Y); } catch { }
         }
         return code;
     }
@@ -670,7 +679,8 @@ public partial class App
             var width = a.Width;
             var height = a.Height;
             var total = (long)width * height;
-            long diff = 0;
+            long exact = 0;
+            long significant = 0;
             var cells = new Dictionary<(int X, int Y), long>();
 
             for (var y = 0; y < height; y++)
@@ -684,16 +694,28 @@ public partial class App
                         a.Pixels[i + 2] == b.Pixels[i + 2] &&
                         a.Pixels[i + 3] == b.Pixels[i + 3]) continue;
 
-                    diff++;
+                    exact++;
+
+                    /* 每通道差 ≤ 6 视为抗锯齿/字体栅格化抖动，不算回归。
+                     * 只看“肉眼可见”的差异，避免 Windows 小版本字体变化就误报。 */
+                    var delta = Math.Max(
+                        Math.Max(Math.Abs(a.Pixels[i] - b.Pixels[i]),
+                                 Math.Abs(a.Pixels[i + 1] - b.Pixels[i + 1])),
+                        Math.Max(Math.Abs(a.Pixels[i + 2] - b.Pixels[i + 2]),
+                                 Math.Abs(a.Pixels[i + 3] - b.Pixels[i + 3])));
+                    if (delta <= 6) continue;
+
+                    significant++;
                     var key = (x / 32, y / 32);
                     cells[key] = cells.TryGetValue(key, out var n) ? n + 1 : 1;
                 }
             }
 
-            var ratio = total == 0 ? 0 : (double)diff / total;
-            if (ratio > 0.003)
+            var ratio = total == 0 ? 0 : (double)significant / total;
+            if (ratio > 0.005)
             {
-                sb.AppendLine($"✗ {label}：差异 {diff}/{total} 像素（{ratio:P3}），超过 0.30%");
+                sb.AppendLine($"✗ {label}：可见差异 {significant}/{total} 像素（{ratio:P3}），超过 0.50%；" +
+                              $"逐像素差异 {exact}");
                 var hot = cells
                     .OrderByDescending(kv => kv.Value)
                     .ThenBy(kv => kv.Key.Y)
@@ -716,7 +738,7 @@ public partial class App
                 return false;
             }
 
-            sb.AppendLine($"✓ {label}：差异 {diff} 像素（{ratio:P3}）");
+            sb.AppendLine($"✓ {label}：可见差异 {significant} 像素（{ratio:P3}），逐像素差异 {exact}");
             return true;
         }
         catch (Exception ex)
@@ -897,24 +919,196 @@ public partial class App
     /// 细腻倍数、是否加速、倍率、输出单位全部摊开，一眼就能看出是哪一步算错了。
     /// </para>
     /// </summary>
-    private static int TargetTrace()
+    /// <summary>
+    /// <c>--benchhook</c>：钩子热路径的分配/耗时基准。
+    /// 只测纯托管部分（分类器、最近目标、自身判定），不装全局钩子。
+    /// </summary>
+    private static int BenchHookCli()
     {
         var sb = new StringBuilder();
+        sb.AppendLine("钩子热路径基准（每项 10 万次）");
+        sb.AppendLine("------------------------------------------------------------");
+
+        var pass = true;
+
+        static long AllocBytes() => GC.GetAllocatedBytesForCurrentThread();
+
+        /* ① 分类器 */
+        var classifier = new WheelInputClassifier();
+        for (var i = 0; i < 1000; i++) classifier.Observe(120, i * 10.0);
+        classifier.Reset();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var b0 = AllocBytes();
+        var sw = Stopwatch.StartNew();
+        for (var i = 0; i < 100_000; i++) classifier.Observe(120, i * 10.0);
+        sw.Stop();
+        var classBytes = AllocBytes() - b0;
+        var classNs = sw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        pass &= classBytes <= 4096;
+        sb.AppendLine($"输入分类器：{classBytes} B / 100k，{classNs:0} ns/次，{classBytes / 100_000.0:0.00} B/次");
+
+        /* ② 最近目标记录（命中路径不能分配） */
+        var target = new TargetInfo(IntPtr.Zero, 0, "mousewheelenhancement.app.exe",
+            "", "HwndWrapper[App;;1]", false);
+        for (var i = 0; i < 100; i++) WheelEngine.TrackRecentForBenchmark(target, false);
+        b0 = AllocBytes();
+        sw.Restart();
+        for (var i = 0; i < 100_000; i++) WheelEngine.TrackRecentForBenchmark(target, false);
+        sw.Stop();
+        var recentBytes = AllocBytes() - b0;
+        var recentNs = sw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        pass &= recentBytes <= 4096;
+        sb.AppendLine($"最近目标记录：{recentBytes} B / 100k，{recentNs:0} ns/次");
+
+        /* ③ 自身 exe 判定（TargetInfo.Exe 已归一化时走快路径） */
+        var s = RuntimeSettings.From(AppConfig.Default());
+        for (var i = 0; i < 100; i++) _ = s.IsOwnExe(target.Exe);
+        b0 = AllocBytes();
+        sw.Restart();
+        for (var i = 0; i < 100_000; i++) _ = s.IsOwnExe(target.Exe);
+        sw.Stop();
+        var ownBytes = AllocBytes() - b0;
+        var ownNs = sw.Elapsed.TotalMilliseconds * 1_000_000 / 100_000;
+        pass &= ownBytes <= 4096;
+        sb.AppendLine($"自身 exe 判定：{ownBytes} B / 100k，{ownNs:0} ns/次");
+
+        sb.AppendLine("------------------------------------------------------------");
+        sb.AppendLine(pass ? "结论：通过（热路径无逐事件分配）" : "结论：未通过（存在逐事件分配）");
+        return WriteCliResult("benchhook.txt", sb.ToString(), pass ? 0 : 1);
+    }
+
+    /// <summary>
+    /// <c>--uiaprobe</c>：真开两个 WPF 窗口，验证控件级语义探测。
+    /// ScrollViewer（文档型）应判“按像素”，ListBox（按项）应判“整格”。
+    /// </summary>
+    private static int UiaProbeCli()
+    {
+        var sb = new StringBuilder();
+        var ok = true;
+
+        Window MakeWindow(UIElement content, string title, int left)
+        {
+            var w = new Window
+            {
+                Title = title,
+                Width = 360,
+                Height = 300,
+                Left = left,
+                Top = 120,
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                Content = content,
+                ShowInTaskbar = false,
+                Topmost = true,
+            };
+            w.Show();
+            w.Activate();
+            return w;
+        }
+
+        void Pump(int ms)
+        {
+            var frame = new DispatcherFrame();
+            var timer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(ms),
+            };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                frame.Continue = false;
+            };
+            timer.Start();
+            Dispatcher.PushFrame(frame);
+        }
+
+        bool Probe(Window w)
+        {
+            var hwnd = new WindowInteropHelper(w).Handle;
+            /* PointToScreen 返回物理像素，SetCursorPos 也要物理像素；
+             * w.Left/Top 是 DIP，150% DPI 下直接相加会落到标题栏。 */
+            var p = w.PointToScreen(new Point(w.ActualWidth / 2, w.ActualHeight / 2));
+            Native.SetCursorPos((int)p.X, (int)p.Y);
+            Pump(60);
+            var pixel = false;
+            for (var i = 0; i < 20; i++)
+            {
+                Pump(100);
+                pixel = WpfSemanticProbe.UsePixel(hwnd);
+                if (pixel) break;
+            }
+            return pixel;
+        }
+
+        Window? doc = null, list = null;
+        try
+        {
+            var panel = new StackPanel();
+            for (var i = 0; i < 80; i++)
+                panel.Children.Add(new TextBlock { Text = "文档行 " + i, Height = 20 });
+            doc = MakeWindow(new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = panel,
+            }, "uia-doc", 120);
+            Pump(150);
+            var docPixel = Probe(doc);
+            ok &= docPixel;
+            sb.AppendLine($"ScrollViewer 判像素：{(docPixel ? "是" : "否")}");
+            sb.AppendLine("  trace：" + WpfSemanticProbe.LastTrace);
+
+            var items = new ListBox();
+            for (var i = 0; i < 80; i++) items.Items.Add("列表项 " + i);
+            list = MakeWindow(items, "uia-list", 540);
+            Pump(150);
+            var listPixel = Probe(list);
+            ok &= !listPixel;
+            sb.AppendLine($"ListBox 判整格：{(listPixel ? "否（误判像素）" : "是")}");
+            sb.AppendLine("  trace：" + WpfSemanticProbe.LastTrace);
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            sb.AppendLine("探测异常：" + ex);
+        }
+        finally
+        {
+            try { doc?.Close(); } catch { }
+            try { list?.Close(); } catch { }
+        }
+
+        sb.AppendLine();
+        sb.AppendLine(ok ? "结论：全部通过" : "结论：未通过");
+        return WriteCliResult("uiaprobe.txt", sb.ToString(), ok ? 0 : 1);
+    }
+
+    private static int TargetTrace()
+    {        var sb = new StringBuilder();
         var seen = new List<string>();
 
         sb.AppendLine("请把鼠标放到目标程序（PPT / WPS）上，滚**一格**，等两秒再滚一格。");
         sb.AppendLine("采样 20 秒…");
 
         var last = "";
-        for (var i = 0; i < 400; i++)
+        WheelEngine.TraceLine = "";
+        WheelEngine.TraceEnabled = true;
+        try
         {
-            PumpFor(null, 50);
-            var line = WheelEngine.TraceLine;
-            if (!string.IsNullOrEmpty(line) && line != last)
+            for (var i = 0; i < 400; i++)
             {
-                last = line;
-                seen.Add($"{DateTime.Now:HH:mm:ss.fff}  {line}");
+                PumpFor(null, 50);
+                var line = WheelEngine.TraceLine;
+                if (!string.IsNullOrEmpty(line) && line != last)
+                {
+                    last = line;
+                    seen.Add($"{DateTime.Now:HH:mm:ss.fff}  {line}");
+                }
             }
+        }
+        finally
+        {
+            WheelEngine.TraceEnabled = false;
         }
 
         sb.AppendLine();

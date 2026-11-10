@@ -109,6 +109,9 @@
                     <Border Style="{StaticResource Badge}" Margin="10,0,0,0">
                         <TextBlock x:Name="PageBadge" Style="{StaticResource BadgeText}" Text="—" />
                     </Border>
+                    <Border x:Name="StatusPill" Style="{StaticResource Badge}" Margin="8,0,0,0">
+                        <TextBlock x:Name="StatusPillText" Style="{StaticResource BadgeText}" Text="增强中" />
+                    </Border>
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0"
@@ -672,15 +675,15 @@
                                 <TextBlock Text="手感曲线" Style="{StaticResource H2}" />
                                 <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,10"
                                            Text="不想逐个调滑块就选一个现成的：下面几档只改「跟手时间」和「惯性长度」，其余参数不动。" />
-                                <WrapPanel>
+                                <WrapPanel x:Name="PresetPanel">
                                     <Button Content="干脆" Style="{StaticResource GhostButton}" Tag="crisp"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
                                             ToolTip="收尾快、惯性短（τ 30ms / 惯性 100ms）" />
                                     <Button Content="顺滑" Style="{StaticResource GhostButton}" Tag="smooth"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
                                             ToolTip="默认手感（τ 40ms / 惯性 320ms）" />
-                                    <Button Content="触控板" Style="{StaticResource GhostButton}" Tag="trackpad"
-                                            Click="CurvePreset_Click"
+                                    <Button Content="触控板 · 推荐" Style="{StaticResource GhostButton}" Tag="trackpad"
+                                            Click="CurvePreset_Click" Margin="0,0,8,0"
                                             ToolTip="按真实触控板实测重定（τ 45ms / 惯性 300ms）：单格约 100ms 连续推进，慢滚不飘" />
                                     <Button Content="触控板级" Style="{StaticResource GhostButton}" Tag="trackpad-plus"
                                             Click="CurvePreset_Click" Margin="0,0,8,0"
@@ -691,6 +694,12 @@
                                 </WrapPanel>
                                 <TextBlock x:Name="CurveSummary" Style="{StaticResource Caption}"
                                            Margin="0,10,0,0" Text="当前：跟手 40 ms · 惯性 320 ms" />
+                                <Border Background="{DynamicResource CardBg2}" CornerRadius="8"
+                                        Height="86" Margin="0,12,0,0" ClipToBounds="True">
+                                    <Canvas x:Name="SmoothPreview" ClipToBounds="True"
+                                            AutomationProperties.Name="跟手曲线预览"
+                                            SizeChanged="SmoothPreview_SizeChanged" />
+                                </Border>
                             </StackPanel>
                         </Border>
 
@@ -727,6 +736,7 @@
                                 <Slider x:Name="WheelLinesSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                         Minimum="1" Maximum="10" SmallChange="1" LargeChange="1"
                                         TickFrequency="1" IsSnapToTickEnabled="True"
+                                        AutomationProperties.Name="每格滚动格数"
                                         ValueChanged="WheelLines_Changed" />
                                 <TextBlock x:Name="WheelLinesHint" Style="{StaticResource Caption}"
                                            Margin="0,8,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
@@ -855,6 +865,7 @@
                                 <Slider x:Name="TauSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                         Minimum="30" Maximum="120" SmallChange="5" LargeChange="5"
                                         TickFrequency="5" IsSnapToTickEnabled="True"
+                                        AutomationProperties.Name="跟手时间（τ）"
                                         ValueChanged="Tau_Changed" />
                                 <Grid Margin="0,3,9,0">
                                     <TextBlock Text="30 ms · 紧跟" Style="{StaticResource Caption}" FontSize="10.5"
@@ -883,6 +894,7 @@
                                 <Slider x:Name="GlideSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                         Minimum="0" Maximum="600" SmallChange="10" LargeChange="20"
                                         TickFrequency="10" IsSnapToTickEnabled="True"
+                                        AutomationProperties.Name="松手后的惯性"
                                         ValueChanged="Glide_Changed" />
                                 <Grid Margin="0,3,9,0">
                                     <TextBlock Text="0 · 关闭滑行" Style="{StaticResource Caption}" FontSize="10.5"
@@ -915,6 +927,7 @@
                                 <Slider x:Name="BacklogSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                         Minimum="1" Maximum="20" SmallChange="1" LargeChange="2"
                                         TickFrequency="1" IsSnapToTickEnabled="True"
+                                        AutomationProperties.Name="积压上限"
                                         ValueChanged="Backlog_Changed" />
                                 <Grid Margin="0,3,9,0">
                                     <TextBlock Text="1 格 · 最跟手" Style="{StaticResource Caption}" FontSize="10.5"
@@ -983,6 +996,10 @@
                                     <TextBlock x:Name="AppsCount" Grid.Column="1" Style="{StaticResource Caption}"
                                                VerticalAlignment="Center" Text="0 项" />
                                 </Grid>
+                                <TextBox x:Name="AppsFilterBox" Style="{StaticResource DarkTextBox}"
+                                         Margin="0,0,0,10" TextChanged="AppsFilter_Changed"
+                                         AutomationProperties.Name="筛选应用名单"
+                                         ToolTip="按 exe 名或备注筛选（不影响名单本身）" />
                                 <ListBox x:Name="AppsList" Style="{StaticResource PlainListBox}"
                                          ItemContainerStyle="{StaticResource PlainListBoxItem}" MaxHeight="330"
                                          MouseRightButtonUp="AppsList_RightClick"
@@ -1011,6 +1028,9 @@
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
+                                <TextBlock x:Name="AppsNoMatch" Style="{StaticResource Caption}"
+                                           Margin="2,8,0,0" Visibility="Collapsed"
+                                           Text="没有匹配的程序。清空上面的筛选框即可看到全部。" />
                                 <Border x:Name="AppsEmpty" Visibility="Collapsed" Margin="0,6,0,0"
                                         Background="{DynamicResource CardBg2}" CornerRadius="10" Padding="16,14">
                                     <StackPanel>
@@ -1351,6 +1371,31 @@
                                             Click="ExitApp_Click"
                                             ToolTip="完全退出（托盘图标也会消失）。平时点 × 只是收回托盘" />
                                 </StackPanel>
+
+                                <Border Height="1" Background="{DynamicResource BorderBrushSoft}" Margin="0,18,0,14" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="实时输入监视" FontWeight="SemiBold" />
+                                        <TextBlock Style="{StaticResource Caption}"
+                                                   Text="打开后显示最近一次滚轮事件的判定（目标、原始 delta、倍率、输出）。只读，不写日志；平时请保持关闭，避免热路径拼字符串。" />
+                                    </StackPanel>
+                                    <ToggleButton x:Name="InputMonitorSwitch" Grid.Column="1"
+                                                  Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                  AutomationProperties.Name="实时输入监视"
+                                                  Checked="InputMonitor_Toggled"
+                                                  Unchecked="InputMonitor_Toggled" />
+                                </Grid>
+                                <Border Background="{DynamicResource CardBg2}" CornerRadius="8"
+                                        Margin="0,10,0,0" Padding="12,9" MinHeight="34">
+                                    <TextBlock x:Name="InputMonitorText" Style="{StaticResource Mono}"
+                                               FontSize="11.5" TextWrapping="Wrap"
+                                               Foreground="{DynamicResource TextSecondary}"
+                                               Text="已关闭。打开开关后在这里滚动一下。" />
+                                </Border>
                             </StackPanel>
                         </Border>
 

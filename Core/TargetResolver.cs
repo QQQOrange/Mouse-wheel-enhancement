@@ -29,6 +29,17 @@ public sealed class TargetResolver
 {
     private readonly ConcurrentDictionary<IntPtr, Entry> _cache = new();
 
+    /// <summary>
+    /// 光标命中缓存：光标没动、且距上次命中不超过 32ms 时直接复用顶层窗口。
+    /// 高频触控板流一秒上百个事件，WindowFromPoint/GetAncestor 没必要每个都做；
+    /// 32ms 内弹出窗口/切换窗口的误判最多影响一两帧，下一次事件就会刷新。
+    /// </summary>
+    private const long HitTtlMs = 32;
+    private IntPtr _lastHitHwnd;
+    private long _lastHitMs;
+    private int _lastHitX;
+    private int _lastHitY;
+
     private sealed class Entry
     {
         public uint Pid;
@@ -68,8 +79,22 @@ public sealed class TargetResolver
         {
             if (Native.GetCursorPos(out var pt))
             {
-                var hit = Native.WindowFromPoint(pt);
-                if (hit != IntPtr.Zero) hwnd = Native.GetAncestor(hit, Native.GA_ROOT);
+                var now = Environment.TickCount64;
+                if (_lastHitHwnd != IntPtr.Zero
+                    && pt.X == _lastHitX && pt.Y == _lastHitY
+                    && now - _lastHitMs <= HitTtlMs)
+                {
+                    hwnd = _lastHitHwnd;
+                }
+                else
+                {
+                    var hit = Native.WindowFromPoint(pt);
+                    if (hit != IntPtr.Zero) hwnd = Native.GetAncestor(hit, Native.GA_ROOT);
+                    _lastHitHwnd = hwnd;
+                    _lastHitX = pt.X;
+                    _lastHitY = pt.Y;
+                    _lastHitMs = now;
+                }
             }
         }
         catch { /* 桌面切换等瞬间可能失败，退回前台窗口 */ }

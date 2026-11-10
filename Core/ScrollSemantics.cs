@@ -48,12 +48,25 @@ public static class ScrollSemantics
     private static readonly Rule[] Rules =
     {
         // ── 按事件（一格一事件）──
-        new("HwndWrapper[",        Kind.PerEvent,      false),   // WPF
+        new("HwndWrapper[",        Kind.PerEvent,      false),   // WPF（控件级探测见 WpfSemanticProbe）
         new("WindowsForms10.",     Kind.PerEvent,      false),   // WinForms
         // Qt 5/6：Qt51514QWindowIcon / Qt652QWindowIcon（版本号段单独判定，见 IsQtWindow）
         new("PPTFrameClass",       Kind.PerEvent,      true),    // 微软 PowerPoint
         new("screenClass",         Kind.PerEvent,      true),    // PowerPoint 放映
         // WPS 演示：PP12FrameClass / PP14FrameClass…（数字段单独判定，见 IsPpFrameClass）
+
+        /* UWP / WinUI 3：XAML ScrollViewer 的滚轮是"事件即一档"，不按 delta 比例；
+         * 用整格语义最稳。Win32 版 WinUI 3 的窗口类名就是 WinUIDesktopWin32WindowClass。 */
+        new("ApplicationFrameWindow",       Kind.PerEvent, false),
+        new("WinUIDesktopWin32WindowClass", Kind.PerEvent, false),
+        // Windows Terminal：终端按行滚，一格一事件。
+        new("CASCADIA_HOSTING_WINDOW_CLASS", Kind.PerEvent, false),
+        // Java Swing/AWT：MouseWheelEvent.getWheelRotation() 是 delta/120 的整数除法，
+        // 小于 120 的 delta 会被舍成 0；必须整格。Swing 不读系统行数。
+        new("SunAwt",              Kind.PerEvent,      true),
+        // Tk：绑定通常用 %D/120 的整数结果，同样不能收亚格。
+        new("TkTopLevel",          Kind.PerEvent,      true),
+        new("TkChild",             Kind.PerEvent,      true),
 
         // ── 按像素比例（浏览器/Office/系统 Edit）──
         // 实测（v1.9.10）：Chromium 对合成滚轮事件是**立即位移**，并不会自己
@@ -61,6 +74,7 @@ public static class ScrollSemantics
         // 所以这里必须归类为按比例滚动，由我们的动画器按帧发亚格 delta。
         new("Chrome_WidgetWin_",   Kind.Proportional, false),   // Chromium / Electron / Edge / CEF
         new("MozillaWindowClass",  Kind.Proportional, false),   // Firefox
+        new("CefBrowserWindow",    Kind.Proportional, false),   // 部分 CEF 宿主
     };
 
     /// <summary>把一个窗口类名解析成语义（唯一入口，所有判据都走这里）。</summary>

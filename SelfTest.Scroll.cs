@@ -278,6 +278,25 @@ internal static partial class SelfTest
             !ScrollSemantics.IsPerEventScroll("Chrome_WidgetWin_1"));
         Check("Firefox 不算", !ScrollSemantics.IsPerEventScroll("MozillaWindowClass"));
         Check("Office 不算", !ScrollSemantics.IsPerEventScroll("XLMAIN"));
+
+        /* UWP/WinUI3 的 XAML ScrollViewer 按事件滚；窗口类名来自 Win32 宿主。 */
+        Check("UWP 外壳算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("ApplicationFrameWindow"));
+        Check("WinUI 3 桌面窗口算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("WinUIDesktopWin32WindowClass"));
+        Check("Windows Terminal 算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("CASCADIA_HOSTING_WINDOW_CLASS"));
+        Check("CEF 宿主按像素比例",
+            ScrollSemantics.IsProportionalScroll("CefBrowserWindow"));
+        /* Java Swing/Tk 的 wheel rotation 是整数除法，亚格会被舍成 0。 */
+        Check("Java Swing 算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("SunAwtFrame"));
+        Check("Java 不读系统行数",
+            ScrollSemantics.IgnoresSystemLines("SunAwtFrame"));
+        Check("Tk 算「按事件滚动」",
+            ScrollSemantics.IsPerEventScroll("TkTopLevel"));
+        Check("Tk 不读系统行数",
+            ScrollSemantics.IgnoresSystemLines("TkTopLevel"));
         /* PowerPoint（v1.8.38）：一格必须只发一个事件，否则"滚一下翻两页" */
         Check("PowerPoint 主窗口算「按事件滚动」",
             ScrollSemantics.IsPerEventScroll("PPTFrameClass"));

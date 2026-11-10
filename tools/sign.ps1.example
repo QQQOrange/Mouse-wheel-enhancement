@@ -1,0 +1,12 @@
+# 复制为 tools/sign.ps1 后，publish.ps1 会在打包前自动调用：
+#   tools\sign.ps1 -File <MouseWheelEnhancement.exe>
+#
+# 示例（需要 Windows SDK 的 signtool.exe，以及你自己的代码签名证书）：
+#
+# param([Parameter(Mandatory = $true)][string]$File)
+# $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
+# & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+#     /f "C:\path\to\cert.pfx" /p $env:MWE_CERT_PASSWORD $File
+# exit $LASTEXITCODE
+#
+# 没有证书就不要创建 sign.ps1 —— 发布脚本会自动跳过这一步。

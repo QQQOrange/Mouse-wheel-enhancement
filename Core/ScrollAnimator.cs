@@ -94,7 +94,7 @@ namespace MouseWheelEnhancement.Core;
 /// pending 是 <c>long</c> 毫单位（unit × 1000），靠 <c>Interlocked</c> 加减；
 /// 钩子线程只做一次 <c>Interlocked.Add</c> 就返回，绝不在这里阻塞输入链路。
 /// </summary>
-internal sealed class ScrollAnimator : IDisposable
+internal sealed partial class ScrollAnimator : IDisposable
 {
     private const double Milli = 1000.0;
 
@@ -243,78 +243,6 @@ internal sealed class ScrollAnimator : IDisposable
 
     private readonly AutoResetEvent _wake = new(false);
 
-    /* ── 横向滚动（Shift+滚轮）的平滑 ──
-     *
-     * 独立线程 + 独立队列：不碰纵向主循环的任何状态，出问题最多是横向不平滑，
-     * 绝不会把纵向滚动拖死。一个 HWHEEL 拆成最多 8 个事件、每 ~12ms 一个。 */
-    private readonly System.Collections.Concurrent.ConcurrentQueue<int> _hQueue = new();
-
-    /// <summary>给自检用：设置后横向事件不注入，交给它统计（--featurecheck）。</summary>
-    internal Action<int>? HorizontalSink;
-    private Thread? _hThread;
-
-    /// <summary>排入一次横向滚动（单位制，120 = 一格）。</summary>
-    public void PushH(int units)
-    {
-        if (units == 0 || !_alive) return;
-        _hQueue.Enqueue(units);
-        _hThread ??= StartHorizontalThread();
-    }
-
-    private Thread StartHorizontalThread()
-    {
-        var t = new Thread(HorizontalLoop)
-        {
-            IsBackground = true,
-            Name = "MouseWheelEnhancement-HScroll",
-        };
-        t.Start();
-        return t;
-    }
-
-    private void HorizontalLoop()
-    {
-        try
-        {
-            while (_alive)
-        {
-            if (!_hQueue.TryDequeue(out var units))
-            {
-                Thread.Sleep(6);
-                continue;
-            }
-
-            var s = EffectiveSettings();
-            var pieces = Math.Clamp(Math.Abs(units) / Native.WHEEL_DELTA, 1, 8);
-            var sign = Math.Sign(units);
-            var abs = Math.Abs(units);
-            var sent = 0;
-
-            for (var i = 0; i < pieces && _alive; i++)
-            {
-                var take = i == pieces - 1 ? abs - sent : abs / pieces;
-                sent += take;
-                if (take == 0) continue;
-                var sink = HorizontalSink;
-                if (sink != null)
-                {
-                    sink(sign * take);
-                }
-                else if (!InputInjector.SendHWheel(sign * take))
-                {
-                    Log.Warn("横向注入失败（错误码 " + Marshal.GetLastWin32Error() + "）");
-                    break;
-                }
-                if (i < pieces - 1) Thread.Sleep(Math.Max(5, (int)(s.FrameIntervalMs * 2)));
-            }
-            }
-        }
-        finally
-        {
-            _hThread = null;      // 线程退出后清空，下一次 Start 能重新拉起
-        }
-    }
-
     /// <summary>
     /// 需要**原样立刻发出**的事件（不做曲线）。
     ///
@@ -409,6 +337,22 @@ internal sealed class ScrollAnimator : IDisposable
     private double _glideTauMs;
 
     private RuntimeSettings _settings = RuntimeSettings.From(AppConfig.Default());
+
+    /// <summary>
+    /// 目标窗口所在显示器的帧间隔（毫秒）。0 = 跟随 <see cref="RuntimeSettings.FrameIntervalMs"/>。
+    /// 由钩子线程在目标变化/每 2 秒刷新一次；跨线程只写一个 double，读到的旧值最多差一帧。
+    /// </summary>
+    private double _targetFrameIntervalMs;
+
+    /// <summary>设置目标显示器帧间隔；传 0 恢复跟随全局设置。</summary>
+    public void SetTargetFrameInterval(double ms)
+    {
+        _targetFrameIntervalMs = ms is >= 2.0 and <= 40.0 ? ms : 0;
+    }
+
+    /// <summary>这一轮出帧实际用的帧间隔：目标显示器优先，其次全局设置。</summary>
+    private double FrameMs(RuntimeSettings s) =>
+        _targetFrameIntervalMs > 0 ? _targetFrameIntervalMs : s.FrameIntervalMs;
 
     /// <summary>
     /// **这一轮滚动**的有效设置（含按应用覆盖），null = 跟随全局快照。
@@ -824,7 +768,7 @@ internal sealed class ScrollAnimator : IDisposable
         if (Math.Abs(_wholeAccum) > cap) _wholeAccum = Math.Sign(_wholeAccum) * cap;
 
         var since = last == 0 ? -1.0 : nowMs - last;
-        var stepMs = Math.Max(5.0, s.FrameIntervalMs);
+        var stepMs = Math.Max(5.0, FrameMs(s));
 
         if (WholeNotchDue(_wholeAccum, since, pendingUnits, stepMs))
         {
@@ -1005,7 +949,7 @@ internal sealed class ScrollAnimator : IDisposable
                 /* 这一帧按"这一轮滚动"的设置出帧：按应用覆盖时钩子会带着覆盖后的
                  * 快照投递进来，见 _burstSettings。 */
                 var s = EffectiveSettings();
-                var frameTicks = MsToTicks(s.FrameIntervalMs);
+                var frameTicks = MsToTicks(FrameMs(s));
 
                 var pendingMilli = Interlocked.Read(ref _pendingMilli);
                 var now = _clock.ElapsedTicks;
@@ -1073,7 +1017,7 @@ internal sealed class ScrollAnimator : IDisposable
                  * 平滑优先：按曲线算的时候，dt 最多按 2 倍帧间隔计。
                  * 迟到的量不丢，摊到后面几帧 —— 总位移不变，只是不再有单帧大跳。
                  * （掉帧计数器仍然用真实的 dtMs，否则就测不出"这台机器慢"。） */
-                var effDtMs = Math.Min(dtMs, s.FrameIntervalMs * MaxLateFrameFactor);
+                var effDtMs = Math.Min(dtMs, FrameMs(s) * MaxLateFrameFactor);
 
                 var pendingUnits = pendingMilli / Milli;
 
@@ -1098,7 +1042,7 @@ internal sealed class ScrollAnimator : IDisposable
                     /* 恶化和恢复用不同的步长 + 不同的阈值（迟滞）：
                      * 旧写法进出都在 40 附近，一旦贴住阈值就**逐帧翻转** ——
                      * τ 在"跟手值"和"滑行值"之间来回跳，末段就是一段一段的。 */
-                    if (dtMs > s.FrameIntervalMs * 2.5) _slowFrames++;
+                    if (dtMs > FrameMs(s) * 2.5) _slowFrames++;
                     else if (_slowFrames > 0) _slowFrames = Math.Max(0, _slowFrames - 2);
 
                     if (!_degraded && _slowFrames >= SlowFramesEnter) _degraded = true;
@@ -1425,14 +1369,15 @@ internal sealed class ScrollAnimator : IDisposable
              * _wake.Dispose()，每崩一次就漏一个内核事件对象。 */
             _alive = false;
             _wake.Set();
+            _hWake.Set();
             try { _thread?.Join(600); } catch { /* 退出阶段不纠缠 */ }
             _thread = null;
 
-            /* 横向线程独立循环，_alive=false 后最多 6ms 自己退出；
-             * 给它一点时间，避免进程退出时还在注入。 */
-            try { _hThread?.Join(300); } catch { }
+            /* 横向线程空闲时最多 500ms 才看一次 _alive，唤醒一下让它立刻退出。 */
+            try { _hThread?.Join(600); } catch { }
             _hThread = null;
         }
         try { _wake.Dispose(); } catch { /* 已经释放过 */ }
+        try { _hWake.Dispose(); } catch { }
     }
 }

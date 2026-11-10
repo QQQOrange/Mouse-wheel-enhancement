@@ -4051,3 +4051,42 @@ MIT License · © 2026 QQQOrange
   总量判据改成"原生距离 ~ 满倍率×1.3"，不再把正常加速误报成重复投递。
 - `--wheelcapture` 真实采集：4 条普通滚轮（Opera，约 2 格/秒）被正确识别为
   低频整格；注入 10ms 高频流被识别为 63~69 格/秒并原样放行。
+## 65. v1.9.11：降低热路径开销、WPF 控件级语义与工程化
+
+### 钩子热路径
+
+- `TargetBox` 只在目标变化时分配；`TraceLine` 只由诊断开关 `TraceEnabled` 打开时拼接；
+- 最近目标从“每事件拼 key + 分配 record + 字典写回”改成“可变条目 + 值元组键”，命中路径零分配；
+- `IsOwnExe` 先做已归一化 exe 的直接比较，避免每事件 `Normalize`；
+- `TargetResolver` 增加 32ms 光标命中缓存，高频流不再每个事件 `WindowFromPoint`；
+- 看门狗 5s→15s，正常回调日志 30s 汇总，减少常驻唤醒/写盘。
+
+`--benchhook` 目标：零逐事件分配、单次 <1µs。实测分类器 187ns、最近目标 173ns、自身判定 22ns。
+
+### 目标显示器帧率
+
+`RefreshRateMonitor.FrameIntervalMsForWindow(hwnd)` 按目标窗口所在显示器取 Hz（2 秒缓存）；
+`ScrollAnimator.SetTargetFrameInterval` 让纵向/横向都用这块屏的帧间隔，避免多屏混合刷新率下白灌帧。
+
+### WPF 控件级语义
+
+`Core/WpfSemanticProbe.cs`：后台线程 UIA `AutomationElement.FromPoint`，向上找 `List/DataGrid/Tree`
+（整格）或 `Document/Edit` / 可滚动 `ScrollPattern`（像素）。全局一次只跑一个探测，失败缓存 5 秒；
+钩子只读缓存，探测完成前走保守整格。`--uiaprobe` 用真 ScrollViewer/ListBox 验证。
+
+### 横向通道
+
+`ScrollAnimator.Horizontal.cs`：空闲时 `AutoResetEvent.WaitOne` 阻塞，不再 6ms 轮询；
+帧间隔取 `FrameMs(s)`（目标显示器优先），一次 PushH 仍拆 1~8 个整档事件。
+
+### 工程化
+
+- `--benchhook`、`--uiaprobe`；
+- 崩溃文本 dump 之外写 minidump；
+- `publish.ps1 -Architecture arm64`，交叉编译时跳过本机自检；可选 `tools/sign.ps1` 签名；
+- GitHub Actions：build + 443 项自检 + benchhook + x64 publish；
+- UI 基线改为可见差异（每通道 ≤6 忽略），截图前固定光标。
+
+### 验证
+
+`--selftest` 443 项、`--featurecheck`、`--frametrace`、`--scrollsmooth`、`--uicheck`、`--uiaprobe`、`--benchhook` 全过。

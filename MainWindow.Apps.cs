@@ -45,6 +45,41 @@ public partial class MainWindow
 
         AppsCount.Text = $"{apps.Count} 项";
         AppsEmpty.Visibility = apps.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ApplyAppsFilter();
+    }
+
+    private void AppsFilter_Changed(object sender, TextChangedEventArgs e) => ApplyAppsFilter();
+
+    private void ApplyAppsFilter()
+    {
+        if (AppsList == null) return;
+        var text = (AppsFilterBox?.Text ?? "").Trim();
+        var view = System.Windows.Data.CollectionViewSource.GetDefaultView(AppsList.ItemsSource);
+        if (view == null) return;
+
+        if (text.Length == 0)
+        {
+            view.Filter = null;
+        }
+        else
+        {
+            view.Filter = o =>
+            {
+                if (o is not AppRuleRowData row) return false;
+                return row.Exe.Contains(text, StringComparison.OrdinalIgnoreCase)
+                       || row.Note.Contains(text, StringComparison.OrdinalIgnoreCase)
+                       || row.Override.Contains(text, StringComparison.OrdinalIgnoreCase);
+            };
+        }
+
+        if (AppsNoMatch != null)
+        {
+            var total = _rows.Count;
+            var shown = view.Cast<object>().Count();
+            AppsNoMatch.Visibility = total > 0 && shown == 0 && text.Length > 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
     }
 
     /// <summary>把一份覆盖写成一句人话（空覆盖 → 空串）。</summary>

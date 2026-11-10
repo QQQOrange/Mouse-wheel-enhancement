@@ -2,9 +2,15 @@
 #
 # 用法：
 #   tools\publish.ps1                          # 默认：框架依赖（约 0.65 MB）
+#   tools\publish.ps1 -Architecture arm64      # Windows on ARM 原生主程序
 #   tools\publish.ps1 -SelfContained           # 自包含（约 65 MB），没装 .NET 的机器也能跑
 #   tools\publish.ps1 -OutDir "D:\somewhere"   # 换安装目录
 #   tools\publish.ps1 -NoInstall               # 只发布，不覆盖本机那份
+#
+# 可选签名钩子：如果存在 tools\sign.ps1，会在打包前调用它：
+#   & tools\sign.ps1 -File <启动器路径>
+# 脚本返回非 0 则发布中止。证书/时间戳/SmartScreen 由这个脚本自行决定
+# （例如 signtool sign /fd SHA256 /tr ... /td SHA256 /f cert.pfx ...）。
 #
 # 产物只有**一个** exe：MouseWheelEnhancement.exe
 #   主程序（.NET 10）作为嵌入资源打在里面，运行时释放到 %LOCALAPPDATA% 再执行。
@@ -21,6 +27,7 @@
 param(
     [string]$OutDir = "D:\software\myself",
     [string]$Configuration = "Release",
+    [ValidateSet("x64", "arm64")][string]$Architecture = "x64",
     [switch]$SelfContained,
     [switch]$NoInstall
 )
@@ -29,15 +36,17 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
 
-$mode = if ($SelfContained) { "自包含（含 .NET 运行时）" } else { "框架依赖（用系统已装的 .NET 10 桌面运行时）" }
-$stage = Join-Path $root "bin\publish-stage"
+$runtime = "win-$Architecture"
+$mode = if ($SelfContained) { "自包含（含 .NET 运行时，$Architecture）" }
+        else { "框架依赖（用系统已装的 .NET 10 桌面运行时，$Architecture）" }
+$stage = Join-Path $root "bin\publish-stage-$Architecture"
 
 Write-Host "==> 1/4 发布主程序：$mode" -ForegroundColor Cyan
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 if ($SelfContained) {
-    dotnet publish -c $Configuration -r win-x64 -p:PublishSingleFile=true --self-contained true -o $stage -v q --nologo
+    dotnet publish -c $Configuration -r $runtime -p:PublishSingleFile=true --self-contained true -o $stage -v q --nologo
 } else {
-    dotnet publish -c $Configuration -p:PublishSingleFile=true --self-contained false -o $stage -v q --nologo
+    dotnet publish -c $Configuration -r $runtime -p:PublishSingleFile=true --self-contained false -o $stage -v q --nologo
 }
 if ($LASTEXITCODE -ne 0) { throw "主程序发布失败（退出码 $LASTEXITCODE）" }
 
@@ -63,6 +72,14 @@ New-Item -ItemType Directory -Force -Path $pkg | Out-Null
 $one = Join-Path $pkg "MouseWheelEnhancement.exe"
 Copy-Item $launcher $one -Force
 
+# 可选 Authenticode/自定义签名钩子。没有证书时完全跳过，不改变产物。
+$signScript = Join-Path $root "tools\sign.ps1"
+if (Test-Path $signScript) {
+    Write-Host "    调用签名钩子 tools\sign.ps1" -ForegroundColor Cyan
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $signScript -File $one
+    if ($LASTEXITCODE -ne 0) { throw "签名失败（退出码 $LASTEXITCODE）" }
+}
+
 # 内嵌校验：启动器必须比主程序大（主程序是真的被嵌进去了）。
 # 少这一条的话，-p:AppPayload 因路径问题失效时产物依然"能编译、能自检"，
 # 直到用户双击才报"这个 exe 里没有内嵌的主程序"。
@@ -77,17 +94,24 @@ $shaLauncher = (Get-FileHash $one -Algorithm SHA256).Hash
 # 给发版脚本（tools/make-release.py）读：自动更新校验的是主程序这一份
 Set-Content -LiteralPath (Join-Path $pkg "SHA256.txt") -Value $shaApp -Encoding ascii -NoNewline
 
-$zip = Join-Path $root "bin\MouseWheelEnhancement-win-x64.zip"
+$zip = Join-Path $root "bin\MouseWheelEnhancement-$runtime.zip"
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path $one -DestinationPath $zip -CompressionLevel Optimal
 
 Write-Host "==> 3/4 自检（对**新产物**跑，不先覆盖本机）" -ForegroundColor Cyan
-& $one --dialogtest | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "    启动器自检失败！看 $(Join-Path $pkg 'Mouse wheel enhancement data\launcher-selftest.txt')" -ForegroundColor Red
-    throw "发布中止：新产物没通过启动器自检（本机未受影响）"
+$hostArch = $env:PROCESSOR_ARCHITECTURE
+$canRunHere = ($Architecture -eq "x64" -and $hostArch -match "AMD64") -or
+              ($Architecture -eq "arm64" -and $hostArch -match "ARM64")
+if ($canRunHere) {
+    & $one --dialogtest | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    启动器自检失败！看 $(Join-Path $pkg 'Mouse wheel enhancement data\launcher-selftest.txt')" -ForegroundColor Red
+        throw "发布中止：新产物没通过启动器自检（本机未受影响）"
+    }
+    Write-Host "    启动器自检通过" -ForegroundColor Green
+} else {
+    Write-Host "    跳过：当前是 $hostArch，无法在本机运行 $Architecture 产物（交叉编译）" -ForegroundColor Yellow
 }
-Write-Host "    启动器自检通过" -ForegroundColor Green
 
 Write-Host ("==> 4/4 产物：单个 exe {0:N0} B（{1:0.00} MB）" -f $oneSize, ($oneSize / 1MB)) -ForegroundColor Green
 Write-Host "    整包     $zip"
@@ -138,36 +162,40 @@ Copy-Item $one $dest -Force
 Write-Host "    已安装到：$OutDir（只有一个 exe）" -ForegroundColor Green
 
 Write-Host "==> 装机自检（走真实链路：启动器 → 释放主程序 → 转发参数）" -ForegroundColor Cyan
-$failed = $false
+if (-not $canRunHere) {
+    Write-Host "    跳过：交叉编译产物无法在本机运行" -ForegroundColor Yellow
+} else {
+    $failed = $false
 
-& $dest --dialogtest | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "    启动器自检失败" -ForegroundColor Red
-    $failed = $true
-}
-
-if (-not $failed) {
-    & $dest --selftest | Out-Null
+    & $dest --dialogtest | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "    主程序自检失败！看 $(Join-Path $OutDir 'Mouse wheel enhancement data\selftest.txt')" -ForegroundColor Red
+        Write-Host "    启动器自检失败" -ForegroundColor Red
         $failed = $true
     }
-}
 
-if ($failed) {
-    if (Test-Path $backup) {
-        Copy-Item $backup $dest -Force
-        Remove-Item $backup -Force -ErrorAction SilentlyContinue
-        Write-Host "    已回滚到安装前的版本" -ForegroundColor Yellow
-    } else {
-        Remove-Item $dest -Force -ErrorAction SilentlyContinue
-        Write-Host "    安装前的版本不存在，已删掉这份没通过自检的产物" -ForegroundColor Yellow
+    if (-not $failed) {
+        & $dest --selftest | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "    主程序自检失败！看 $(Join-Path $OutDir 'Mouse wheel enhancement data\selftest.txt')" -ForegroundColor Red
+            $failed = $true
+        }
     }
-    throw "发布中止：装机自检没通过"
-}
 
-Remove-Item $backup -Force -ErrorAction SilentlyContinue
-Write-Host "    两个自检都通过" -ForegroundColor Green
+    if ($failed) {
+        if (Test-Path $backup) {
+            Copy-Item $backup $dest -Force
+            Remove-Item $backup -Force -ErrorAction SilentlyContinue
+            Write-Host "    已回滚到安装前的版本" -ForegroundColor Yellow
+        } else {
+            Remove-Item $dest -Force -ErrorAction SilentlyContinue
+            Write-Host "    安装前的版本不存在，已删掉这份没通过自检的产物" -ForegroundColor Yellow
+        }
+        throw "发布中止：装机自检没通过"
+    }
+
+    Remove-Item $backup -Force -ErrorAction SilentlyContinue
+    Write-Host "    两个自检都通过" -ForegroundColor Green
+}
 
 Write-Host ""
 Write-Host ("完成。一个 exe，{0:0.00} MB，双击 {1} 即可运行。" -f ($oneSize / 1MB), $dest) -ForegroundColor Cyan

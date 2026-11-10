@@ -55,6 +55,63 @@ internal static class RefreshRateMonitor
         return $"自动 · {Hz} Hz（{FrameIntervalMs:0.00} ms/帧）";
     }
 
+    /// <summary>
+    /// 目标窗口所在显示器的刷新率（毫秒/帧）。取不到就退回光标所在显示器。
+    ///
+    /// <para>
+    /// 多显示器混合刷新率下，光标在主屏 160Hz、目标窗口在副屏 60Hz 时，
+    /// 继续按 160Hz 灌帧只是白耗 CPU，还会让内容每 2~3 帧才合并一次。
+    /// </para>
+    /// </summary>
+    public static double FrameIntervalMsForWindow(IntPtr hwnd)
+    {
+        var hz = HzForWindow(hwnd);
+        return hz > 0 ? 1000.0 / hz : FrameIntervalMs;
+    }
+
+    private static readonly object DeviceCacheLock = new();
+    private static readonly Dictionary<string, (int Hz, long AtMs)> DeviceCache = new();
+    private const long DeviceCacheTtlMs = 2000;
+
+    /// <summary>目标窗口所在显示器的 Hz；0 表示没读到。</summary>
+    public static int HzForWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return Hz;
+
+        try
+        {
+            var mon = Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST);
+            if (mon == IntPtr.Zero) return Hz;
+
+            var mi = new Native.MONITORINFOEX();
+            mi.cbSize = Marshal.SizeOf<Native.MONITORINFOEX>();
+            if (!Native.GetMonitorInfo(mon, ref mi)) return Hz;
+
+            var device = mi.szDevice;
+            if (string.IsNullOrEmpty(device)) return Hz;
+
+            var now = Environment.TickCount64;
+            lock (DeviceCacheLock)
+            {
+                if (DeviceCache.TryGetValue(device, out var cached)
+                    && now - cached.AtMs <= DeviceCacheTtlMs)
+                    return cached.Hz > 0 ? cached.Hz : Hz;
+            }
+
+            var hz = ReadHz(device);
+            lock (DeviceCacheLock)
+            {
+                if (DeviceCache.Count > 16) DeviceCache.Clear();
+                DeviceCache[device] = (hz, now);
+            }
+            return hz > 0 ? hz : Hz;
+        }
+        catch
+        {
+            return Hz;
+        }
+    }
+
     private static System.Threading.Timer? _poll;
     private static int _lastNotified;
     private static bool _started;

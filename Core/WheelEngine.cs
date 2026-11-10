@@ -19,7 +19,7 @@ namespace MouseWheelEnhancement.Core;
 ///   ② 平滑模式选了"所有滚动"（此时普通滚动也会被接管，仅拆帧不改量）。
 /// 其余情况全部原样放行。
 /// </summary>
-public sealed class WheelEngine : IDisposable
+public sealed partial class WheelEngine : IDisposable
 {
     private readonly TargetResolver _targets = new();
     private readonly WheelVelocityTracker _tracker = new();
@@ -36,6 +36,9 @@ public sealed class WheelEngine : IDisposable
     /// <summary>上一次判定时的目标标识（exe|class）。换程序就重置速度/输入状态。</summary>
     private string _lastTargetKey = "";
     private long _lastPrecisionLogMs;
+
+    /// <summary>上一次刷新目标显示器帧率的时刻。</summary>
+    private long _lastTargetFpsMs;
 
     /// <summary>
     /// 高精度输入的时间基准。**不能用 Environment.TickCount64**：它只有约 15.6ms
@@ -150,48 +153,7 @@ public sealed class WheelEngine : IDisposable
     /// <summary>钩子线程里处理"轮换"的自定义消息。</summary>
     private const int WmRotate = 0x8000 + 0x4D;
 
-    /// <summary>一个"最近识别到的程序"（健康页 / 诊断用）。</summary>
-    public sealed record RecentTarget(string Exe, string Class, string Semantics, long Events, long Boosted, long LastTicks);
 
-    private static readonly object RecentLock = new();
-    private static readonly Dictionary<string, RecentTarget> RecentMap = new();
-
-    /// <summary>最近识别到的程序（按最后出现时间倒序，最多 24 条）。</summary>
-    public static IReadOnlyList<RecentTarget> RecentTargets()
-    {
-        lock (RecentLock)
-        {
-            return RecentMap.Values.OrderByDescending(t => t.LastTicks).Take(24).ToList();
-        }
-    }
-
-    private static void TrackRecent(TargetInfo target, bool boosted)
-    {
-        if (!target.IsKnown) return;
-        var key = target.Exe + "|" + target.Class;
-        var semantics = target.ScrollsOncePerEvent
-            ? (target.IgnoresSystemLines ? "按事件·不读行数" : "按事件")
-            : "按像素";
-
-        lock (RecentLock)
-        {
-            RecentMap.TryGetValue(key, out var old);
-            RecentMap[key] = new RecentTarget(target.Exe, target.Class, semantics,
-                (old?.Events ?? 0) + 1, (old?.Boosted ?? 0) + (boosted ? 1 : 0), Environment.TickCount64);
-
-            if (RecentMap.Count > 48)
-            {
-                var stale = RecentMap.OrderBy(t => t.Value.LastTicks).Take(24).Select(t => t.Key).ToList();
-                foreach (var k in stale) RecentMap.Remove(k);
-            }
-        }
-    }
-
-    /// <summary>
-    /// 最近一次滚轮事件的判定快照（给 <c>--targettrace</c> 用）。
-    /// 钩子线程写、别的线程读，只存一个字符串引用，原子性足够。
-    /// </summary>
-    public static volatile string TraceLine = "";
 
     /// <summary>回调耗时（QPC 周期）的最大值 / 采样次数，每 10 秒被读走一次。</summary>
     private long _cbMaxTicks;
@@ -799,7 +761,11 @@ public sealed class WheelEngine : IDisposable
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
 
             var target = _targets.ResolveForWheel(s.NeedsTitle);
-            Volatile.Write(ref _lastTargetBox, new TargetBox(target));
+            /* 只有目标真的变了才换引用。以前每个事件都 new 一个 TargetBox，
+             * 100+ 事件/秒时就是 100+ 次小对象分配，全落在钩子线程上。 */
+            var previousTarget = Volatile.Read(ref _lastTargetBox);
+            if (!previousTarget.Value.Equals(target))
+                Volatile.Write(ref _lastTargetBox, new TargetBox(target));
 
             /* 分类器用亚毫秒时钟；速度跟踪器沿用整数毫秒（它的 dt 下限是 8ms，
              * 整数足够，而且历史断言都按整数写）。 */
@@ -813,7 +779,8 @@ public sealed class WheelEngine : IDisposable
              * "有时候一滚就飞、有时候又正常"，完全无法复现。窗口类/进程没变时不重置，
              * 所以在同一个浏览器里切标签页、同一个应用里换子窗口都不受影响。 */
             var targetKey = target.Exe + "|" + target.Class;
-            if (!string.Equals(targetKey, _lastTargetKey, StringComparison.Ordinal))
+            var targetChanged = !string.Equals(targetKey, _lastTargetKey, StringComparison.Ordinal);
+            if (targetChanged)
             {
                 _lastTargetKey = targetKey;
                 _tracker.Reset();
@@ -823,11 +790,23 @@ public sealed class WheelEngine : IDisposable
                 if (_animator.WholeNotch) _animator.WholeNotch = false;
             }
 
+            /* 帧率按**目标窗口所在显示器**算，而不是光标所在显示器：多屏混合刷新率下
+             * 往 60Hz 窗口灌 160Hz 帧只是白耗 CPU，还会让内容每两三帧才合并一次。
+             * 每 2 秒重取一次，覆盖改分辨率/刷新率/窗口拖到另一块屏。 */
+            var targetFpsNow = Environment.TickCount64;
+            if (targetChanged || targetFpsNow - _lastTargetFpsMs > 2000)
+            {
+                _lastTargetFpsMs = targetFpsNow;
+                _animator.SetTargetFrameInterval(
+                    RefreshRateMonitor.FrameIntervalMsForWindow(target.Hwnd));
+            }
+
             /* 自己的窗口是特例：它的滚动由 App.OnPreviewMouseWheelScroll 直接按 delta
              * 换算像素（固定行高），**不经过系统行数**。细腻模式把 delta 乘了 3 倍之后
              * 它会多滚 3 倍 —— 这里乘回去。PPT/WPS 演示一格翻一页、也不读行数，同理。 */
+            var ownExe = s.IsOwnExe(target.Exe);
             if (fineScale > 1 &&
-                (s.IsOwnExe(target.Exe) || target.IgnoresSystemLines))
+                (ownExe || target.IgnoresSystemLines))
                 delta /= fineScale;
 
             /* 独占全屏（游戏/全屏视频）：直通，不加速也不摊帧。 */
@@ -906,8 +885,9 @@ public sealed class WheelEngine : IDisposable
                 /* 统计口径也要算上：概览页的"已放行"和最近识别程序应包含触控板流。 */
                 Interlocked.Increment(ref _events);
                 TrackRecent(target, false);
-                TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} precision=1" +
-                            $" rate={profile.NotchesPerSec:0.0} → 原样放行";
+                if (TraceEnabled)
+                    TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} precision=1" +
+                                $" rate={profile.NotchesPerSec:0.0} → 原样放行";
 
                 /* 只清"模式"不清积压：积压是上一两个普通滚轮格的量，
                  * 直接丢掉会少滚一截；让动画器把这点尾巴发完即可。 */
@@ -951,7 +931,7 @@ public sealed class WheelEngine : IDisposable
 
                 /* 方向：Shift + 纵向上滚 = 向左，而 HWHEEL 正数是向右 —— 所以翻号。 */
                 var units = -hd.OutputUnits *
-                            ((s.IsOwnExe(target.Exe) || target.IgnoresSystemLines) ? 1 : fineScale);
+                            ((ownExe || target.IgnoresSystemLines) ? 1 : fineScale);
                 /* 交给动画器的横向通道：拆成多个事件摊开发，不在钩子里 SendInput。 */
                 if (units != 0)
                 {
@@ -976,10 +956,11 @@ public sealed class WheelEngine : IDisposable
 
             TrackRecent(target, decision.Boosted);
 
-            TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} fine={fineScale}" +
-                        $" | boosted={decision.Boosted} mult={decision.Multiplier:0.00} out={decision.OutputUnits}" +
-                        $" | whole={(target.ScrollsOncePerEvent ? 1 : 0)}" +
-                        $" ignoreLines={(target.IgnoresSystemLines ? 1 : 0)}";
+            if (TraceEnabled)
+                TraceLine = $"{target.Exe} | {target.Class} | raw={rawDelta} fine={fineScale}" +
+                            $" | boosted={decision.Boosted} mult={decision.Multiplier:0.00} out={decision.OutputUnits}" +
+                            $" | whole={(target.ScrollsOncePerEvent ? 1 : 0)}" +
+                            $" ignoreLines={(target.IgnoresSystemLines ? 1 : 0)}";
 
             /* ── 动画线程不在了 → 一律原样放行 ──
              *
@@ -1029,8 +1010,26 @@ public sealed class WheelEngine : IDisposable
              * 现在让它走下面的按比例路径，由动画器按显示器刷新率拆成每帧几像素，
              * 和真实触控板的事件流同构。 */
 
-            var wholeSemantics = s.ForceWholeNotch ?? target.ScrollsOncePerEvent;
-            if (wholeSemantics && !s.IsOwnExe(target.Exe))
+            /* WPF 的滚动语义要到**控件**这一级才分得清：
+             *   HwndWrapper[ScrollViewer] → 接受 delta，可以按像素摊帧；
+             *   HwndWrapper[ListBox/DataGrid] → 只认事件个数，必须整格。
+             * 探测在后台线程（UIA 跨进程调用不能进钩子），完成前按整格兜底。 */
+            var wpfPixel = false;
+            if (!ownExe
+                && target.ScrollsOncePerEvent
+                && target.Class.StartsWith("HwndWrapper[", StringComparison.Ordinal))
+            {
+                wpfPixel = WpfSemanticProbe.UsePixel(target.Hwnd);
+                /* 上一轮的整格积压还没排空：保持整格，排空后再切像素，
+                 * 否则同一段滚动会一半整格一半亚格，距离虽然守恒但语义混乱。 */
+                if (wpfPixel && _animator.WholeNotch && _animator.PendingUnits > 0)
+                    wpfPixel = false;
+                if (wpfPixel && _animator.WholeNotch && _animator.PendingUnits == 0)
+                    _animator.WholeNotch = false;
+            }
+
+            var wholeSemantics = s.ForceWholeNotch ?? (target.ScrollsOncePerEvent && !wpfPixel);
+            if (wholeSemantics && !ownExe)
             {
                 /* PPT 这类"一个事件 = 翻一页"的窗口不读系统行数：
                  * 细腻模式的 ×N 补偿对它是 N 倍副作用，这里一律用原始 delta。 */
@@ -1113,7 +1112,7 @@ public sealed class WheelEngine : IDisposable
              * 细腻模式的补偿只对**读系统行数**的目标做：
              *   · 自己的设置页自己会乘 FineScale（App.ScrollPage），这里再乘就是 9 倍；
              *   · PPT/WPS 演示一格翻一页，与行数无关，乘了就是 N 倍翻页。 */
-            var needsFineCompensation = !s.IsOwnExe(target.Exe) && !target.IgnoresSystemLines;
+            var needsFineCompensation = !ownExe && !target.IgnoresSystemLines;
             var outUnits = decision.OutputUnits * (needsFineCompensation ? fineScale : 1);
             var flick = FlickExtraNotches(s, decision);
             if (flick > 0) outUnits += Math.Sign(outUnits) * flick * Native.WHEEL_DELTA;

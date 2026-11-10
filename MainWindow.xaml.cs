@@ -104,6 +104,8 @@ public partial class MainWindow : Window
             Services.StateChanged -= OnServicesStateChanged;
             Theme.Changed -= OnThemeChanged;
             _tick.Stop();
+            try { _inputMonitorTimer?.Stop(); } catch { }
+            WheelEngine.TraceEnabled = false;
 
             /* 窗口（连同视觉树、D3D 表面、字形缓存）刚被销毁，此刻是把工作集
              * 还给系统的唯一合适时机。放在窗口自己身上而不是创建方，是为了
@@ -238,6 +240,7 @@ public partial class MainWindow : Window
 
         UpdateThemeHints();
         InvalidateCurve();
+        InvalidateSmoothPreview();
     }
 
     /// <summary>冒烟测试用：把关键尺寸打出来，确认页面真的被布局了（不是全 0）。</summary>
@@ -502,6 +505,11 @@ public partial class MainWindow : Window
 
         StatusText.Text = !on ? "已暂停" : running ? "已启用" : "钩子异常";
         StatusDot.Fill = B(!on ? "TextMuted" : running ? "SuccessBrush" : "DangerBrush");
+        if (StatusPillText != null)
+        {
+            StatusPillText.Text = !on ? "已暂停" : running ? "增强中" : "钩子异常";
+            StatusPillText.Foreground = B(!on ? "TextMuted" : running ? "AccentHover" : "DangerBrush");
+        }
         HookHint.Text = !on
             ? "总开关关闭 · 完全走系统默认"
             : running
@@ -711,6 +719,7 @@ public partial class MainWindow : Window
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
         if (Nav.SelectedIndex == 1) InvalidateCurve();
+        if (Nav.SelectedIndex == 2) InvalidateSmoothPreview();
 
         AnimateTabIn();
     }
@@ -860,12 +869,14 @@ public partial class MainWindow : Window
             TauSlider.Value = 45;
             GlideSlider.Value = 300;
             if (FineModeSwitch.IsChecked != true) FineModeSwitch.IsChecked = true;
+            MarkPreset(b);
             SetFooterHint("已应用「触控板级」：45ms 跟手 + 300ms 惯性 + 细腻模式");
             return;
         }
 
         TauSlider.Value = tau;
         GlideSlider.Value = glide;
+        MarkPreset(b);
         SetFooterHint($"已应用「{b.Content}」手感");
     }
 

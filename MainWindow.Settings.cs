@@ -3,6 +3,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shapes;
+using System.Windows.Threading;
 using MouseWheelEnhancement.Core;
 
 namespace MouseWheelEnhancement;
@@ -380,6 +382,7 @@ public partial class MainWindow
     {
         if (_loading) return;
         Services.Config.Smooth.GlideMs = (int)Math.Round(e.NewValue);
+        ClearPresetSelection();
         UpdateCurveSummary();
         Commit();
     }
@@ -388,16 +391,128 @@ public partial class MainWindow
     {
         if (_loading) return;
         Services.Config.Smooth.TailTauMs = Math.Round(e.NewValue);
+        ClearPresetSelection();
         UpdateCurveSummary();
         Commit();
     }
 
-    /// <summary>「手感曲线」卡片下面那行当前值。让用户点完预设/拖完滑块能立刻看到生效值。</summary>
+    /// <summary>「手感曲线」卡片下面那行当前值 + 曲线预览。</summary>
     private void UpdateCurveSummary()
     {
         if (CurveSummary == null || TauSlider == null || GlideSlider == null) return;
         var glide = GlideSlider.Value <= 0 ? "关闭" : $"{GlideSlider.Value:0} ms";
         CurveSummary.Text = $"当前：跟手 {TauSlider.Value:0} ms · 惯性 {glide}";
+        InvalidateSmoothPreview();
+    }
+
+    /* ── 预设选中态 ── */
+
+    private Button? _activePreset;
+
+    private void MarkPreset(Button selected)
+    {
+        if (!ReferenceEquals(_activePreset, selected)) ClearPresetSelection();
+        _activePreset = selected;
+        selected.SetResourceReference(Control.BackgroundProperty, "AccentSoft");
+        selected.SetResourceReference(Control.BorderBrushProperty, "AccentSoftBorder");
+        selected.FontWeight = FontWeights.SemiBold;
+    }
+
+    private void ClearPresetSelection()
+    {
+        if (_activePreset == null) return;
+        _activePreset.ClearValue(Control.BackgroundProperty);
+        _activePreset.ClearValue(Control.BorderBrushProperty);
+        _activePreset.FontWeight = FontWeights.Normal;
+        _activePreset = null;
+    }
+
+    /* ── 跟手曲线预览 ── */
+
+    private bool _smoothPreviewPending;
+
+    private void SmoothPreview_SizeChanged(object sender, SizeChangedEventArgs e) => InvalidateSmoothPreview();
+
+    private void InvalidateSmoothPreview()
+    {
+        if (_smoothPreviewPending || SmoothPreview == null) return;
+        _smoothPreviewPending = true;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _smoothPreviewPending = false;
+            DrawSmoothPreview();
+        }), DispatcherPriority.Background);
+    }
+
+    private void DrawSmoothPreview()
+    {
+        if (SmoothPreview == null || TauSlider == null) return;
+        var w = SmoothPreview.ActualWidth;
+        var h = SmoothPreview.ActualHeight;
+        if (w < 40 || h < 30) return;
+
+        SmoothPreview.Children.Clear();
+        var tau = Math.Max(1.0, TauSlider.Value);
+        var span = Math.Max(180.0, tau * 4);
+        var left = 12.0;
+        var right = 44.0;
+        var top = 10.0;
+        var bottom = 18.0;
+        var pw = Math.Max(10.0, w - left - right);
+        var ph = Math.Max(10.0, h - top - bottom);
+
+        double X(double ms) => left + pw * Math.Clamp(ms / span, 0, 1);
+        double Y(double v) => top + ph * (1 - Math.Clamp(v, 0, 1));
+
+        for (var i = 0; i <= 3; i++)
+        {
+            var y = top + ph * i / 3.0;
+            SmoothPreview.Children.Add(new Line
+            {
+                X1 = left, X2 = left + pw, Y1 = y, Y2 = y,
+                Stroke = B("CurveGrid"), StrokeThickness = 1,
+                StrokeDashArray = new DoubleCollection { 2, 3 },
+            });
+        }
+
+        var pts = new PointCollection();
+        const int steps = 80;
+        for (var i = 0; i <= steps; i++)
+        {
+            var t = span * i / steps;
+            pts.Add(new Point(X(t), Y(1 - Math.Exp(-t / tau))));
+        }
+        var area = new PointCollection(pts)
+        {
+            new Point(X(span), top + ph),
+            new Point(X(0), top + ph),
+        };
+        SmoothPreview.Children.Add(new Polygon { Points = area, Fill = B("AccentSoft") });
+        SmoothPreview.Children.Add(new Polyline
+        {
+            Points = pts, Stroke = B("AccentBrush"), StrokeThickness = 2,
+            StrokeLineJoin = PenLineJoin.Round,
+        });
+
+        var mx = X(tau);
+        SmoothPreview.Children.Add(new Line
+        {
+            X1 = mx, X2 = mx, Y1 = top, Y2 = top + ph,
+            Stroke = B("CurveGuide"), StrokeThickness = 1,
+        });
+
+        void Label(string text, double x, double y, double width = 40)
+        {
+            var lbl = new TextBlock { Text = text, FontSize = 9.5, Foreground = B("TextMuted"), Width = width };
+            Canvas.SetLeft(lbl, x);
+            Canvas.SetTop(lbl, y);
+            SmoothPreview.Children.Add(lbl);
+        }
+
+        Label("τ", mx - 4, 1);
+        Label($"0", left, top + ph + 3);
+        Label($"{span:0} ms", left + pw - 32, top + ph + 3, 40);
+        Label("位置", left + pw + 4, top - 2, 38);
     }
 
     private void Backlog_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)

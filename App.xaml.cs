@@ -41,7 +41,7 @@ public partial class App : System.Windows.Application
     {
         "--selftest", "--measure", "--featurecheck", "--taskcheck", "--frametrace",
         "--dialogtest", "--runtimecheck", "--wheeltest", "--scrollsmooth", "--probe",
-        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke", "--wheelcapture",
+        "--osdshot", "--uishot", "--uibase", "--uicheck", "--smoke", "--wheelcapture", "--uiaprobe", "--benchhook",
     };
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
 
@@ -144,6 +144,26 @@ public partial class App : System.Windows.Application
         if (e.Args.Any(a => a.Equals("--featurecheck", StringComparison.OrdinalIgnoreCase)))
         {
             var code = FeatureCheck.Run(e.Args);
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* WPF 控件级语义探测：真窗口 + 真 UIA，确认 ScrollViewer 判像素、ListBox 判整格。 */
+        if (e.Args.Any(a => a.Equals("--uiaprobe", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var code = UiaProbeCli();
+            Shutdown(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        /* 钩子热路径基准：分类器/最近目标/自身判定，每事件零分配。 */
+        if (e.Args.Any(a => a.Equals("--benchhook", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var code = BenchHookCli();
             Shutdown(code);
             Environment.Exit(code);
             return;
@@ -1374,6 +1394,12 @@ public partial class App : System.Windows.Application
                 catch { /* 线程可能已退出 */ }
             }
             File.WriteAllText(path, sb.ToString(), new System.Text.UTF8Encoding(false));
+
+            /* 文本 dump 之外的二进制证据：WinDbg/VS 能直接看调用栈。
+             * 失败不影响文本 dump。 */
+            var dmp = Path.ChangeExtension(path, ".dmp");
+            if (Core.CrashDump.TryWrite(dmp))
+                Log.Info("已写入崩溃 minidump：" + dmp);
         }
         catch { /* 取证失败也不能二次爆炸 */ }
     }
@@ -1387,13 +1413,20 @@ public partial class App : System.Windows.Application
     /// <summary>上一次看门狗重启钩子的时刻（TickCount64）。失败要退避，不能每轮硬重启。</summary>
     private static long _lastHookRestartMs;
 
+    /// <summary>正常回调统计的汇总窗口（30 秒一条，避免常驻时每 5 秒写一次日志）。</summary>
+    private static long _hookLogWindowSamples;
+    private static double _hookLogWindowMaxMs;
+    private static long _lastHookLogMs;
+
     private void StartRuntimeAssist()
     {
         try
         {
             Services.Engine.Boosted += OnBoosted;
+            /* 15 秒一轮：钩子/动画线程出问题晚发现十几秒可以接受，换来常驻时
+             * 少了 2/3 的空唤醒。真正的输入延迟由钩子回调自身兜底（见 WatchdogTick）。 */
             _watchdog = new System.Threading.Timer(_ => WatchdogTick(), null,
-                TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(5));
+                TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(15));
         }
         catch (Exception ex)
         {
@@ -1499,21 +1532,30 @@ public partial class App : System.Windows.Application
 
             var (samples, maxMs, rotations) = engine.TakeHookStats();
 
-            /* 只在明显偏慢时记一条：正常回调是几十微秒量级，
-             * 超过 40ms 说明这台机器在输入链路上被拖住了，值得留证据。 */
-            /* 有输入就记一条（10 秒一次、只在真的有滚动时），
-             * 让"回调到底多快"变成可查的事实，而不是只在出问题时才留证据。 */
-            if (samples > 0 && maxMs <= 40)
-            {
-                Log.Info($"钩子回调：{samples} 次，最大 {maxMs:0.00} ms");
-            }
+            /* 正常回调：30 秒汇总一条，别每轮都写盘。
+             * 偏慢（>40ms）仍然立刻写，方便事后查“那次卡顿”。 */
+            _hookLogWindowSamples += samples;
+            _hookLogWindowMaxMs = Math.Max(_hookLogWindowMaxMs, maxMs);
 
             if (samples > 0 && maxMs > 40)
+            {
                 Log.Warn($"钩子回调耗时偏高：最大 {maxMs:0.0} ms / {samples} 次（已轮换 {rotations} 次）");
+                _hookLogWindowSamples = 0;
+                _hookLogWindowMaxMs = 0;
+                _lastHookLogMs = now;
+            }
+            else if (now - _lastHookLogMs >= 30_000)
+            {
+                if (_hookLogWindowSamples > 0)
+                    Log.Info($"钩子回调：{_hookLogWindowSamples} 次，最大 {_hookLogWindowMaxMs:0.00} ms");
+                _hookLogWindowSamples = 0;
+                _hookLogWindowMaxMs = 0;
+                _lastHookLogMs = now;
+            }
 
-                /* 超过 250ms 就不是"偶发抖动"，而是真的在拖整机输入：
-                 * 主动把钩子摘掉再装上 —— 摘掉的那一瞬间系统输入立刻恢复。 */
-                if (maxMs > 250) engine.RotateHookForSafety();
+            /* 超过 250ms 就不是"偶发抖动"，而是真的在拖整机输入：
+             * 主动把钩子摘掉再装上 —— 摘掉的那一瞬间系统输入立刻恢复。 */
+            if (maxMs > 250) engine.RotateHookForSafety();
         }
         catch
         {
