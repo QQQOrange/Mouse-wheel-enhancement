@@ -1,0 +1,258 @@
+<UserControl x:Class="MouseWheelEnhancement.UI.AccelerationPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="24,18,24,26">
+
+                <!-- 试滚区：调参时不必来回切到帮助页去试手感 -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="在这里试滚" Style="{StaticResource H2}" Margin="0,0,0,6" />
+                        <TextBlock Style="{StaticResource Caption}"
+                                   Text="把光标移到下面这个框里，慢慢拨一格、再快速连甩几下 —— 当前参数的效果立刻就能摸到（这里同样会被增强）。" />
+                        <Border Height="120" Margin="0,10,0,0" Background="{DynamicResource CardBg2}"
+                                CornerRadius="10" Padding="12">
+                            <ScrollViewer x:Name="PreviewScroll" VerticalScrollBarVisibility="Auto">
+                                <TextBlock TextWrapping="Wrap" FontSize="12.5"
+                                           Foreground="{DynamicResource TextSecondary}" LineHeight="20"
+                                           Text="第 1 行 · 慢慢拨：应该和没装它时一样，一格就是一段距离。&#x0a;第 2 行 · 快速连拨：页面会明显加快，而且是一小步一小步推进，不是一下跳过去。&#x0a;第 3 行 · 松手：内容会顺着方向再滑一点然后慢慢停住，而不是「咔」一下。&#x0a;第 4 行 · 收尾：最后几个像素是渐停的，不会有「已经停了又补一下」的感觉。&#x0a;第 5 行 · 这一行只是把内容撑长，方便你多滚几下感受节奏。&#x0a;第 6 行 · 再试一次：把倍率上限调到 5×，同样的手速应该明显更远。&#x0a;第 7 行 · 对比方法：关掉总开关再滚同一下，差别就是增强本身。&#x0a;第 8 行 · 到这里已经够长了，往上滚回去也一样。" />
+                            </ScrollViewer>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="快速滚动加速" Style="{StaticResource H2}" />
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="关闭后不再接管任何滚动事件（平滑也会随之失效）。" />
+                            </StackPanel>
+                            <ToggleButton x:Name="BoostSwitch" Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center" Checked="Boost_Changed"
+                                          Unchecked="Boost_Changed" />
+                        </Grid>
+
+                        <!-- 倍率曲线预览 -->
+                        <Border Style="{StaticResource InnerPanel}" Margin="0,16,0,0" Padding="14,12">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="速度 → 倍率" Style="{StaticResource Caption}" />
+                                    <TextBlock x:Name="CurveHint" Grid.Column="1" Style="{StaticResource Caption}"
+                                               Text="1 格 → 3.0 格" />
+                                </Grid>
+                                <Canvas x:Name="CurveCanvas" Height="112" Margin="0,8,0,0"
+                                        ClipToBounds="True" SizeChanged="CurveCanvas_SizeChanged" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="触发阈值" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="每秒滚多少格以上才算「快滚」。低于它的滚动完全交给系统，一个字节都不改。调高＝更不容易触发，调低＝轻轻一拨就加速。" />
+                            </StackPanel>
+                            <TextBlock x:Name="ThresholdValue" Grid.Column="1" Style="{StaticResource Value}"
+                                       Text="10.0 格/秒" />
+                        </Grid>
+                        <Slider x:Name="ThresholdSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
+                                Minimum="2" Maximum="25" SmallChange="1" LargeChange="1"
+                                TickFrequency="1" IsSnapToTickEnabled="True"
+                                ValueChanged="Threshold_Changed" />
+                        <Grid Margin="0,3,9,0">
+                            <TextBlock Text="2 · 几乎不触发" Style="{StaticResource Caption}" FontSize="10.5"
+                                       HorizontalAlignment="Left" />
+                            <TextBlock Text="25 · 很猛才加速" Style="{StaticResource Caption}" FontSize="10.5"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="满速点" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="速度到多少格/秒时倍率已经吃满上限。它与触发阈值之间是平滑过渡，不是突变。" />
+                            </StackPanel>
+                            <TextBlock x:Name="SatValue" Grid.Column="1" Style="{StaticResource Value}"
+                                       Text="40.0 格/秒" />
+                        </Grid>
+                        <Slider x:Name="SatSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
+                                Minimum="12" Maximum="120" SmallChange="1" LargeChange="5"
+                                TickFrequency="1" IsSnapToTickEnabled="True"
+                                ValueChanged="Sat_Changed" />
+                        <Grid Margin="0,3,9,0">
+                            <TextBlock Text="12 · 很早就满速" Style="{StaticResource Caption}" FontSize="10.5"
+                                       HorizontalAlignment="Left" />
+                            <TextBlock Text="120 · 要甩得很快" Style="{StaticResource Caption}" FontSize="10.5"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="加速倍率上限" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="相对原始滚动速度的倍数：3.0 表示滚轮拨一格，页面滚动三格的距离。" />
+                            </StackPanel>
+                            <TextBlock x:Name="MaxMultValue" Grid.Column="1" Style="{StaticResource Value}"
+                                       Text="3.0×" />
+                        </Grid>
+                        <Slider x:Name="MaxMultSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
+                                Minimum="1" Maximum="8" SmallChange="1" LargeChange="1"
+                                TickFrequency="1" IsSnapToTickEnabled="True"
+                                ValueChanged="MaxMult_Changed" />
+                        <Grid Margin="0,3,9,0">
+                            <TextBlock Text="1× · 不加速" Style="{StaticResource Caption}" FontSize="10.5"
+                                       HorizontalAlignment="Left" />
+                            <TextBlock Text="8× · 一甩到底" Style="{StaticResource Caption}" FontSize="10.5"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="反向滚动时立刻纠正" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="强烈建议保持开启。关闭后往回滚时，还没发完的旧方向积压会先冲完，手感像「滚不动」。" />
+                            </StackPanel>
+                            <ToggleButton x:Name="FlushReverseSwitch" Grid.Column="1"
+                                          Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                          Checked="FlushReverse_Changed" Unchecked="FlushReverse_Changed" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="甩动翻页（实验性）" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                           Text="快速甩到接近满倍率时，额外补一屏的量（约 6 格），长文档少甩几下。默认关闭：短页面会显得冲，而且「一屏」是按格估算的。" />
+                            </StackPanel>
+                            <ToggleButton x:Name="FlickPageSwitch" Grid.Column="1"
+                                          Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                          Checked="FlickPage_Changed" Unchecked="FlickPage_Changed" />
+                        </Grid>
+
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="细腻模式（实验性）" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                           Text="运行期间把系统「每次滚动几行」临时改成 1 行，退出时自动还原。适合 WPF / WinForms / Qt 这类按行滚的窗口：每档从 3 行降到 1 行，逐行推进更细。代价：这期间系统行数被你改了；触控板/自由滚轮如果被本程序接管，距离也会按这个倍数变化。不确定就保持关闭。" />
+                            </StackPanel>
+                            <ToggleButton x:Name="FineModeSwitch" Grid.Column="1"
+                                          Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                          Checked="FineMode_Changed" Unchecked="FineMode_Changed" />
+                        </Grid>
+
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="退出时还原为" FontWeight="SemiBold" />
+                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                   Text="细腻模式会把系统改成 1 行，退出时按这里还原。0 = 用进入前记录的原值（推荐）。强制结束、崩溃、关机由独立守护进程负责。" />
+                    </StackPanel>
+                    <TextBlock x:Name="RestoreLinesValue" Grid.Column="1" Style="{StaticResource Value}" Text="原值" />
+                </Grid>
+                <Slider x:Name="RestoreLinesSlider" Style="{StaticResource HSlider}" Margin="0,4,0,12"
+                        Minimum="0" Maximum="10" SmallChange="1" LargeChange="1"
+                        TickFrequency="1" IsSnapToTickEnabled="True"
+                        ValueChanged="RestoreLines_Changed" />
+
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="反转加速方向" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="只给系统里设过「滚轮反向」的鼠标用。正常鼠标不要开，否则上下相反。" />
+                            </StackPanel>
+                            <ToggleButton x:Name="InvertSwitch" Grid.Column="1"
+                                          Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                          Checked="Invert_Changed" Unchecked="Invert_Changed" />
+                        </Grid>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="也增强高精度输入" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                           Text="触控板、自由滚轮通常会以 60~125Hz 连续发小步（有时看起来也是整格 120）。默认不接管：这类流本身就是触控板手感，拆帧/加速只会把它弄碎。打开后才会按倍率放大；如果发现触控板变飘或过快，关掉即可。" />
+                            </StackPanel>
+                            <ToggleButton x:Name="PrecisionSwitch" Grid.Column="1"
+                                          Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                          Checked="Precision_Changed" Unchecked="Precision_Changed" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="默认值为什么是这样" Style="{StaticResource H2}" Margin="0,0,0,10" />
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="这两个数字都是「速度」（格/秒），不是累计格数：滚得再多、只要慢，就永远不会加速。" />
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="10 格/秒 ≈ 每 100ms 拨一格。正常浏览网页、看文档基本都在这个节奏以下，所以不会误触发；而想快速翻页时人会下意识连拨，节奏立刻就到 20 格/秒以上。" />
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="40 格/秒 ≈ 每 25ms 拨一格，是明显的甩动。把满速点放在这里，意味着「越用力甩，加速越充分」，同时避免轻轻一抖就顶格。" />
+                        <TextBlock Style="{StaticResource Caption}"
+                                   Text="3 倍是绝大多数人不需要二次调整的值：一屏变三分之一的滚动量，又不会失控到找不到位置。觉得不够就调高，8 倍是上限。" />
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   Text="另外，一段滚动的头 2 格、以及持续不到 70ms 的抖动，一律不加速。轻轻一拨往往被鼠标拆成好几个事件、间隔只有几毫秒，按速度算会显得「极快」——这条护栏专门挡住它。" />
+                    </StackPanel>
+                </Border>
+
+            </StackPanel>
+        </ScrollViewer>
+</UserControl>

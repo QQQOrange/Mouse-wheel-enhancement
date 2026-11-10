@@ -127,7 +127,7 @@ public partial class MainWindow
             LoadFromConfig();
             AppsPageView?.Invalidate();
             RefreshTokenUi();
-            RedrawCurve();
+            AccelerationPageView?.InvalidateCurve();
             RefreshStats();
             SetFooterHint("配置已导入并生效");
         }

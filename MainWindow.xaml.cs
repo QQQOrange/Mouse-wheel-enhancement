@@ -10,7 +10,6 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Shapes;
 using System.Windows.Threading;
 using MouseWheelEnhancement.Core;
 using MouseWheelEnhancement.UI;
@@ -38,8 +37,8 @@ public partial class MainWindow : Window
     /// <summary>帮助页是懒渲染的：二十多个参数块几百个控件，不影响启动才合理。</summary>
     private bool _helpRendered;
 
-    /// <summary>曲线重绘合并标记：拖动滑块时一次布局只重画一次。</summary>
-    private bool _curvePending;
+    /// <summary>「加速」页第一次被选中时才构造（内容见 UI/AccelerationPage.xaml）。</summary>
+    private AccelerationPage? AccelerationPageView;
 
     /// <summary>「应用名单」页第一次被选中时才构造（内容见 UI/AppsPage.xaml）。</summary>
     private AppsPage? AppsPageView;
@@ -73,7 +72,6 @@ public partial class MainWindow : Window
 
         LoadFromConfig();
         RefreshStats();
-        RedrawCurve();
         RestoreWindowPlacement();
         UiText.Apply(this);
 
@@ -233,7 +231,7 @@ public partial class MainWindow : Window
         }
 
         UpdateThemeHints();
-        InvalidateCurve();
+        AccelerationPageView?.InvalidateCurve();
         SmoothPageView?.InvalidateSmoothPreview();
 
         /* 主题切换的轻量过渡：只做整窗透明度回落，不动布局。
@@ -255,8 +253,8 @@ public partial class MainWindow : Window
         var sb = new System.Text.StringBuilder();
         sb.Append($"win={ActualWidth:0}x{ActualHeight:0}");
         sb.Append($" nav={Nav.ActualWidth:0}x{Nav.ActualHeight:0}");
-        sb.Append($" curve={CurveCanvas.ActualWidth:0}x{CurveCanvas.ActualHeight:0}");
-        sb.Append($" line={CurveCanvas.Children.Count}");
+        sb.Append($" curve={AccelerationPageView?.CurveSizeText ?? "0x0"}");
+        sb.Append($" line={AccelerationPageView?.CurveChildCount ?? 0}");
         sb.Append($" help={HelpPanel.Children.Count}");
         sb.Append($" tab={Nav.SelectedIndex}");
         sb.Append($" 自启={(AutoStartSwitch.IsChecked == true ? "开" : "关")}");
@@ -291,24 +289,13 @@ public partial class MainWindow : Window
             RefreshStartupSwitches();
             CloseToTraySwitch.IsChecked = c.Behavior.CloseToTray;
             PauseSelfSwitch.IsChecked = c.Behavior.PauseWhileSettingsOpen;
-            FlickPageSwitch.IsChecked = c.Boost.FlickPage;
-        FineModeSwitch.IsChecked = c.Behavior.FineMode;
-        RestoreLinesSlider.Value = c.Behavior.FineRestoreLines;
-        UpdateRestoreLinesLabel();
             HorizontalSwitch.IsChecked = c.Input.HorizontalBoost;
             OsdSwitch.IsChecked = c.Behavior.OsdMultiplier;
             WatchdogSwitch.IsChecked = c.Behavior.HookWatchdog;
 
-            BoostSwitch.IsChecked = c.Boost.Enabled;
-            ThresholdSlider.Value = c.Boost.FastThresholdPerSec;
-            SatSlider.Value = c.Boost.SaturationPerSec;
-            MaxMultSlider.Value = c.Boost.MaxMultiplier;
-            FlushReverseSwitch.IsChecked = c.Boost.FlushOnReverse;
-            InvertSwitch.IsChecked = c.Input.InvertDirection;
-            PrecisionSwitch.IsChecked = c.Input.EnhancePrecisionInput;
-
             AppsPageView?.SyncFromConfig();
             UpdatePageView?.SyncFromConfig();
+            AccelerationPageView?.SyncFromConfig();
             SmoothPageView?.SyncFromConfig();
 
             var th = Theme.Normalize(c.Appearance.Theme);
@@ -331,16 +318,12 @@ public partial class MainWindow : Window
         /* 解析期间可能被 Slider 的 Minimum/Maximum 触发，此时后面的控件还没建出来。
          * 这里把**本方法用到的每一个控件**都列进来了 —— 少列一个，就会在
          * "用户刚好在这一刻拖了一下滑块"时炸 NullReference。 */
-        if (ThresholdValue == null || SatValue == null || MaxMultValue == null ||
-            CurveHint == null || ThemeNow == null || ThemeSystem == null)
+        if (ThemeNow == null || ThemeSystem == null)
             return;
 
-        var c = Services.Config;
-        // 一律按整格显示：格数带小数点既不好读也不好调
-        ThresholdValue.Text = $"{c.Boost.FastThresholdPerSec:0} 格/秒";
-        SatValue.Text = $"{c.Boost.SaturationPerSec:0} 格/秒";
-        MaxMultValue.Text = $"{c.Boost.MaxMultiplier:0}×";
-        CurveHint.Text = $"拨 1 格 → 滚 {c.Boost.MaxMultiplier:0} 格";
+        /* 「加速」页的数字和速度 → 倍率曲线归页面自己维护；页面没建时整段跳过，
+         * 建好时页面构造里会先按当前配置回填一次。 */
+        AccelerationPageView?.RefreshLabels();
 
         /* 「平滑滚动」页的数字和说明归页面自己维护；页面没建时整段跳过，
          * 建好时页面构造里会先按当前配置回填一次。 */
@@ -485,150 +468,20 @@ public partial class MainWindow : Window
         UpdateDerivedLabels();
         AppsPageView?.Invalidate();
         RefreshStats();
-        InvalidateCurve();
+        AccelerationPageView?.InvalidateCurve();
     }
 
     /// <summary>界面改动 → 写配置 → 通知引擎 → 合并写盘。</summary>
     internal void Commit(bool refreshDerived = true)
     {
-        if (Services.Store == null || ThresholdValue == null) return;
+        if (Services.Store == null) return;
 
         _updatingFromUi = true;
         try { Services.Store.Touch(); }
         finally { _updatingFromUi = false; }
 
         if (refreshDerived) UpdateDerivedLabels();
-        InvalidateCurve();
-    }
-
-    /* ══════════════ 倍率曲线预览 ══════════════ */
-
-    private void CurveCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => InvalidateCurve();
-
-    /// <summary>
-    /// 请求重绘曲线：同一轮消息里多次请求只真正画一次。
-    /// 拖滑块时 ValueChanged 一秒能来几十次，每次都重建 121 个点的 Polyline
-    /// 会把 UI 线程占满（拖动明显发涩）。
-    /// </summary>
-    private void InvalidateCurve()
-    {
-        if (_curvePending || CurveCanvas == null) return;
-        _curvePending = true;
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            _curvePending = false;
-            RedrawCurve();
-        }), DispatcherPriority.Background);
-    }
-
-    private void RedrawCurve()
-    {
-        if (CurveCanvas == null) return;
-        var w = CurveCanvas.ActualWidth;
-        var h = CurveCanvas.ActualHeight;
-        if (w < 60 || h < 40) return;
-
-        CurveCanvas.Children.Clear();
-        var cfg = Services.Config.Boost;
-
-        const double left = 36, right = 10, top = 8, bottom = 18;
-        var pw = Math.Max(10, w - left - right);
-        var ph = Math.Max(10, h - top - bottom);
-
-        var maxRate = Math.Max(cfg.SaturationPerSec * 1.45, 24);
-        var maxMult = cfg.MaxMultiplier <= 1.02 ? 1.6 : cfg.MaxMultiplier;
-
-        double X(double r) => left + pw * Math.Clamp(r / maxRate, 0, 1);
-        double Y(double m) => top + ph * (1 - Math.Clamp((m - 1) / (maxMult - 1), 0, 1));
-
-        // 网格（横：1×、中间、上限）
-        var gridBrush = B("CurveGrid");
-        foreach (var m in new[] { 1.0, (1 + maxMult) / 2, maxMult })
-        {
-            CurveCanvas.Children.Add(new Line
-            {
-                X1 = left, X2 = left + pw,
-                Y1 = Y(m), Y2 = Y(m),
-                Stroke = gridBrush,
-                StrokeThickness = 1,
-                StrokeDashArray = new DoubleCollection { 2, 3 },
-            });
-            var lbl = new TextBlock
-            {
-                Text = $"{m:0.#}×",
-                FontSize = 9.5,
-                Foreground = B("TextMuted"),
-            };
-            Canvas.SetLeft(lbl, 2);
-            Canvas.SetTop(lbl, Y(m) - 9);
-            CurveCanvas.Children.Add(lbl);
-        }
-
-        // 阈值竖线
-        if (cfg.FastThresholdPerSec <= maxRate)
-        {
-            var x = X(cfg.FastThresholdPerSec);
-            CurveCanvas.Children.Add(new Line
-            {
-                X1 = x, X2 = x, Y1 = top, Y2 = top + ph,
-                Stroke = B("CurveGuide"),
-                StrokeThickness = 1,
-            });
-        }
-
-        // 曲线（采样 draw）
-        var pts = new PointCollection();
-        const int steps = 120;
-        for (var i = 0; i <= steps; i++)
-        {
-            var r = maxRate * i / steps;
-            pts.Add(new Point(X(r), Y(WheelVelocityTracker.MultiplierFor(r, cfg))));
-        }
-
-        // 面积填充
-        var area = new PointCollection(pts) { new Point(X(maxRate), top + ph), new Point(X(0), top + ph) };
-        CurveCanvas.Children.Add(new Polygon
-        {
-            Points = area,
-            Fill = B("CurveArea"),
-        });
-
-        CurveCanvas.Children.Add(new Polyline
-        {
-            Points = pts,
-            Stroke = B("AccentBrush"),
-            StrokeThickness = 2,
-            StrokeLineJoin = PenLineJoin.Round,
-        });
-
-        // 底部刻度：阈值 / 满速点
-        foreach (var (rate, text) in new[]
-                 {
-                     (cfg.FastThresholdPerSec, $"{cfg.FastThresholdPerSec:0}"),
-                     (cfg.SaturationPerSec, $"{cfg.SaturationPerSec:0}"),
-                 })
-        {
-            if (rate > maxRate) continue;
-            var lbl = new TextBlock
-            {
-                Text = text,
-                FontSize = 9.5,
-                Foreground = B("TextMuted"),
-            };
-            Canvas.SetLeft(lbl, Math.Min(X(rate) - 6, left + pw - 12));
-            Canvas.SetTop(lbl, top + ph + 3);
-            CurveCanvas.Children.Add(lbl);
-        }
-
-        var axis = new TextBlock
-        {
-            Text = "格/秒",
-            FontSize = 9.5,
-            Foreground = B("TextMuted"),
-        };
-        Canvas.SetLeft(axis, left + pw - 26);
-        Canvas.SetTop(axis, top + ph + 3);
-        CurveCanvas.Children.Add(axis);
+        AccelerationPageView?.InvalidateCurve();
     }
 
     /* ══════════════ 事件：总开关与行为 ══════════════ */
@@ -667,6 +520,10 @@ public partial class MainWindow : Window
         }
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
+        if (Nav.SelectedIndex == AccelerationTabIndex)
+        {
+            EnsureAccelerationPage().InvalidateCurve();
+        }
         if (Nav.SelectedIndex == SmoothTabIndex)
         {
             if (SmoothPageView == null)
@@ -710,9 +567,22 @@ public partial class MainWindow : Window
             AboutPageView = new AboutPage(this);
             AboutTab.Content = AboutPageView;
         }
-        if (Nav.SelectedIndex == 1) InvalidateCurve();
 
         AnimateTabIn();
+    }
+
+    /// <summary>
+    /// 「加速」页按需构造：第一次切到该页、或「平滑滚动」页的预设需要动这里的
+    /// 「细腻模式」开关时才建。只建一次，之后复用同一实例。
+    /// </summary>
+    private AccelerationPage EnsureAccelerationPage()
+    {
+        if (AccelerationPageView != null) return AccelerationPageView;
+
+        Log.Info("「加速」页首次需要，按需构造");
+        AccelerationPageView = new AccelerationPage(this);
+        AccelerationTab.Content = AccelerationPageView;
+        return AccelerationPageView;
     }
 
     /// <summary>
@@ -791,6 +661,7 @@ public partial class MainWindow : Window
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
+    internal const int AccelerationTabIndex = 1;
     internal const int SmoothTabIndex = 2;
     internal const int HelpTabIndex = 5;
     internal const int AppsTabIndex = 3;
@@ -878,6 +749,9 @@ public partial class MainWindow : Window
     /// <summary>smoke 用：先 SelectTab(2) 再取懒加载出来的平滑页。</summary>
     internal SmoothPage? SmoothPageForSmoke => SmoothPageView;
 
+    /// <summary>smoke 用：先 SelectTab(1) 再取懒加载出来的加速页。</summary>
+    internal AccelerationPage? AccelerationPageForSmoke => AccelerationPageView;
+
     /* ══════════════ 事件：关于 / 诊断 ══════════════ */
 
     internal void OpenDataDir_Click(object sender, RoutedEventArgs e)
@@ -926,7 +800,7 @@ public partial class MainWindow : Window
         LoadFromConfig();
         AppsPageView?.Invalidate();
         RefreshTokenUi();
-        RedrawCurve();
+        AccelerationPageView?.InvalidateCurve();
         SetFooterHint("已恢复默认设置。");
     }
 
