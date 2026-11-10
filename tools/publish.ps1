@@ -142,6 +142,36 @@ Get-Process -Name "MouseWheelEnhancement*" -ErrorAction SilentlyContinue | ForEa
     $_.WaitForExit(3000) | Out-Null
 }
 
+# 安装/升级把主进程和细腻模式守护进程一起结束时，系统行数可能停在 1 行，
+# 备份文件还留着。下次启动会清理，但用户在下一次启动前会一直是 1 行；
+# 这里按备份先还原，安装完新版本还会按配置重新进入。
+$fineBackup = Join-Path $OutDir "Mouse wheel enhancement data\wheellines.fine.backup"
+if (Test-Path $fineBackup) {
+    try {
+        $first = (Get-Content -LiteralPath $fineBackup -TotalCount 1 -Encoding UTF8).Trim()
+        $orig = 0
+        if ([int]::TryParse($first, [ref]$orig) -and $orig -ge 1 -and $orig -le 10) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class MwePublishWheelLines {
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SystemParametersInfo(uint action, uint param, IntPtr data, uint flags);
+    public static bool Set(int lines) {
+        return SystemParametersInfo(0x0069, (uint)lines, IntPtr.Zero, 0x0001 | 0x0002);
+    }
+}
+'@ -ErrorAction Stop
+            [MwePublishWheelLines]::Set($orig) | Out-Null
+            Set-ItemProperty 'HKCU:\Control Panel\Desktop' -Name WheelScrollLines -Value ([string]$orig)
+            Remove-Item -LiteralPath $fineBackup -Force -ErrorAction SilentlyContinue
+            Write-Host "    按细腻模式备份还原系统滚动行数：$orig 行" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "    细腻模式备份还原失败（不影响安装）：$($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+
 # 清掉上一版留下的 app 子目录（v1.3.0 早期是「exe + app\」两个可见文件）
 $oldAppDir = Join-Path $OutDir "app"
 if (Test-Path $oldAppDir) {
