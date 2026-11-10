@@ -8,7 +8,9 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using MouseWheelEnhancement.Core;
 using MouseWheelEnhancement.Update;
@@ -35,12 +37,14 @@ public partial class MainWindow
         _appsSignature = signature;
 
         _rows.Clear();
+        var paths = RunningProcessPaths();
         foreach (var a in apps.OrderBy(a => a.Exe, StringComparer.OrdinalIgnoreCase))
             _rows.Add(new AppRuleRowData
             {
                 Exe = a.Exe,
                 Note = string.IsNullOrWhiteSpace(a.Note) ? "（无备注）" : a.Note,
                 Override = OverrideSummary(a.Override),
+                Icon = TryIconFor(a.Exe, paths),
             });
 
         AppsCount.Text = $"{apps.Count} 项";
@@ -92,6 +96,76 @@ public partial class MainWindow
         if (o.ScrollMode == "pixel") parts.Add("按像素");
         else if (o.ScrollMode == "whole") parts.Add("整格");
         return parts.Count == 0 ? "" : "· " + string.Join(" · ", parts);
+    }
+
+    /* ── 运行中程序的图标（v1.9.11） ──
+     * 只给"当前正在运行"的名单项查图标；没运行/取不到就显示占位符。
+     * 进程枚举和图标都缓存，刷新名单时不会每次都扫一遍系统。 */
+
+    private static readonly object IconGate = new();
+    private static readonly Dictionary<string, ImageSource?> IconCache = new(StringComparer.OrdinalIgnoreCase);
+    private static Dictionary<string, string>? _runningPaths;
+    private static long _runningPathsAt;
+
+    private static Dictionary<string, string> RunningProcessPaths()
+    {
+        if (_runningPaths != null && Environment.TickCount64 - _runningPathsAt < 10_000)
+            return _runningPaths;
+
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var p in Process.GetProcesses())
+            {
+                try
+                {
+                    var path = p.MainModule?.FileName;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        var name = IOPath.GetFileName(path);
+                        if (!string.IsNullOrEmpty(name)) map[name] = path;
+                    }
+                }
+                catch { /* 系统进程/位数不同/权限不足：跳过 */ }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { /* 枚举失败：保留空表，图标显示占位符 */ }
+
+        _runningPaths = map;
+        _runningPathsAt = Environment.TickCount64;
+        return map;
+    }
+
+    private static ImageSource? TryIconFor(string exe, IReadOnlyDictionary<string, string> paths)
+    {
+        if (string.IsNullOrEmpty(exe)) return null;
+        lock (IconGate)
+        {
+            if (IconCache.TryGetValue(exe, out var cached)) return cached;
+        }
+
+        if (!paths.TryGetValue(exe, out var path)) return null;
+        ImageSource? icon = null;
+        try
+        {
+            using var ico = System.Drawing.Icon.ExtractAssociatedIcon(path);
+            if (ico != null)
+            {
+                var src = Imaging.CreateBitmapSourceFromHIcon(
+                    ico.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                src.Freeze();
+                icon = src;
+            }
+        }
+        catch { /* 没有图标资源/路径失效：占位符 */ }
+
+        lock (IconGate)
+        {
+            if (IconCache.Count > 256) IconCache.Clear();
+            IconCache[exe] = icon;
+        }
+        return icon;
     }
 
     /// <summary>

@@ -1008,10 +1008,23 @@
                                         <DataTemplate>
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="24" />
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
-                                                <StackPanel>
+                                                <Border Width="20" Height="20" CornerRadius="5"
+                                                        Background="{DynamicResource CardBg2}"
+                                                        VerticalAlignment="Center" Margin="0,0,8,0">
+                                                    <Grid>
+                                                        <Ellipse Width="7" Height="7" Opacity="0.5"
+                                                                 Fill="{DynamicResource BorderBrushStrong}"
+                                                                 HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        <Image Source="{Binding Icon}" Width="18" Height="18"
+                                                               Stretch="Uniform"
+                                                               RenderOptions.BitmapScalingMode="HighQuality" />
+                                                    </Grid>
+                                                </Border>
+                                                <StackPanel Grid.Column="1">
                                                     <TextBlock Text="{Binding Exe}" Style="{StaticResource Mono}"
                                                                FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" />
                                                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
@@ -1021,7 +1034,7 @@
                                                                    Foreground="{DynamicResource AccentHover}" />
                                                     </StackPanel>
                                                 </StackPanel>
-                                                <Button Grid.Column="1" Content="✕" Style="{StaticResource TinyButton}"
+                                                <Button Grid.Column="2" Content="✕" Style="{StaticResource TinyButton}"
                                                         Tag="{Binding Exe}" Click="RemoveApp_Click"
                                                         ToolTip="从名单移除" />
                                             </Grid>

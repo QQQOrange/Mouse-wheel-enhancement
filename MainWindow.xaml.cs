@@ -241,6 +241,18 @@ public partial class MainWindow : Window
         UpdateThemeHints();
         InvalidateCurve();
         InvalidateSmoothPreview();
+
+        /* 主题切换的轻量过渡：只做整窗透明度回落，不动布局。
+         * 比逐控件淡入便宜，也不会在页面重建时闪。 */
+        try
+        {
+            Opacity = 0.94;
+            BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(130))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            });
+        }
+        catch { /* 动画失败不影响主题本身 */ }
     }
 
     /// <summary>冒烟测试用：把关键尺寸打出来，确认页面真的被布局了（不是全 0）。</summary>
@@ -1557,4 +1569,7 @@ internal sealed class AppRuleRowData
 
     /// <summary>覆盖摘要（v1.8.0），例如"· 上限 3× · 平滑关"。空串 = 完全跟随全局。</summary>
     public string Override { get; init; } = "";
+
+    /// <summary>运行中程序的图标；没在运行/取不到时为 null，模板显示占位符。</summary>
+    public ImageSource? Icon { get; init; }
 }
