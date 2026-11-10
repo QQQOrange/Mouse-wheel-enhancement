@@ -95,8 +95,8 @@
           "Title": "Response time (τ)",
           "Default": "40 ms",
           "What": "How quickly the content catches up with your hand during a scroll. Smaller feels tighter, larger feels softer; this is not “glide length” — that is the next item.",
-          "Bigger": "Too small (below 30): a normal wheel notch finishes within 40–50 ms, the first frame alone can jump half a notch, and it reads as a lurch.",
-          "Smaller": "Too large (above 80): even slow scrolling lags noticeably, like a rubber band.",
+          "Bigger": "Too large (above 80): even slow scrolling lags noticeably, like a rubber band.",
+          "Smaller": "Too small (below 30): a normal wheel notch finishes within 40–50 ms, the first frame alone can jump half a notch, and it reads as a lurch.",
           "Example": "Measured touchpad gestures: a 120-unit notch advances continuously for about 100 ms. τ=45 ms together with the speed low-pass lands right in that range; the 40 ms default is slightly quicker and feels tighter for everyday browsing.",
           "Advice": "40–60 feels most like a touchpad. Drop to 35 if it feels loose; raise to 50–60 if it floats. The old “Touchpad” preset used 16 ms, which actually rushed too fast, and has been retuned."
         },
