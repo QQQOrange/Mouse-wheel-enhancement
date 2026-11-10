@@ -1010,14 +1010,17 @@ public sealed partial class WheelEngine : IDisposable
              * 现在让它走下面的按比例路径，由动画器按显示器刷新率拆成每帧几像素，
              * 和真实触控板的事件流同构。 */
 
-            /* WPF 的滚动语义要到**控件**这一级才分得清：
-             *   HwndWrapper[ScrollViewer] → 接受 delta，可以按像素摊帧；
-             *   HwndWrapper[ListBox/DataGrid] → 只认事件个数，必须整格。
-             * 探测在后台线程（UIA 跨进程调用不能进钩子），完成前按整格兜底。 */
+            /* XAML 框架的滚动语义要到**控件**这一级才分得清：
+             *   WPF ScrollViewer / WinUI ScrollViewer → 接受 delta，可以按像素摊帧；
+             *   ListBox/DataGrid/Tree → 只认事件个数，必须整格。
+             * 探测在后台线程（UIA 跨进程调用不能进钩子），完成前按整格兜底。
+             * WinUI 3 的 Win32 宿主类名是 WinUIDesktopWin32WindowClass；UWP 外壳是
+             * ApplicationFrameWindow，二者都由同一套 UIA 控件类型判定。 */
             var wpfPixel = false;
-            if (!ownExe
-                && target.ScrollsOncePerEvent
-                && target.Class.StartsWith("HwndWrapper[", StringComparison.Ordinal))
+            var xamlWindow = target.Class.StartsWith("HwndWrapper[", StringComparison.Ordinal)
+                             || target.Class.StartsWith("WinUIDesktopWin32WindowClass", StringComparison.Ordinal)
+                             || string.Equals(target.Class, "ApplicationFrameWindow", StringComparison.Ordinal);
+            if (!ownExe && target.ScrollsOncePerEvent && xamlWindow)
             {
                 wpfPixel = WpfSemanticProbe.UsePixel(target.Hwnd);
                 /* 上一轮的整格积压还没排空：保持整格，排空后再切像素，
