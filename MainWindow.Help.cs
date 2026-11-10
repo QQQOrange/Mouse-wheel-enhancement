@@ -73,9 +73,6 @@ public partial class MainWindow
 
     private DispatcherTimer? _footerHintTimer;
 
-    /// <summary>速度条当前的目标值（动画补间用，避免每 400ms 读动画中间值）。</summary>
-    private double _rateBarTarget;
-
     /// <summary>
     /// 帮助页搜索：按关键词过滤卡片（标题或正文命中即留下）。
     ///

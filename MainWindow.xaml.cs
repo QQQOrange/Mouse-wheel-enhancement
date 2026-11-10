@@ -37,6 +37,17 @@ public partial class MainWindow : Window
     /// <summary>帮助页是懒渲染的：二十多个参数块几百个控件，不影响启动才合理。</summary>
     private bool _helpRendered;
 
+    /// <summary>
+    /// XAML 解析期间 TabControl 会先落在默认的 index 0 上并触发一次 SelectionChanged。
+    /// 那一刻不能构造概览页：窗口位置记忆可能把选中项恢复到别的页，
+    /// 概览页应当保持懒加载。构造完成后由 RestoreWindowPlacement / SelectTab
+    /// 按最终选中的页决定建不建。
+    /// </summary>
+    private bool _allowLazyPages;
+
+    /// <summary>「概览」页第一次被选中时才构造（内容见 UI/OverviewPage.xaml）。</summary>
+    private OverviewPage? OverviewPageView;
+
     /// <summary>「加速」页第一次被选中时才构造（内容见 UI/AccelerationPage.xaml）。</summary>
     private AccelerationPage? AccelerationPageView;
 
@@ -63,16 +74,21 @@ public partial class MainWindow : Window
     {
         var bootSw = Stopwatch.StartNew();
         InitializeComponent();
+        _allowLazyPages = true;
         var initMs = bootSw.ElapsedMilliseconds;
 
         SubtitleText.Text = $"{Services.AppTitleEn} · v{Services.Version}";
         PageBadge.Text = $"v{Services.Version}";
         FooterDataDir.Text = AppPaths.DataDir;
-        RefreshElevationCard();
 
         LoadFromConfig();
         RefreshStats();
         RestoreWindowPlacement();
+
+        /* LastTab 不合法时 RestoreWindowPlacement 不会改选中项，界面仍停在
+         * XAML 的默认页 0 —— 这时也得把概览页建出来，否则会是一页空白。 */
+        if (Nav.SelectedIndex == OverviewTabIndex) EnsureOverviewPage();
+
         UiText.Apply(this);
 
         Services.StateChanged += OnServicesStateChanged;
@@ -230,7 +246,8 @@ public partial class MainWindow : Window
             EnsureHelpRendered();
         }
 
-        UpdateThemeHints();
+        OverviewPageView?.UpdateThemeHints();
+        RefreshThemeButton();
         AccelerationPageView?.InvalidateCurve();
         SmoothPageView?.InvalidateSmoothPreview();
 
@@ -257,15 +274,19 @@ public partial class MainWindow : Window
         sb.Append($" line={AccelerationPageView?.CurveChildCount ?? 0}");
         sb.Append($" help={HelpPanel.Children.Count}");
         sb.Append($" tab={Nav.SelectedIndex}");
-        sb.Append($" 自启={(AutoStartSwitch.IsChecked == true ? "开" : "关")}");
-        sb.Append($" 管理员启动={(AdminStartSwitch.IsChecked == true ? "开" : "关")}");
-        sb.Append($" 管理员行可用={(AdminStartRow.IsEnabled ? "是" : "否")}");
+        sb.Append($" 概览={(OverviewPageView == null ? "未建" : "已建")}");
+        sb.Append($" 自启={(OverviewPageView?.AutoStartOn == true ? "开" : "关")}");
+        sb.Append($" 管理员启动={(OverviewPageView?.AdminStartOn == true ? "开" : "关")}");
+        sb.Append($" 管理员行可用={(OverviewPageView?.AdminStartRowEnabled == true ? "是" : "否")}");
         return sb.ToString();
     }
 
     public void SelectTab(int index)
     {
         if (index >= 0 && index < Nav.Items.Count) Nav.SelectedIndex = index;
+        /* 已经停在该页时再点一次（截图/冒烟/恢复位置都会）不会触发
+         * SelectionChanged，所以这里显式保证概览页存在。 */
+        if (index == OverviewTabIndex) EnsureOverviewPage();
         if (index == HelpTabIndex) EnsureHelpRendered();
     }
 
@@ -286,22 +307,16 @@ public partial class MainWindow : Window
             var c = Services.Config;
 
             MasterSwitch.IsChecked = c.Enabled;
-            RefreshStartupSwitches();
-            CloseToTraySwitch.IsChecked = c.Behavior.CloseToTray;
-            PauseSelfSwitch.IsChecked = c.Behavior.PauseWhileSettingsOpen;
-            HorizontalSwitch.IsChecked = c.Input.HorizontalBoost;
-            OsdSwitch.IsChecked = c.Behavior.OsdMultiplier;
-            WatchdogSwitch.IsChecked = c.Behavior.HookWatchdog;
+
+            /* 「概览」页的自启 / 行为 / 外观控件和状态卡归页面自己维护；
+             * 页面没建时整段跳过，建好时页面构造里会先按当前配置回填一次。 */
+            OverviewPageView?.SyncFromConfig();
 
             AppsPageView?.SyncFromConfig();
             UpdatePageView?.SyncFromConfig();
             AccelerationPageView?.SyncFromConfig();
             SmoothPageView?.SyncFromConfig();
 
-            var th = Theme.Normalize(c.Appearance.Theme);
-            ThemeSystem.IsChecked = th == Theme.System;
-            ThemeLight.IsChecked = th == Theme.Light;
-            ThemeDark.IsChecked = th == Theme.Dark;
             var lang = Core.Localization.Normalize(c.Appearance.Language);
             if (lang == Core.Localization.English && !HelpContent.HasEnglish)
                 c.Appearance.Language = Core.Localization.Chinese;
@@ -315,12 +330,6 @@ public partial class MainWindow : Window
     /// <summary>只更新"显示出来的数字"，不碰控件值（拖动时逐帧调它）。</summary>
     private void UpdateDerivedLabels()
     {
-        /* 解析期间可能被 Slider 的 Minimum/Maximum 触发，此时后面的控件还没建出来。
-         * 这里把**本方法用到的每一个控件**都列进来了 —— 少列一个，就会在
-         * "用户刚好在这一刻拖了一下滑块"时炸 NullReference。 */
-        if (ThemeNow == null || ThemeSystem == null)
-            return;
-
         /* 「加速」页的数字和速度 → 倍率曲线归页面自己维护；页面没建时整段跳过，
          * 建好时页面构造里会先按当前配置回填一次。 */
         AccelerationPageView?.RefreshLabels();
@@ -329,102 +338,23 @@ public partial class MainWindow : Window
          * 建好时页面构造里会先按当前配置回填一次。 */
         SmoothPageView?.RefreshLabels();
 
-        UpdateThemeHints();
+        /* 「概览」页的外观单选框和状态文字同样归页面所有；标题栏的主题按钮
+         * 留在主窗口，页面没建时也要保持图标/提示与配置一致。 */
+        OverviewPageView?.UpdateThemeHints();
+        RefreshThemeButton();
 
         /* 正则写错与否不再由主窗口判断 —— 输入框和提示行归应用名单页所有。 */
         AppsPageView?.UpdateRegexHint();
     }
 
-    /// <summary>「最近识别的程序」：每次刷新重建最多 6 行（数量很小，重建比增量维护简单可靠）。</summary>
-    private void RefreshRecentTargets()
-    {
-        var panel = RecentPanel;
-        if (panel == null) return;
-
-        var rows = WheelEngine.RecentTargets();
-        if (rows.Count == 0)
-        {
-            panel.Children.Clear();
-            var empty = new TextBlock
-            {
-                Text = UiText.Translate("还没识别到程序 —— 在别的窗口里滚一下就会出现。"),
-                Opacity = 0.6,
-                Margin = new Thickness(0, 2, 0, 0),
-            };
-            empty.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-            empty.SetResourceReference(TextBlock.FontSizeProperty, 12.0);
-            panel.Children.Add(empty);
-            return;
-        }
-
-        var key = string.Join(";", rows.Select(r => r.Exe + r.LastTicks));
-        if (key == _recentKey) return;      // 内容没变就不重建，避免每帧重建 UI
-        _recentKey = key;
-
-        panel.Children.Clear();
-        foreach (var r in rows.Take(6))
-        {
-            var grid = new Grid { Margin = new Thickness(0, 3, 0, 3) };
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            var left = new StackPanel();
-            var name = new TextBlock { Text = r.Exe, FontWeight = FontWeights.SemiBold, FontSize = 13 };
-            name.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-            var cls = new TextBlock { Text = r.Class, FontSize = 11, Opacity = 0.65 };
-            cls.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-            left.Children.Add(name);
-            left.Children.Add(cls);
-            grid.Children.Add(left);
-
-            var right = new TextBlock
-            {
-                Text = $"{r.Semantics} · {r.Events} 次" + (r.Boosted > 0 ? $"（加速 {r.Boosted}）" : ""),
-                FontSize = 12,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(12, 0, 0, 0),
-            };
-            right.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-            Grid.SetColumn(right, 1);
-            grid.Children.Add(right);
-
-            panel.Children.Add(grid);
-        }
-    }
-
-    private string _recentKey = "";
-
     private void RefreshStats()
     {
-        RefreshRecentTargets();
+        /* 运行状态四格和「最近识别的程序」归「概览」页自己维护；
+         * 页面没建时整段跳过，建好时页面构造里会立刻铺一次。 */
+        OverviewPageView?.RefreshStats();
+
         var e = Services.Engine;
         var running = e.IsRunning;
-
-        StatHook.Text = UiText.Translate(running ? "运行中" : "未运行");
-        StatHook.Foreground = running
-            ? B("SuccessBrush")
-            : B("DangerBrush");
-
-        var t = e.LastTarget;
-        StatApp.Text = t.IsKnown ? t.Exe : "—";
-
-        StatCount.Text = $"{e.BoostedCount} / {e.PassedCount}";
-
-        var rate = e.LastRatePerSec;
-        StatRate.Text = rate > 0.05
-            ? (UiText.IsEnglish ? $"{rate:0.0} notches/s" : $"{rate:0.0} 格/秒")
-            : "—";
-        var barValue = Math.Min(40.0, Math.Max(0.0, rate));
-        // 值变化时用 260ms 补间，进度条不会每 400ms 硬跳一下
-        if (Math.Abs(_rateBarTarget - barValue) > 0.3)
-        {
-            _rateBarTarget = barValue;
-            RateBar.BeginAnimation(ProgressBar.ValueProperty,
-                new DoubleAnimation(barValue, TimeSpan.FromMilliseconds(260))
-                {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-                });
-        }
 
         var on = Services.Config.Enabled;
         _loading = true;
@@ -520,6 +450,10 @@ public partial class MainWindow : Window
         }
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
+        if (Nav.SelectedIndex == OverviewTabIndex && _allowLazyPages)
+        {
+            EnsureOverviewPage();
+        }
         if (Nav.SelectedIndex == AccelerationTabIndex)
         {
             EnsureAccelerationPage().InvalidateCurve();
@@ -569,6 +503,21 @@ public partial class MainWindow : Window
         }
 
         AnimateTabIn();
+    }
+
+    /// <summary>
+    /// 「概览」页按需构造：第一次切到该页时建。只建一次，之后复用同一实例。
+    /// 正常启动时 XAML 的默认选中页就是它，所以这台窗口几乎总会立刻建一次；
+    /// 配置恢复到别的页时则一直保持未建，直到用户真的点开。
+    /// </summary>
+    private OverviewPage EnsureOverviewPage()
+    {
+        if (OverviewPageView != null) return OverviewPageView;
+
+        Log.Info("「概览」页首次选中，按需构造");
+        OverviewPageView = new OverviewPage(this);
+        OverviewTab.Content = OverviewPageView;
+        return OverviewPageView;
     }
 
     /// <summary>
@@ -628,7 +577,7 @@ public partial class MainWindow : Window
 
         Services.Config.Appearance.Theme = next;
         Theme.SetMode(next);
-        UpdateThemeHints();
+        OverviewPageView?.UpdateThemeHints();
         Commit(refreshDerived: false);
 
         // 换掉 ToolTip 之前先把这个按钮的提示气泡收掉。
@@ -640,7 +589,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>标题栏主题按钮的图标与提示，跟着当前模式走。</summary>
-    private void RefreshThemeButton()
+    internal void RefreshThemeButton()
     {
         if (ThemeBtn == null || ThemeGlyph == null) return;
 
@@ -661,6 +610,7 @@ public partial class MainWindow : Window
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
+    internal const int OverviewTabIndex = 0;
     internal const int AccelerationTabIndex = 1;
     internal const int SmoothTabIndex = 2;
     internal const int HelpTabIndex = 5;
@@ -814,34 +764,6 @@ public partial class MainWindow : Window
         if (r != MessageBoxResult.Yes) return;
         _allowClose = true;
         App.ExitApp();
-    }
-
-    /// <summary>
-    /// 「权限提示」卡片上的按钮：以管理员身份重启。
-    ///
-    /// <para>
-    /// 顺手把设置里的「以管理员身份运行」打开 —— 用户点这个按钮的意图就是
-    /// "我要管理员"，只提这一次权的话，下次打开软件又变回普通权限，
-    /// 他会再撞一次同样的墙（这次报障就是这么来的）。
-    /// </para>
-    /// </summary>
-    private void RestartElevated_Click(object sender, RoutedEventArgs e)
-    {
-        if (!Services.Config.Behavior.RunAsAdmin)
-        {
-            Services.Config.Behavior.RunAsAdmin = true;
-            Commit();
-            RefreshStartupSwitches();
-        }
-
-        if (App.RelaunchElevated())
-        {
-            App.ExitApp();
-            return;
-        }
-
-        MessageBox.Show("提权被取消或失败，本次仍是普通权限。", Services.AppTitle,
-            MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     /* ══════════════ 窗口位置记忆 ══════════════ */
