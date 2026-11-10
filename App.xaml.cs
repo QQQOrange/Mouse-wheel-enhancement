@@ -597,7 +597,7 @@ public partial class App : System.Windows.Application
              * 现在系统是唯一真相：这里只做两件事 ——
              *   ① 迁移：把 v1.6.x「接管」可能留下的 1 行按备份还原；
              *   ② 什么都不干，等用户拖滑块时再写（SystemWheelLines.Set）。
-             * 界面上的数字靠 MainWindow.SyncWheelLinesFromSystem() 读回。 */
+             * 界面上的数字靠 SmoothPage.SyncWheelLinesFromSystem() 读回。 */
             SystemWheelLines.CleanupLegacy();
 
             Services.InitRuntime();

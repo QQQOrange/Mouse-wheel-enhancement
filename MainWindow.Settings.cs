@@ -1,10 +1,5 @@
 using System;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Shapes;
-using System.Windows.Threading;
 using MouseWheelEnhancement.Core;
 
 namespace MouseWheelEnhancement;
@@ -16,6 +11,11 @@ namespace MouseWheelEnhancement;
 /// 这里每个 <c>*_Changed</c> 都是同一条流水线：读控件 → 写 <c>Services.Config</c> → <c>Commit()</c>。
 /// 它们最容易写错的地方是"程序化赋值触发回调"，所以每个方法第一行都是 <c>if (_loading) return;</c> ——
 /// 这条约定集中在这个文件里，比散落在 1700 行里安全。
+/// </para>
+/// <para>
+/// 「平滑滚动」页的控件事件不在这里：整页已搬进 <c>UI/SmoothPage.xaml.cs</c>，
+/// 用页面自己的 <c>_syncing</c> 挡回写；这里只保留跨页的
+/// <see cref="EnableFineModeFromPreset"/>。
 /// </para>
 /// </summary>
 public partial class MainWindow
@@ -165,138 +165,19 @@ public partial class MainWindow
         Commit();
     }
 
-    /* ══════════════ 事件：平滑 ══════════════ */
+    /* ══════════════ 事件：平滑滚动 ══════════════
+     *
+     * 平滑页自己的开关、滑块、手感预设和跟手曲线预览都已经搬进
+     * UI/SmoothPage.xaml.cs（页面第一次被选中时才构造）。
+     * 这里只留一个跨页入口：「平滑滚动」页的「触控板级」预设要顺手打开
+     * 「加速」页的「细腻模式」开关，走的必须是用户手点开关时同一条路
+     * （含确认弹窗与还原机制）。
+     */
 
-    private void Smooth_Changed(object sender, RoutedEventArgs e)
+    /// <summary>「触控板级」预设用：把「细腻模式」开关打开（等同于用户自己点一下）。</summary>
+    internal void EnableFineModeFromPreset()
     {
-        if (_loading) return;
-        Services.Config.Smooth.Enabled = SmoothSwitch.IsChecked == true;
-        Commit();
-    }
-
-    /// <summary>
-    /// 「每格滚动格数」：滑块一动就**立刻写进系统设置**，不等保存。
-    ///
-    /// <para>
-    /// 这个值和系统面板里的「每次要滚动的行数」是同一个东西，所以不能只改配置 ——
-    /// 用户在系统里看到没变，就会以为开关坏了。软件**不另存一份**：
-    /// 配置里已经没有 <c>wheelLines</c> 这个字段，系统就是唯一真相。
-    /// </para>
-    /// </summary>
-    private void WheelLines_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (_loading) return;
-
-        var lines = (int)Math.Round(e.NewValue);
-
-        if (!Core.SystemWheelLines.Set(lines))
-        {
-            /* 写不进去（组策略拦、或者系统已被设成"一次滚一页"）→ 界面拨回系统真实值，
-             * 而不是把滑块留在一个"看起来生效了、其实没生效"的位置。 */
-            SyncWheelLinesFromSystem();
-            return;
-        }
-
-        /* 不调 Commit()：这一项**不在配置里**（系统就是真相），
-         * 没有需要保存的东西，也不该因为拖滑块去重烘一遍运行时快照 ——
-         * 引擎的任何一个参数都不看这个值。 */
-        RefreshWheelLinesLabel();
-    }
-
-    /// <summary>
-    /// 把「每格滚动格数」从系统读回来 —— 读取、回填滑块、更新标签、决定能不能调，
-    /// **只有这一个入口**。
-    ///
-    /// <para>
-    /// 载入界面和"从系统设置面板回来"（<see cref="OnActivated"/>）都走它。
-    /// 分开写的话，两边只要有一处漏判（比如"一次一页"只在其中一处处理），
-    /// 界面就会出现"滑块停在 1、标签却写着一次一页"这种自相矛盾的状态 ——
-    /// 这种不一致比数字错了更让人不敢相信软件。
-    /// </para>
-    /// </summary>
-    private void SyncWheelLinesFromSystem()
-    {
-        var lines = Core.SystemWheelLines.Current();
-        var usable = Core.SystemWheelLines.IsUsable(lines);
-
-        /* 保存并恢复外层状态：LoadFromConfig 里本来就把 _loading 置成 true，
-         * 这里若无条件在 finally 里写 false，会把外层的保护提前拆掉 ——
-         * 后面几十行赋值就会真的触发 Commit（把半载入状态写进配置）。 */
-        var prev = _loading;
-        _loading = true;
-        try
-        {
-            if (WheelLinesSlider != null)
-            {
-                // "一次一页"和"读不到"都不该让滑块假装能调：禁用 + 说明原因
-                WheelLinesSlider.IsEnabled = usable;
-                WheelLinesSlider.Opacity = usable ? 1.0 : 0.45;
-                if (usable) WheelLinesSlider.Value = lines;
-            }
-        }
-        finally { _loading = prev; }
-
-        RefreshWheelLinesLabel();
-    }
-
-    /// <summary>标签 + 说明文字。值一律现读系统，不读任何缓存。</summary>
-    private void RefreshWheelLinesLabel()
-    {
-        var lines = Core.SystemWheelLines.Current();
-        var usable = Core.SystemWheelLines.IsUsable(lines);
-
-        if (WheelLinesValue != null)
-        {
-            WheelLinesValue.Text =
-                lines == Core.SystemWheelLines.PageMode ? "一次一页"
-                : usable ? lines + " 行"
-                : "读取不到";
-        }
-
-        if (WheelLinesHint == null) return;
-
-        WheelLinesHint.Text =
-            lines == Core.SystemWheelLines.PageMode
-                ? "系统当前设成「一次滚一页」，没有「行」可调。先在系统鼠标设置里选回「每次滚动以下行数」，回来就能调这里。"
-                : usable ? ""
-                : "读不到系统当前的滚动行数（可能被组策略锁定），这一项暂时不可用。";
-        WheelLinesHint.Visibility = usable ? Visibility.Collapsed : Visibility.Visible;
-    }
-
-    /// <summary>
-    /// 从系统面板回来时把滑块同步过来。
-    ///
-    /// <para>
-    /// 用户在系统设置里改了行数，本程序并不知道 —— 只能在自己重新获得焦点时读一次。
-    /// 这就是"双向同步"的另一半：软件 → 系统靠写，系统 → 软件靠这里。
-    /// </para>
-    /// </summary>
-
-    /// <summary>跳到系统「鼠标」设置页。Win10/11 通用的 ms-settings 协议。</summary>
-    private void OpenMouseSettings_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "ms-settings:mousetouchpad",
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show("打不开系统设置：" + ex.Message + "\n\n可以手动打开：设置 → 蓝牙和其他设备 → 鼠标",
-                Services.AppTitle, MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-    }
-
-    private void Scope_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        Services.Config.Smooth.Scope = ScopeAlways.IsChecked == true
-            ? SmoothScope.Always
-            : SmoothScope.BoostedOnly;
-        Commit();
+        if (FineModeSwitch.IsChecked != true) FineModeSwitch.IsChecked = true;
     }
 
     private void Theme_Changed(object sender, RoutedEventArgs e)
@@ -348,44 +229,6 @@ public partial class MainWindow
         RefreshThemeButton();
     }
 
-    private void AutoFps_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        Services.Config.Smooth.AutoFps = AutoFpsSwitch.IsChecked == true;
-        Commit();
-    }
-
-    private void Fps_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        int fps = 120;
-        if (Fps60.IsChecked == true) fps = 60;
-        else if (Fps90.IsChecked == true) fps = 90;
-        else if (Fps144.IsChecked == true) fps = 144;
-        Services.Config.Smooth.TargetFps = fps;
-        Commit();
-    }
-
-    private void Fpn_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        int fpn = 4;
-        if (Fpn2.IsChecked == true) fpn = 2;
-        else if (Fpn3.IsChecked == true) fpn = 3;
-        else if (Fpn6.IsChecked == true) fpn = 6;
-        else if (Fpn8.IsChecked == true) fpn = 8;
-        Services.Config.Smooth.FramesPerNotch = fpn;
-        Commit();
-    }
-
-    private void AdvancedBacklog_Click(object sender, RoutedEventArgs e)
-    {
-        if (AdvancedBacklogPanel == null || AdvancedBacklogToggle == null) return;
-        var show = AdvancedBacklogPanel.Visibility != Visibility.Visible;
-        AdvancedBacklogPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        AdvancedBacklogToggle.Content = show ? "收起：积压上限" : "高级参数：积压上限";
-    }
-
     /// <summary>「关于」页切换界面语言后由页面调用。</summary>
     internal void SetHelpLanguage(bool english)
     {
@@ -405,149 +248,6 @@ public partial class MainWindow
         LocalizeHelpChrome();
         AboutPageView?.RefreshElevation();
         SetFooterHint(english ? "Language: English" : "界面语言：简体中文");
-    }
-
-    private void Glide_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)    {
-        if (_loading) return;
-        Services.Config.Smooth.GlideMs = (int)Math.Round(e.NewValue);
-        ClearPresetSelection();
-        UpdateCurveSummary();
-        Commit();
-    }
-
-    private void Tau_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (_loading) return;
-        Services.Config.Smooth.TailTauMs = Math.Round(e.NewValue);
-        ClearPresetSelection();
-        UpdateCurveSummary();
-        Commit();
-    }
-
-    /// <summary>「手感曲线」卡片下面那行当前值 + 曲线预览。</summary>
-    private void UpdateCurveSummary()
-    {
-        if (CurveSummary == null || TauSlider == null || GlideSlider == null) return;
-        var glide = GlideSlider.Value <= 0 ? "关闭" : $"{GlideSlider.Value:0} ms";
-        CurveSummary.Text = $"当前：跟手 {TauSlider.Value:0} ms · 惯性 {glide}";
-        InvalidateSmoothPreview();
-    }
-
-    /* ── 预设选中态 ── */
-
-    private Button? _activePreset;
-
-    private void MarkPreset(Button selected)
-    {
-        if (!ReferenceEquals(_activePreset, selected)) ClearPresetSelection();
-        _activePreset = selected;
-        selected.SetResourceReference(Control.BackgroundProperty, "AccentSoft");
-        selected.SetResourceReference(Control.BorderBrushProperty, "AccentSoftBorder");
-        selected.FontWeight = FontWeights.SemiBold;
-    }
-
-    private void ClearPresetSelection()
-    {
-        if (_activePreset == null) return;
-        _activePreset.ClearValue(Control.BackgroundProperty);
-        _activePreset.ClearValue(Control.BorderBrushProperty);
-        _activePreset.FontWeight = FontWeights.Normal;
-        _activePreset = null;
-    }
-
-    /* ── 跟手曲线预览 ── */
-
-    private bool _smoothPreviewPending;
-
-    private void SmoothPreview_SizeChanged(object sender, SizeChangedEventArgs e) => InvalidateSmoothPreview();
-
-    private void InvalidateSmoothPreview()
-    {
-        if (_smoothPreviewPending || SmoothPreview == null) return;
-        _smoothPreviewPending = true;
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            _smoothPreviewPending = false;
-            DrawSmoothPreview();
-        }), DispatcherPriority.Background);
-    }
-
-    private void DrawSmoothPreview()
-    {
-        if (SmoothPreview == null || TauSlider == null) return;
-        var w = SmoothPreview.ActualWidth;
-        var h = SmoothPreview.ActualHeight;
-        if (w < 40 || h < 30) return;
-
-        SmoothPreview.Children.Clear();
-        var tau = Math.Max(1.0, TauSlider.Value);
-        var span = Math.Max(180.0, tau * 4);
-        var left = 12.0;
-        var right = 44.0;
-        var top = 10.0;
-        var bottom = 18.0;
-        var pw = Math.Max(10.0, w - left - right);
-        var ph = Math.Max(10.0, h - top - bottom);
-
-        double X(double ms) => left + pw * Math.Clamp(ms / span, 0, 1);
-        double Y(double v) => top + ph * (1 - Math.Clamp(v, 0, 1));
-
-        for (var i = 0; i <= 3; i++)
-        {
-            var y = top + ph * i / 3.0;
-            SmoothPreview.Children.Add(new Line
-            {
-                X1 = left, X2 = left + pw, Y1 = y, Y2 = y,
-                Stroke = B("CurveGrid"), StrokeThickness = 1,
-                StrokeDashArray = new DoubleCollection { 2, 3 },
-            });
-        }
-
-        var pts = new PointCollection();
-        const int steps = 80;
-        for (var i = 0; i <= steps; i++)
-        {
-            var t = span * i / steps;
-            pts.Add(new Point(X(t), Y(1 - Math.Exp(-t / tau))));
-        }
-        var area = new PointCollection(pts)
-        {
-            new Point(X(span), top + ph),
-            new Point(X(0), top + ph),
-        };
-        SmoothPreview.Children.Add(new Polygon { Points = area, Fill = B("AccentSoft") });
-        SmoothPreview.Children.Add(new Polyline
-        {
-            Points = pts, Stroke = B("AccentBrush"), StrokeThickness = 2,
-            StrokeLineJoin = PenLineJoin.Round,
-        });
-
-        var mx = X(tau);
-        SmoothPreview.Children.Add(new Line
-        {
-            X1 = mx, X2 = mx, Y1 = top, Y2 = top + ph,
-            Stroke = B("CurveGuide"), StrokeThickness = 1,
-        });
-
-        void Label(string text, double x, double y, double width = 40)
-        {
-            var lbl = new TextBlock { Text = text, FontSize = 9.5, Foreground = B("TextMuted"), Width = width };
-            Canvas.SetLeft(lbl, x);
-            Canvas.SetTop(lbl, y);
-            SmoothPreview.Children.Add(lbl);
-        }
-
-        Label("τ", mx - 4, 1);
-        Label($"0", left, top + ph + 3);
-        Label($"{span:0} ms", left + pw - 32, top + ph + 3, 40);
-        Label("位置", left + pw + 4, top - 2, 38);
-    }
-
-    private void Backlog_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (_loading) return;
-        Services.Config.Smooth.MaxBacklogNotches = Math.Round(e.NewValue);
-        Commit();
     }
 
 }

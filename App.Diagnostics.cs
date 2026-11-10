@@ -1484,7 +1484,7 @@ public partial class App
     /// 这一项最容易出的错不是"读错值"，而是"两处各说一套"：
     /// 标签写着 3 行、滑块停在 1、系统里其实是 5 —— 用户看到的就是"这软件在瞎报"。
     /// 根源往往是两个入口（载入配置 / 窗口激活）各写一套同步逻辑。
-    /// 现在只有 <c>MainWindow.SyncWheelLinesFromSystem()</c> 一个入口，
+    /// 现在只有 <c>SmoothPage.SyncWheelLinesFromSystem()</c> 一个入口，
     /// 这条断言就是钉住它的：标签、滑块、可用状态三者都得跟着系统走。
     /// </para>
     /// <para>
@@ -1495,12 +1495,22 @@ public partial class App
     {
         try
         {
+            /* 页面是懒加载的：先确保「平滑滚动」页已按需构造，再读上面的控件。 */
+            w.SelectTab(MouseWheelEnhancement.MainWindow.SmoothTabIndex);
+            w.UpdateLayout();
+
+            if (w.SmoothPageForSmoke is not { } page)
+            {
+                Log.Error("smoke: 切到平滑页后没有构造出 SmoothPage");
+                return 30;
+            }
+
             var sys = Core.SystemWheelLines.Current();
             var usable = Core.SystemWheelLines.IsUsable(sys);
 
-            var label = w.WheelLinesValue.Text;
-            var sliderValue = w.WheelLinesSlider.Value;
-            var sliderEnabled = w.WheelLinesSlider.IsEnabled;
+            var label = page.WheelLinesValue.Text;
+            var sliderValue = page.WheelLinesSlider.Value;
+            var sliderEnabled = page.WheelLinesSlider.IsEnabled;
 
             var expectLabel =
                 sys == Core.SystemWheelLines.PageMode ? "一次一页"

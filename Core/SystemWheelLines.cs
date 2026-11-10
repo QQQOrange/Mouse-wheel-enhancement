@@ -26,7 +26,8 @@ namespace MouseWheelEnhancement.Core;
 /// </para>
 /// <para>
 /// 软件不另存一份"当前行数"。用户在软件里拖滑块 → 立刻写进系统；在系统面板里改 →
-/// 软件重新获得焦点时读回来显示（<c>MainWindow.OnActivated</c>）。
+/// 软件重新获得焦点时读回来显示（<c>SmoothPage.SyncWheelLinesFromSystem</c>，由
+/// <c>MainWindow.OnActivated</c> 调用）。
 /// 配置里的 <c>smooth.wheelLines</c> 已经删掉 —— 两份值必然有一天对不上，
 /// 而这一项根本不需要"记住"，系统本身就在替我们记。
 /// </para>

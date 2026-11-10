@@ -50,6 +50,9 @@ public partial class MainWindow : Window
     /// <summary>「更新」页第一次被选中时才构造（内容见 UI/UpdatePage.xaml）。</summary>
     private UpdatePage? UpdatePageView;
 
+    /// <summary>「平滑滚动」页第一次被选中时才构造（内容见 UI/SmoothPage.xaml）。</summary>
+    private SmoothPage? SmoothPageView;
+
     /// <summary>更新页还没建时后台自动检查发现的版本，等页面首次打开再补显示。</summary>
     private UpdateInfo? _pendingUpdateInfo;
     private bool _pendingUpdateFromAutoCheck;
@@ -231,7 +234,7 @@ public partial class MainWindow : Window
 
         UpdateThemeHints();
         InvalidateCurve();
-        InvalidateSmoothPreview();
+        SmoothPageView?.InvalidateSmoothPreview();
 
         /* 主题切换的轻量过渡：只做整窗透明度回落，不动布局。
          * 比逐控件淡入便宜，也不会在页面重建时闪。 */
@@ -304,26 +307,9 @@ public partial class MainWindow : Window
             InvertSwitch.IsChecked = c.Input.InvertDirection;
             PrecisionSwitch.IsChecked = c.Input.EnhancePrecisionInput;
 
-            SmoothSwitch.IsChecked = c.Smooth.Enabled;
-            SyncWheelLinesFromSystem();
-            ScopeBoosted.IsChecked = c.Smooth.Scope == SmoothScope.BoostedOnly;
-            ScopeAlways.IsChecked = c.Smooth.Scope == SmoothScope.Always;
-            Fps60.IsChecked = c.Smooth.TargetFps == 60;
-            Fps90.IsChecked = c.Smooth.TargetFps == 90;
-            Fps120.IsChecked = c.Smooth.TargetFps == 120;
-            Fps144.IsChecked = c.Smooth.TargetFps == 144;
-            Fpn2.IsChecked = c.Smooth.FramesPerNotch == 2;
-            Fpn3.IsChecked = c.Smooth.FramesPerNotch == 3;
-            Fpn4.IsChecked = c.Smooth.FramesPerNotch == 4;
-            Fpn6.IsChecked = c.Smooth.FramesPerNotch == 6;
-            Fpn8.IsChecked = c.Smooth.FramesPerNotch == 8;
-            TauSlider.Value = c.Smooth.TailTauMs;
-            GlideSlider.Value = c.Smooth.GlideMs;
-            BacklogSlider.Value = c.Smooth.MaxBacklogNotches;
-            UpdateCurveSummary();
-
             AppsPageView?.SyncFromConfig();
             UpdatePageView?.SyncFromConfig();
+            SmoothPageView?.SyncFromConfig();
 
             var th = Theme.Normalize(c.Appearance.Theme);
             ThemeSystem.IsChecked = th == Theme.System;
@@ -333,8 +319,6 @@ public partial class MainWindow : Window
             if (lang == Core.Localization.English && !HelpContent.HasEnglish)
                 c.Appearance.Language = Core.Localization.Chinese;
             AboutPageView?.SyncLanguage();
-
-            AutoFpsSwitch.IsChecked = c.Smooth.AutoFps;
         }
         finally { _loading = false; }
 
@@ -348,10 +332,7 @@ public partial class MainWindow : Window
          * 这里把**本方法用到的每一个控件**都列进来了 —— 少列一个，就会在
          * "用户刚好在这一刻拖了一下滑块"时炸 NullReference。 */
         if (ThresholdValue == null || SatValue == null || MaxMultValue == null ||
-            CurveHint == null || TauValue == null ||
-            BacklogValue == null || FpsValue == null || FpsManualGroup == null ||
-            GlideValue == null || GlideSlider == null ||
-            ThemeNow == null || ThemeSystem == null)
+            CurveHint == null || ThemeNow == null || ThemeSystem == null)
             return;
 
         var c = Services.Config;
@@ -360,36 +341,10 @@ public partial class MainWindow : Window
         SatValue.Text = $"{c.Boost.SaturationPerSec:0} 格/秒";
         MaxMultValue.Text = $"{c.Boost.MaxMultiplier:0}×";
         CurveHint.Text = $"拨 1 格 → 滚 {c.Boost.MaxMultiplier:0} 格";
-        TauValue.Text = $"{c.Smooth.TailTauMs:0} ms";
-        GlideValue.Text = c.Smooth.GlideMs <= 0 ? "关闭" : $"{c.Smooth.GlideMs:0} ms";
 
-        /* 这两项是有依赖的：滑行只能把"松手时还没发完的量"慢慢放出来。
-         * 惯性长度太小 → 一次滚动两三帧就发完了 → 松手时手里是空的 → 滑行形同虚设。
-         * 用户不会自己想到这一层，直接在界面上指出来。 */
-        if (GlideHint != null)
-        {
-            var clash = c.Smooth.GlideMs > 0 && c.Smooth.TailTauMs < 20;
-            GlideHint.Visibility = clash ? Visibility.Visible : Visibility.Collapsed;
-            GlideHint.Text = clash
-                ? $"「惯性长度」只有 {c.Smooth.TailTauMs:0} ms，一次滚动在几帧内就发完了，" +
-                  "松手时手里没有剩余量，这一项滑不起来 —— 把它调到 30 以上才会有尾巴。"
-                : "";
-        }
-        BacklogValue.Text = $"{c.Smooth.MaxBacklogNotches:0} 格";
-
-        // 自动时显示显示器实际刷新率（刷新率一变这里会跟着变），手动时显示选定值
-        FpsValue.Text = c.Smooth.AutoFps
-            ? RefreshRateMonitor.Describe()
-            : $"手动 · {c.Smooth.TargetFps} Hz（{1000.0 / c.Smooth.TargetFps:0.00} ms/帧）";
-
-        // 说明文字也要跟着变，否则关掉自动之后那句"自动跟着显示器刷新率走"还挂在那儿，
-        // 用户看不出当前到底按哪个值在跑。
-        FpsHint.Text = c.Smooth.AutoFps
-            ? "自动跟着显示器刷新率走：屏幕多少 Hz，就每多少毫秒推一小步。"
-            : "固定用你选的帧率注入。显示器更快时，手动设低了会白丢平滑度；设高了只是多算几帧，不会更顺。";
-
-        FpsManualGroup.IsEnabled = !c.Smooth.AutoFps;
-        FpsManualGroup.Opacity = c.Smooth.AutoFps ? 0.45 : 1.0;
+        /* 「平滑滚动」页的数字和说明归页面自己维护；页面没建时整段跳过，
+         * 建好时页面构造里会先按当前配置回填一次。 */
+        SmoothPageView?.RefreshLabels();
 
         UpdateThemeHints();
 
@@ -712,6 +667,16 @@ public partial class MainWindow : Window
         }
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
+        if (Nav.SelectedIndex == SmoothTabIndex)
+        {
+            if (SmoothPageView == null)
+            {
+                Log.Info("「平滑滚动」页首次选中，按需构造");
+                SmoothPageView = new SmoothPage(this);
+                SmoothTab.Content = SmoothPageView;
+            }
+            SmoothPageView.InvalidateSmoothPreview();
+        }
         if (Nav.SelectedIndex == AppsTabIndex)
         {
             if (AppsPageView == null)
@@ -746,7 +711,6 @@ public partial class MainWindow : Window
             AboutTab.Content = AboutPageView;
         }
         if (Nav.SelectedIndex == 1) InvalidateCurve();
-        if (Nav.SelectedIndex == 2) InvalidateSmoothPreview();
 
         AnimateTabIn();
     }
@@ -827,6 +791,7 @@ public partial class MainWindow : Window
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
+    internal const int SmoothTabIndex = 2;
     internal const int HelpTabIndex = 5;
     internal const int AppsTabIndex = 3;
     internal const int UpdateTabIndex = 4;
@@ -838,8 +803,8 @@ public partial class MainWindow : Window
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
-        // 窗口还没建好时（构造期间）不要碰控件
-        if (WheelLinesSlider != null) SyncWheelLinesFromSystem();
+        // 窗口还没建好时（构造期间）不要碰控件；页面没建时也不用读系统值
+        SmoothPageView?.SyncWheelLinesFromSystem();
     }
 
     internal void SetFooterHint(string text) => SetFooterHint(text, true);
@@ -869,48 +834,6 @@ public partial class MainWindow : Window
             }
         };
         _footerHintTimer.Start();
-    }
-
-    /// <summary>
-    /// 手感曲线预设（v1.8.1）：只动「收尾时间常数」和「惯性长度」两个滑块。
-    ///
-    /// <para>
-    /// 这两个决定了"收尾有多黏"，是普通用户唯一能听出差别的一对参数；
-    /// 阈值、满速点、摊帧数保持不动 —— 预设覆盖太多项会让人搞不清是谁在起作用。
-    /// </para>
-    /// </summary>
-    private void CurvePreset_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button b || b.Tag is not string key) return;
-
-        var (tau, glide) = key switch
-        {
-            "crisp" => (30.0, 100.0),
-            "long" => (60.0, 450.0),
-            /* 实测触控板手势：120 单位 ≈ 100ms 的连续推进，约 8px/帧（160Hz）。
-             * τ=45ms 配合速度域二阶低通，单格正好落在 90~110ms；16ms 会在
-             * 40~50ms 内冲完，首帧跳到半格，是"和触控板相去甚远"的主因。 */
-            "trackpad" => (45.0, 300.0),
-            _ => (40.0, 320.0),
-        };
-
-        if (key == "trackpad-plus")
-        {
-            /* 一步到位：实测触控板曲线 + 细腻模式。
-             * 细腻模式会改系统设置，所以走的是用户已经点过的那条路（FineModeSwitch 的 Checked 事件），
-             * 包括它的确认弹窗和还原机制 —— 这里不重复实现。 */
-            TauSlider.Value = 45;
-            GlideSlider.Value = 300;
-            if (FineModeSwitch.IsChecked != true) FineModeSwitch.IsChecked = true;
-            MarkPreset(b);
-            SetFooterHint("已应用「触控板级」：45ms 跟手 + 300ms 惯性 + 细腻模式");
-            return;
-        }
-
-        TauSlider.Value = tau;
-        GlideSlider.Value = glide;
-        MarkPreset(b);
-        SetFooterHint($"已应用「{b.Content}」手感");
     }
 
     /* ══════════════ 更新 / 关于：外部链接 ══════════════ */
@@ -951,6 +874,9 @@ public partial class MainWindow : Window
 
     /// <summary>smoke 用：先 SelectTab(4) 再取懒加载出来的更新页。</summary>
     internal UpdatePage? UpdatePageForSmoke => UpdatePageView;
+
+    /// <summary>smoke 用：先 SelectTab(2) 再取懒加载出来的平滑页。</summary>
+    internal SmoothPage? SmoothPageForSmoke => SmoothPageView;
 
     /* ══════════════ 事件：关于 / 诊断 ══════════════ */
 
