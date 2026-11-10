@@ -1374,6 +1374,9 @@
                                     <Button Content="导出配置…" Style="{StaticResource GhostButton}"
                                             Click="ExportConfig_Click" Margin="0,0,8,0"
                                             ToolTip="只导出 config.json，可带到另一台机器导入" />
+                                    <Button Content="导出帮助文案…" Style="{StaticResource GhostButton}"
+                                            Click="ExportHelp_Click" Margin="0,0,8,0"
+                                            ToolTip="把帮助页文案导出为 JSON；翻译时直接改字符串，结构别动" />
                                     <Button Content="导入配置…" Style="{StaticResource GhostButton}"
                                             Click="ImportConfig_Click"
                                             ToolTip="从一份 config.json 恢复设置（会整体覆盖当前设置）" />

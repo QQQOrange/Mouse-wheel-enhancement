@@ -332,6 +332,28 @@ public partial class MainWindow
         }
     }
 
+    private void ExportHelp_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出帮助文案",
+            Filter = "JSON (*.json)|*.json",
+            FileName = $"mouse-wheel-help-{DateTime.Now:yyyyMMdd-HHmm}.json",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            File.WriteAllText(dlg.FileName, HelpContent.ExportJson(), new UTF8Encoding(false));
+            SetFooterHint($"帮助文案已导出：{IOPath.GetFileName(dlg.FileName)}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"导出失败：{ex.Message}", Services.AppTitle,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private void ImportConfig_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
