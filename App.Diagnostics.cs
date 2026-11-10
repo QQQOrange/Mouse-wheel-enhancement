@@ -254,8 +254,14 @@ public partial class App
             w.SelectTab(4);          // 更新页
             w.UpdateLayout();
 
+            if (w.UpdatePageForSmoke is not { } updatePage)
+            {
+                Log.Error("smoke: 切到更新页后没有构造出 UpdatePage");
+                return 26;
+            }
+
             /* ① 暗文 ── */
-            if (w.TokenBox is not System.Windows.Controls.PasswordBox)
+            if (updatePage.TokenBox is not System.Windows.Controls.PasswordBox)
             {
                 Log.Error("smoke: 令牌输入框不是 PasswordBox —— 令牌会以明文显示在屏幕上");
                 code = 20;
@@ -269,7 +275,7 @@ public partial class App
             var wantBg = (System.Windows.Media.SolidColorBrush)w.FindResource("PrimaryBtnDisabledBg");
             var wantFg = (System.Windows.Media.SolidColorBrush)w.FindResource("PrimaryBtnDisabledFg");
 
-            var btn = w.SaveTokenBtn;
+            var btn = updatePage.SaveTokenBtn;
             var bd = (System.Windows.Controls.Border)btn.Template.FindName("Bd", btn);
 
             btn.IsEnabled = false;

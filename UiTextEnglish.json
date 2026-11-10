@@ -219,5 +219,7 @@
   "还没识别到程序 —— 在别的窗口里滚一下就会出现。": "No app detected yet — scroll in another window.",
   "普通权限": "Standard user",
   "管理员": "Administrator",
-  "（无备注）": "(no note)"
+  "（无备注）": "(no note)",
+  "监视中…把鼠标放到目标窗口上滚一下。": "Watching… scroll in the target window.",
+  "监视中…还没有滚轮事件。": "Watching… no wheel events yet."
 }

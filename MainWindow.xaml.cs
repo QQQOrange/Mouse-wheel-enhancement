@@ -47,11 +47,15 @@ public partial class MainWindow : Window
     /// <summary>「关于」页第一次被选中时才构造。</summary>
     private AboutPage? AboutPageView;
 
+    /// <summary>「更新」页第一次被选中时才构造（内容见 UI/UpdatePage.xaml）。</summary>
+    private UpdatePage? UpdatePageView;
+
+    /// <summary>更新页还没建时后台自动检查发现的版本，等页面首次打开再补显示。</summary>
+    private UpdateInfo? _pendingUpdateInfo;
+    private bool _pendingUpdateFromAutoCheck;
+
     /// <summary>置位后关闭窗口就是真的销毁（释放资源），而不是退回托盘。</summary>
     private bool _allowClose;
-    private UpdateInfo? _info;
-    private CancellationTokenSource? _downloadCts;
-    private bool _busy;
 
     public MainWindow()
     {
@@ -61,20 +65,14 @@ public partial class MainWindow : Window
 
         SubtitleText.Text = $"{Services.AppTitleEn} · v{Services.Version}";
         PageBadge.Text = $"v{Services.Version}";
-        CurrentVersionText.Text = $"v{Services.Version}";
-        RepoText.Text = Services.Updater.Repo;
         FooterDataDir.Text = AppPaths.DataDir;
         RefreshElevationCard();
 
         LoadFromConfig();
         RefreshStats();
-        RefreshTokenUi();
         RedrawCurve();
         RestoreWindowPlacement();
         UiText.Apply(this);
-
-        if (Services.Store.LoadWarning != null) UpdateStatus.Text = Services.Store.LoadWarning;
-        if (Services.PendingUpdate is { Newer: true } pending) ShowUpdateInfo(pending, fromAutoCheck: true);
 
         Services.StateChanged += OnServicesStateChanged;
 
@@ -125,8 +123,8 @@ public partial class MainWindow : Window
         catch { /* 取不到工作区就按 XAML 的默认值 */ }
     }
 
-    /// <summary>取画刷（带缓存）。</summary>
-    private Brush B(string key)
+    /// <summary>取画刷（带缓存）。各页共用；给 UpdatePage 的状态文字上色用。</summary>
+    internal Brush B(string key)
     {
         if (_brushes.TryGetValue(key, out var b)) return b;
         b = (Brush)FindResource(key);
@@ -325,6 +323,7 @@ public partial class MainWindow : Window
             UpdateCurveSummary();
 
             AppsPageView?.SyncFromConfig();
+            UpdatePageView?.SyncFromConfig();
 
             var th = Theme.Normalize(c.Appearance.Theme);
             ThemeSystem.IsChecked = th == Theme.System;
@@ -336,7 +335,6 @@ public partial class MainWindow : Window
             AboutPageView?.SyncLanguage();
 
             AutoFpsSwitch.IsChecked = c.Smooth.AutoFps;
-            AutoCheckSwitch.IsChecked = c.Update.AutoCheck;
         }
         finally { _loading = false; }
 
@@ -724,6 +722,23 @@ public partial class MainWindow : Window
             }
             AppsPageView.OnActivated();
         }
+        if (Nav.SelectedIndex == UpdateTabIndex)
+        {
+            if (UpdatePageView == null)
+            {
+                Log.Info("「更新」页首次选中，按需构造");
+                UpdatePageView = new UpdatePage(this);
+                UpdateTab.Content = UpdatePageView;
+
+                /* 自动检查可能在页面存在之前就完成了。结果先攒在主窗口，
+                 * 页面一建好立刻补上，不能因为懒加载丢掉一次"发现新版"。 */
+                if (_pendingUpdateInfo != null)
+                {
+                    UpdatePageView.ShowUpdateInfo(_pendingUpdateInfo, _pendingUpdateFromAutoCheck);
+                    _pendingUpdateInfo = null;
+                }
+            }
+        }
         if (Nav.SelectedIndex == AboutTabIndex && AboutPageView == null)
         {
             Log.Info("「关于」页首次选中，按需构造");
@@ -814,6 +829,7 @@ public partial class MainWindow : Window
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
     internal const int HelpTabIndex = 5;
     internal const int AppsTabIndex = 3;
+    internal const int UpdateTabIndex = 4;
     internal const int AboutTabIndex = 6;
 
     /// <summary>应用名单页是不是当前页（页面据此决定要不要立刻重建列表）。</summary>
@@ -897,301 +913,44 @@ public partial class MainWindow : Window
         SetFooterHint($"已应用「{b.Content}」手感");
     }
 
-    /* ══════════════ 事件：更新 ══════════════ */
+    /* ══════════════ 更新 / 关于：外部链接 ══════════════ */
 
-    private void AutoCheck_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        Services.Config.Update.AutoCheck = AutoCheckSwitch.IsChecked == true;
-        Commit();
-    }
-
-    private void OpenRepo_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.RepoUrl);
     internal void OpenHome_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.RepoUrl);
     internal void OpenGitHub_Click(object sender, RoutedEventArgs e)
         => App.OpenExternal($"https://github.com/{Services.Updater.Repo}");
     internal void OpenReleases_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.ReleasesUrl);
 
-    /// <summary>把一次检查结果铺到界面上（自动检查与手动检查共用）。</summary>
-    public void ShowUpdateInfo(UpdateInfo info, bool fromAutoCheck)
-    {
-        _info = info;
-        CurrentVersionText.Text = $"v{Services.Version}";
-
-        if (info.Newer)
-        {
-            UpdateStatus.Foreground = B("WarnBrush");
-            UpdateStatus.Text = $"发现新版本 v{info.Version}" +
-                                (info.Size > 0 ? $"（{Text.HumanSize(info.Size)}）" : "") +
-                                (fromAutoCheck ? " —— 点「下载并安装」即可在程序内更新。" : "");
-            DownloadBtn.Visibility = Visibility.Visible;
-            DownloadBtn.IsEnabled = true;
-
-            if (!string.IsNullOrWhiteSpace(info.Notes))
-            {
-                NotesTitle.Text = $"v{info.Version} 更新说明";
-                NotesBox.Text = info.Notes;
-                NotesCard.Visibility = Visibility.Visible;
-            }
-        }
-        else
-        {
-            UpdateStatus.Foreground = B("TextSecondary");
-            UpdateStatus.Text = $"已是最新版本（v{Services.Version}）";
-            DownloadBtn.Visibility = Visibility.Collapsed;
-            NotesCard.Visibility = Visibility.Collapsed;
-        }
-
-        if (info.AuthWarning != null)
-        {
-            UpdateStatus.Foreground = B("WarnBrush");
-            UpdateStatus.Text += "\n" + info.AuthWarning;
-        }
-    }
-
-    private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
-    {
-        if (_busy) return;
-        _busy = true;
-        CheckBtn.IsEnabled = false;
-        UpdateProgress.Visibility = Visibility.Collapsed;
-        UpdateStatus.Foreground = B("TextSecondary");
-        UpdateStatus.Text = "正在检查…";
-
-        try
-        {
-            var outcome = await Services.Updater.CheckAsync(Services.Version);
-            if (!outcome.Ok)
-            {
-                UpdateStatus.Foreground = B("DangerBrush");
-                UpdateStatus.Text = "检查失败：" + outcome.Error;
-                return;
-            }
-
-            var info = outcome.Info!;
-            Services.Config.Update.LastCheckUtc = DateTime.UtcNow.ToString("o");
-            Services.Store.Touch(notify: false);
-            Services.PendingUpdate = info;
-            ShowUpdateInfo(info, fromAutoCheck: false);
-        }
-        catch (Exception ex)
-        {
-            UpdateStatus.Foreground = B("DangerBrush");
-            UpdateStatus.Text = "检查失败：" + ex.Message;
-            Log.Warn("检查更新失败：" + ex.Message);
-        }
-        finally
-        {
-            _busy = false;
-            CheckBtn.IsEnabled = true;
-        }
-    }
-
-    private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
-    {
-        if (_busy || _info == null) return;
-
-        if (!Services.Updater.CanSelfUpdate(out var reason))
-        {
-            UpdateStatus.Foreground = B("DangerBrush");
-            UpdateStatus.Text = reason;
-            return;
-        }
-
-        _busy = true;
-        _downloadCts = new CancellationTokenSource();
-        DownloadBtn.IsEnabled = false;
-        CancelBtn.Visibility = Visibility.Visible;
-        UpdateProgress.Visibility = Visibility.Visible;
-        UpdateProgress.Value = 0;
-        RestartBtn.Visibility = Visibility.Collapsed;
-
-        var progress = new Progress<DownloadProgress>(p =>
-        {
-            if (p.Total > 0) UpdateProgress.Value = p.Percent;
-            UpdateStatus.Foreground = B("TextSecondary");
-            UpdateStatus.Text = p.Message;
-        });
-
-        try
-        {
-            await Services.Updater.DownloadAsync(_info, progress, _downloadCts.Token);
-
-            UpdateStatus.Text = "校验通过，正在替换程序…";
-            Services.Updater.ApplyUpdate();
-
-            UpdateProgress.Value = 100;
-            UpdateStatus.Foreground = B("SuccessBrush");
-            UpdateStatus.Text = "更新已就位 —— 重启程序即可用上新版本。";
-            RestartBtn.Visibility = Visibility.Visible;
-            DownloadBtn.Visibility = Visibility.Collapsed;
-        }
-        catch (OperationCanceledException)
-        {
-            UpdateStatus.Foreground = B("TextSecondary");
-            UpdateStatus.Text = "已取消下载（已下载的部分会保留，下次可以接着下）。";
-        }
-        catch (Exception ex)
-        {
-            UpdateStatus.Foreground = B("DangerBrush");
-            UpdateStatus.Text = "更新失败：" + ex.Message;
-            Log.Warn("更新失败：" + ex.Message);
-        }
-        finally
-        {
-            _busy = false;
-            DownloadBtn.IsEnabled = true;
-            CancelBtn.Visibility = Visibility.Collapsed;
-            _downloadCts?.Dispose();
-            _downloadCts = null;
-        }
-    }
-
-    private void CancelDownload_Click(object sender, RoutedEventArgs e)
-    {
-        try { _downloadCts?.Cancel(); } catch { }
-        UpdateStatus.Text = "正在取消…";
-    }
-
-    private void Restart_Click(object sender, RoutedEventArgs e) => App.RestartForUpdate();
-
-    /* ══════════════ 事件：令牌 ══════════════ */
+    /* ══════════════ 更新页：后台结果 → 懒加载页面 ══════════════ */
 
     /// <summary>
-    /// 事件：令牌 —— 把界面刷成与"当前有没有令牌"一致的状态。
-    /// 做成 internal 是给 smoke 用：它要在无人工参与的情况下把界面推到
-    /// "已保存令牌"那一态，再截图留证。
+    /// 把一次检查结果铺到「更新」页上（自动检查与手动检查共用）。
+    ///
+    /// <para>
+    /// 自动检查在启动 2.5 秒后跑，此时用户很可能还没点过「更新」页。
+    /// 页面没建时先把结果攒着，等 <see cref="Nav_SelectionChanged"/> 首次构造页面再补；
+    /// 页面自己也会读 <see cref="Services.PendingUpdate"/>，两条路都走不丢结果。
+    /// </para>
     /// </summary>
-    internal void RefreshTokenUi()
+    public void ShowUpdateInfo(UpdateInfo info, bool fromAutoCheck)
     {
-        var tok = Services.Store.CurrentToken();
-        _loading = true;
-        try
+        if (UpdatePageView != null)
         {
-            if (tok == null)
-            {
-                // 没保存过：可编辑状态
-                PopupCleanup.CloseCurrentToolTip();
-                TokenBox.IsEnabled = true;
-                TokenBox.Password = "";
-                TokenBox.ToolTip = "粘贴令牌后点「保存令牌」，例如 ghp_xxx 或 github_pat_xxx";
-                EditTokenBtn.Visibility = Visibility.Collapsed;
-                ClearTokenBtn.Visibility = Visibility.Collapsed;
-                SaveTokenBtn.IsEnabled = true;
-            }
-            else
-            {
-                // 已保存：PasswordBox 没有 IsReadOnly，用禁用 + 一串圆点表示"锁着"
-                PopupCleanup.CloseCurrentToolTip();
-                TokenBox.IsEnabled = false;
-                TokenBox.Password = Text.MaskToken(tok);
-                TokenBox.ToolTip = "令牌已加密保存。要换一个请点「更换」。";
-                EditTokenBtn.Visibility = Visibility.Visible;
-                ClearTokenBtn.Visibility = Visibility.Visible;
-                SaveTokenBtn.IsEnabled = false;
-            }
-        }
-        finally { _loading = false; }
-    }
-
-    private void EditToken_Click(object sender, RoutedEventArgs e)
-    {
-        _loading = true;
-        TokenBox.IsEnabled = true;
-        TokenBox.Password = "";
-        _loading = false;
-        SaveTokenBtn.IsEnabled = true;
-        EditTokenBtn.Visibility = Visibility.Collapsed;
-        TokenBox.Focus();
-        TokenStatus.Text = "把新的令牌粘进来，点「保存令牌」。";
-    }
-
-    private async void SaveToken_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TokenBox.IsEnabled) return;
-        var raw = TokenBox.Password;
-        if (Text.SanitizeToken(raw) == null)
-        {
-            TokenStatus.Foreground = B("DangerBrush");
-            TokenStatus.Text = "没填内容 —— 把 github_pat_… 或 ghp_… 粘进来再保存。";
+            UpdatePageView.ShowUpdateInfo(info, fromAutoCheck);
             return;
         }
 
-        Services.Store.SetToken(raw);
-        RefreshTokenUi();
-        TokenStatus.Foreground = B("TextSecondary");
-        TokenStatus.Text = "已保存（DPAPI 加密，只在本机可解）。正在验证…";
-        await VerifyCurrentTokenAsync();
+        _pendingUpdateInfo = info;
+        _pendingUpdateFromAutoCheck = fromAutoCheck;
     }
 
-    private async void VerifyToken_Click(object sender, RoutedEventArgs e)
-    {
-        if (TokenBox.IsEnabled)
-        {
-            // 输入框里是新粘贴的：直接验证这一串，不落盘
-            var raw = TokenBox.Password;
-            if (Text.SanitizeToken(raw) == null)
-            {
-                TokenStatus.Foreground = B("DangerBrush");
-                TokenStatus.Text = "还没填令牌 —— 粘进来再点验证。";
-                return;
-            }
-            await VerifyAsync(raw);
-            return;
-        }
-        await VerifyCurrentTokenAsync();
-    }
+    /// <summary>
+    /// 令牌界面归更新页所有；主窗口保留这个入口给 smoke / 导入 / 重置调用。
+    /// 页面还没建时不用做事 —— 页面构造时会按当前令牌刷新一次。
+    /// </summary>
+    internal void RefreshTokenUi() => UpdatePageView?.RefreshTokenUi();
 
-    private async Task VerifyCurrentTokenAsync()
-    {
-        var tok = Services.Store.CurrentToken();
-        if (tok == null)
-        {
-            TokenStatus.Foreground = B("DangerBrush");
-            TokenStatus.Text = "还没保存令牌。";
-            return;
-        }
-        await VerifyAsync(tok);
-    }
-
-    private async Task VerifyAsync(string token)
-    {
-        VerifyTokenBtn.IsEnabled = false;
-        TokenStatus.Foreground = B("TextSecondary");
-        TokenStatus.Text = "正在向 GitHub 验证…";
-        try
-        {
-            var check = await Services.Updater.VerifyTokenAsync(token);
-            TokenStatus.Foreground = B("SuccessBrush");
-            TokenStatus.Text = "令牌有效：" + check.Display;
-
-            try
-            {
-                var rate = await Services.Updater.GetRateStateAsync();
-                RateText.Text = $"接口额度：本小时已用 {rate.Used} 次 / 共 {rate.Limit} 次" +
-                                (rate.Authed ? "（已带令牌）" : "（匿名）");
-            }
-            catch (Exception ex)
-            {
-                RateText.Text = "接口额度：查询失败（" + ex.Message + "）";
-            }
-        }
-        catch (Exception ex)
-        {
-            TokenStatus.Foreground = B("DangerBrush");
-            TokenStatus.Text = "令牌无效：" + ex.Message;
-        }
-        finally { VerifyTokenBtn.IsEnabled = true; }
-    }
-
-    private void ClearToken_Click(object sender, RoutedEventArgs e)
-    {
-        Services.Store.SetToken("");
-        RefreshTokenUi();
-        TokenStatus.Foreground = B("TextSecondary");
-        TokenStatus.Text = "已清除令牌。查更新会走匿名接口（每小时 60 次额度）。";
-        RateText.Text = "接口额度：点「验证」可以查看。";
-    }
+    /// <summary>smoke 用：先 SelectTab(4) 再取懒加载出来的更新页。</summary>
+    internal UpdatePage? UpdatePageForSmoke => UpdatePageView;
 
     /* ══════════════ 事件：关于 / 诊断 ══════════════ */
 

@@ -103,7 +103,7 @@ public partial class AboutPage : UserControl
         {
             WheelEngine.TraceEnabled = true;
             WheelEngine.TraceLine = "";
-            InputMonitorText.Text = "监视中…把鼠标放到目标窗口上滚一下。";
+            InputMonitorText.Text = UiText.Translate("监视中…把鼠标放到目标窗口上滚一下。");
 
             _inputMonitorTimer ??= new DispatcherTimer(DispatcherPriority.Background)
             {
@@ -124,7 +124,7 @@ public partial class AboutPage : UserControl
         if (InputMonitorText == null) return;
         var line = WheelEngine.TraceLine;
         InputMonitorText.Text = string.IsNullOrEmpty(line)
-            ? "监视中…还没有滚轮事件。"
+            ? UiText.Translate("监视中…还没有滚轮事件。")
             : line;
     }
 
@@ -133,7 +133,7 @@ public partial class AboutPage : UserControl
         try { _inputMonitorTimer?.Stop(); } catch { }
         WheelEngine.TraceEnabled = false;
         if (InputMonitorText != null)
-            InputMonitorText.Text = "已关闭。打开开关后在这里滚动一下。";
+            InputMonitorText.Text = UiText.Translate("已关闭。打开开关后在这里滚动一下。");
         if (InputMonitorSwitch != null)
             InputMonitorSwitch.IsChecked = false;
     }
