@@ -386,11 +386,12 @@ public partial class MainWindow
         AdvancedBacklogToggle.Content = show ? "收起：积压上限" : "高级参数：积压上限";
     }
 
-    private void Language_Changed(object sender, RoutedEventArgs e)
+    /// <summary>「关于」页切换帮助语言后由页面调用。</summary>
+    internal void SetHelpLanguage(bool english)
     {
-        if (_loading) return;
-        Services.Config.Appearance.Language =
-            LangEn.IsChecked == true ? Core.Localization.English : Core.Localization.Chinese;
+        Services.Config.Appearance.Language = english
+            ? Core.Localization.English
+            : Core.Localization.Chinese;
         Commit(false);
 
         if (_helpRendered && HelpPanel != null)
@@ -400,7 +401,7 @@ public partial class MainWindow
             EnsureHelpRendered();
         }
         LocalizeHelpChrome();
-        SetFooterHint(LangEn.IsChecked == true ? "帮助页已切换为 English" : "帮助页已切换为简体中文");
+        SetFooterHint(english ? "帮助页已切换为 English" : "帮助页已切换为简体中文");
     }
 
     private void Glide_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)    {

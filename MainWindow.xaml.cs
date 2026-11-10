@@ -13,6 +13,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using MouseWheelEnhancement.Core;
+using MouseWheelEnhancement.UI;
 using MouseWheelEnhancement.Update;
 
 namespace MouseWheelEnhancement;
@@ -47,6 +48,9 @@ public partial class MainWindow : Window
     /// <summary>名单页未打开时置位；切到该页再真正枚举进程/取图标。</summary>
     private bool _appsDirty = true;
 
+    /// <summary>「关于」页第一次被选中时才构造。</summary>
+    private AboutPage? AboutPageView;
+
     /// <summary>置位后关闭窗口就是真的销毁（释放资源），而不是退回托盘。</summary>
     private bool _allowClose;
     private UpdateInfo? _info;
@@ -65,14 +69,7 @@ public partial class MainWindow : Window
         PageBadge.Text = $"v{Services.Version}";
         CurrentVersionText.Text = $"v{Services.Version}";
         RepoText.Text = Services.Updater.Repo;
-        AboutVersion.Text = $"v{Services.Version}（build {BuildStamp()}）";
-        AboutAuthor.Text = "QQQOrange";
-        AboutDataDir.Text = AppPaths.DataDir;
-        AboutLogPath.Text = Log.FilePath;
         FooterDataDir.Text = AppPaths.DataDir;
-        HomeText.Text = $"https://github.com/{Services.Updater.Repo}";
-        GitHubText.Text = $"https://github.com/{Services.Updater.Repo}";
-        ReleasesText.Text = Services.Updater.ReleasesUrl;
         RefreshElevationCard();
 
         LoadFromConfig();
@@ -107,7 +104,6 @@ public partial class MainWindow : Window
             Services.StateChanged -= OnServicesStateChanged;
             Theme.Changed -= OnThemeChanged;
             _tick.Stop();
-            try { _inputMonitorTimer?.Stop(); } catch { }
             WheelEngine.TraceEnabled = false;
 
             /* 窗口（连同视觉树、D3D 表面、字形缓存）刚被销毁，此刻是把工作集
@@ -148,7 +144,7 @@ public partial class MainWindow : Window
     /// 构建日期。用 exe 文件自身的修改时间，而不是 Assembly.Location ——
     /// 单文件发布时后者恒为空串（IL3000）。
     /// </summary>
-    private static string BuildStamp()
+    internal static string BuildStamp()
     {
         try
         {
@@ -343,17 +339,9 @@ public partial class MainWindow : Window
             ThemeLight.IsChecked = th == Theme.Light;
             ThemeDark.IsChecked = th == Theme.Dark;
             var lang = Core.Localization.Normalize(c.Appearance.Language);
-            LangZh.IsChecked = lang == Core.Localization.Chinese;
-            LangEn.IsChecked = lang == Core.Localization.English;
-            LangEn.IsEnabled = HelpContent.HasEnglish;
-            LangEn.ToolTip = HelpContent.HasEnglish ? null : "英文帮助资源未安装";
             if (lang == Core.Localization.English && !HelpContent.HasEnglish)
-            {
-                lang = Core.Localization.Chinese;
-                c.Appearance.Language = lang;
-                LangEn.IsChecked = false;
-                LangZh.IsChecked = true;
-            }
+                c.Appearance.Language = Core.Localization.Chinese;
+            AboutPageView?.SyncLanguage();
 
             AutoFpsSwitch.IsChecked = c.Smooth.AutoFps;
             AutoCheckSwitch.IsChecked = c.Update.AutoCheck;
@@ -746,6 +734,12 @@ public partial class MainWindow : Window
 
         if (Nav.SelectedIndex == HelpTabIndex) EnsureHelpRendered();
         if (Nav.SelectedIndex == AppsTabIndex && _appsDirty) RefreshApps();
+        if (Nav.SelectedIndex == AboutTabIndex && AboutPageView == null)
+        {
+            Log.Info("「关于」页首次选中，按需构造");
+            AboutPageView = new AboutPage(this);
+            AboutTab.Content = AboutPageView;
+        }
         if (Nav.SelectedIndex == 1) InvalidateCurve();
         if (Nav.SelectedIndex == 2) InvalidateSmoothPreview();
 
@@ -830,6 +824,7 @@ public partial class MainWindow : Window
     /// <summary>帮助页的页签序号（0 概览 / 1 加速 / 2 平滑 / 3 应用 / 4 更新 / 5 帮助 / 6 关于）。</summary>
     internal const int HelpTabIndex = 5;
     internal const int AppsTabIndex = 3;
+    internal const int AboutTabIndex = 6;
 
     protected override void OnActivated(EventArgs e)
     {
@@ -1030,10 +1025,10 @@ public partial class MainWindow : Window
     }
 
     private void OpenRepo_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.RepoUrl);
-    private void OpenHome_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.RepoUrl);
-    private void OpenGitHub_Click(object sender, RoutedEventArgs e)
+    internal void OpenHome_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.RepoUrl);
+    internal void OpenGitHub_Click(object sender, RoutedEventArgs e)
         => App.OpenExternal($"https://github.com/{Services.Updater.Repo}");
-    private void OpenReleases_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.ReleasesUrl);
+    internal void OpenReleases_Click(object sender, RoutedEventArgs e) => App.OpenExternal(Services.Updater.ReleasesUrl);
 
     /// <summary>把一次检查结果铺到界面上（自动检查与手动检查共用）。</summary>
     public void ShowUpdateInfo(UpdateInfo info, bool fromAutoCheck)
@@ -1318,7 +1313,7 @@ public partial class MainWindow : Window
 
     /* ══════════════ 事件：关于 / 诊断 ══════════════ */
 
-    private void OpenDataDir_Click(object sender, RoutedEventArgs e)
+    internal void OpenDataDir_Click(object sender, RoutedEventArgs e)
     {
         try
         {
@@ -1328,7 +1323,7 @@ public partial class MainWindow : Window
         catch (Exception ex) { SetFooterHint("打不开数据目录：" + ex.Message); }
     }
 
-    private void OpenLog_Click(object sender, RoutedEventArgs e)
+    internal void OpenLog_Click(object sender, RoutedEventArgs e)
     {
         try
         {
@@ -1341,19 +1336,20 @@ public partial class MainWindow : Window
         catch (Exception ex) { SetFooterHint("打不开日志：" + ex.Message); }
     }
 
-    private void RestartHook_Click(object sender, RoutedEventArgs e)
+    internal void RestartHook_Click(object sender, RoutedEventArgs e)
     {
-        RestartHookBtn.IsEnabled = false;
+        var button = sender as Button;
+        if (button != null) button.IsEnabled = false;
         try
         {
             var ok = Services.Engine.Restart();
             SetFooterHint(ok ? "钩子已重启。" : "钩子重启失败，看日志。", ok);
             RefreshStats();
         }
-        finally { RestartHookBtn.IsEnabled = true; }
+        finally { if (button != null) button.IsEnabled = true; }
     }
 
-    private void ResetDefaults_Click(object sender, RoutedEventArgs e)
+    internal void ResetDefaults_Click(object sender, RoutedEventArgs e)
     {
         var r = MessageBox.Show(this, "把除 GitHub 令牌以外的所有设置恢复默认值？", Services.AppTitle,
             MessageBoxButton.OKCancel, MessageBoxImage.Question);
@@ -1367,7 +1363,7 @@ public partial class MainWindow : Window
         SetFooterHint("已恢复默认设置。");
     }
 
-    private void ExitApp_Click(object sender, RoutedEventArgs e)
+    internal void ExitApp_Click(object sender, RoutedEventArgs e)
     {
         /* 误点"退出"就等于把增强整个关掉（托盘图标也会消失），
          * 而它就挨着"恢复默认设置"，值得问一句。 */

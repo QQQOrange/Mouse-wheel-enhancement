@@ -289,7 +289,7 @@ public partial class MainWindow
     /// 也不用猜对方跑的是哪个版本、是不是管理员、多少 DPI。
     /// </para>
     /// </summary>
-    private void ExportDiag_Click(object sender, RoutedEventArgs e)
+    internal void ExportDiag_Click(object sender, RoutedEventArgs e)
     {
         try
         {
@@ -309,7 +309,7 @@ public partial class MainWindow
         }
     }
 
-    private void ExportConfig_Click(object sender, RoutedEventArgs e)
+    internal void ExportConfig_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
@@ -332,7 +332,7 @@ public partial class MainWindow
         }
     }
 
-    private void ExportHelp_Click(object sender, RoutedEventArgs e)
+    internal void ExportHelp_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
@@ -354,7 +354,7 @@ public partial class MainWindow
         }
     }
 
-    private void ImportConfig_Click(object sender, RoutedEventArgs e)
+    internal void ImportConfig_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {

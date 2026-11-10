@@ -62,16 +62,16 @@ public partial class MainWindow
     /// </summary>
     private void RefreshElevationCard()
     {
-        if (ElevationCard == null || AboutElevation == null) return;
+        if (ElevationCard == null)
+        {
+            AboutPageView?.RefreshElevation();
+            return;
+        }
 
         var elevated = Services.IsElevated;
         var wantsAdmin = Services.Config.Behavior.RunAsAdmin;
 
-        AboutElevation.Text = elevated
-            ? "管理员（可以接管以管理员身份运行的窗口）"
-            : wantsAdmin
-                ? "普通用户 —— 设置里已开启「以管理员身份运行」，但这次启动没拿到权限"
-                : "普通用户（管理员窗口内的滚动不会被增强）";
+        AboutPageView?.RefreshElevation();
 
         /* 页脚那行由 RefreshStats 统一写（它要带版本号），这里不要抢着改 ——
          * 两处格式不一样，先写的会被后写的覆盖，改的人还以为没生效。 */
