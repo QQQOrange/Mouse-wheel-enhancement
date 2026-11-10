@@ -69,7 +69,7 @@ internal sealed partial class ScrollAnimator
                 {
                     sink(sign * take);
                 }
-                else if (!InputInjector.SendHWheel(sign * take))
+                else if (!_output.SendHWheel(sign * take))
                 {
                     Log.Warn("横向注入失败（错误码 " + Marshal.GetLastWin32Error() + "）");
                     break;

@@ -272,7 +272,7 @@ internal sealed partial class ScrollAnimator : IDisposable
     {
         while (_passthrough.TryDequeue(out var units))
         {
-            if (!InputInjector.SendWheel(units))
+            if (!_output.SendWheel(units))
             {
                 Log.Warn("直通注入失败（错误码 " + Marshal.GetLastWin32Error() + "）");
             }
@@ -337,6 +337,9 @@ internal sealed partial class ScrollAnimator : IDisposable
     private double _glideTauMs;
 
     private RuntimeSettings _settings = RuntimeSettings.From(AppConfig.Default());
+
+    /// <summary>真正注入的出口；诊断探针可以另设 FrameSink/HorizontalSink 接管。</summary>
+    private readonly IWheelOutput _output = new NativeWheelOutput();
 
     /// <summary>
     /// 目标窗口所在显示器的帧间隔（毫秒）。0 = 跟随 <see cref="RuntimeSettings.FrameIntervalMs"/>。
@@ -1196,7 +1199,7 @@ internal sealed partial class ScrollAnimator : IDisposable
                         {
                             sink(units, dtMs, tau);
                         }
-                        else if (!InputInjector.SendWheel(units))
+                        else if (!_output.SendWheel(units))
                         {
                             Interlocked.Exchange(ref _pendingMilli, 0);
                             Log.Warn("SendInput 失败（错误码 " +
