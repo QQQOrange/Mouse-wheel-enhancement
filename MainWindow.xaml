@@ -1211,18 +1211,18 @@
                          是"帮助页滚起来发涩"的来源之一。 -->
                     <Border Grid.Row="0" Style="{StaticResource Card}" Margin="24,18,24,0">
                         <StackPanel>
-                            <TextBlock Text="快速定位" Style="{StaticResource H2}" Margin="0,0,0,8" />
+                            <TextBlock x:Name="HelpQuickTitle" Text="快速定位" Style="{StaticResource H2}" Margin="0,0,0,8" />
                             <TextBox x:Name="HelpSearchBox" Style="{StaticResource DarkTextBox}"
                                      TextChanged="HelpSearch_Changed"
                                      ToolTip="输入参数名或关键词，只留下包含它的说明" />
                             <WrapPanel Margin="0,10,0,0">
-                                <Button Content="加速" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                <Button x:Name="HelpJumpAccel" Content="加速" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
                                         Click="HelpJump_Click" Tag="加速" />
-                                <Button Content="平滑滚动" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                <Button x:Name="HelpJumpSmooth" Content="平滑滚动" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
                                         Click="HelpJump_Click" Tag="平滑滚动" />
-                                <Button Content="应用名单" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                <Button x:Name="HelpJumpApps" Content="应用名单" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
                                         Click="HelpJump_Click" Tag="应用名单" />
-                                <Button Content="常见问题" Style="{StaticResource GhostButton}"
+                                <Button x:Name="HelpJumpFaq" Content="常见问题" Style="{StaticResource GhostButton}"
                                         Click="HelpJump_Click" Tag="常见问题" />
                             </WrapPanel>
                         </StackPanel>
@@ -1262,6 +1262,27 @@
                                     <TextBlock Text="当前版本" Style="{StaticResource Caption}" />
                                     <TextBlock x:Name="AboutVersion" Grid.Column="1" Style="{StaticResource Mono}"
                                                FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" />
+                                </Grid>
+
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="帮助页语言" Style="{StaticResource Caption}" />
+                                    <TextBlock Grid.Column="1" Style="{StaticResource Caption}"
+                                               Text="主界面暂为中文；帮助页可切换英文（JSON 资源）" Margin="0,0,10,0" />
+                                    <Border Grid.Column="2" Style="{StaticResource SegGroup}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <RadioButton x:Name="LangZh" GroupName="lang" Content="简体中文"
+                                                         AutomationProperties.Name="帮助页语言：简体中文"
+                                                         Style="{StaticResource SegRadio}" Checked="Language_Changed" />
+                                            <RadioButton x:Name="LangEn" GroupName="lang" Content="English"
+                                                         AutomationProperties.Name="帮助页语言：English"
+                                                         Style="{StaticResource SegRadio}" Checked="Language_Changed" />
+                                        </StackPanel>
+                                    </Border>
                                 </Grid>
 
                                 <Grid Margin="0,0,0,10">
@@ -1376,6 +1397,7 @@
                                             ToolTip="只导出 config.json，可带到另一台机器导入" />
                                     <Button Content="导出帮助文案…" Style="{StaticResource GhostButton}"
                                             Click="ExportHelp_Click" Margin="0,0,8,0"
+                                            AutomationProperties.Name="导出帮助文案"
                                             ToolTip="把帮助页文案导出为 JSON；翻译时直接改字符串，结构别动" />
                                     <Button Content="导入配置…" Style="{StaticResource GhostButton}"
                                             Click="ImportConfig_Click"

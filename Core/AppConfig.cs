@@ -302,6 +302,12 @@ public sealed class AppearanceConfig
     public string Theme { get; set; } = MouseWheelEnhancement.Core.Theme.System;
 
     /// <summary>
+    /// 界面/帮助页语言：<c>zh-Hans</c>（默认）/ <c>en-US</c>。
+    /// 非法值收敛成简体中文。
+    /// </summary>
+    public string Language { get; set; } = Localization.Chinese;
+
+    /// <summary>
     /// 上次关闭时的窗口大小与位置。0 表示"没记录过"，按默认 1120×830 居中。
     /// <para>
     /// 存进配置而不是只存在进程内存：关闭到托盘会把窗口真正销毁（见
@@ -602,6 +608,7 @@ public sealed class AppConfig
 
         SchemaVersion = Math.Max(9, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
+        Appearance.Language = Localization.Normalize(Appearance.Language);
 
         /* 窗口大小/位置：0 表示"没记录"（首次启动），按默认居中。
          * 上限放到 10000 是为了多屏/超宽屏；NaN、负数由 Clamp 收到下限。 */

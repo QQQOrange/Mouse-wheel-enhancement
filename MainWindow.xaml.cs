@@ -342,6 +342,18 @@ public partial class MainWindow : Window
             ThemeSystem.IsChecked = th == Theme.System;
             ThemeLight.IsChecked = th == Theme.Light;
             ThemeDark.IsChecked = th == Theme.Dark;
+            var lang = Core.Localization.Normalize(c.Appearance.Language);
+            LangZh.IsChecked = lang == Core.Localization.Chinese;
+            LangEn.IsChecked = lang == Core.Localization.English;
+            LangEn.IsEnabled = HelpContent.HasEnglish;
+            LangEn.ToolTip = HelpContent.HasEnglish ? null : "英文帮助资源未安装";
+            if (lang == Core.Localization.English && !HelpContent.HasEnglish)
+            {
+                lang = Core.Localization.Chinese;
+                c.Appearance.Language = lang;
+                LangEn.IsChecked = false;
+                LangZh.IsChecked = true;
+            }
 
             AutoFpsSwitch.IsChecked = c.Smooth.AutoFps;
             AutoCheckSwitch.IsChecked = c.Update.AutoCheck;

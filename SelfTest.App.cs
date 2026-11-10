@@ -71,6 +71,12 @@ internal static partial class SelfTest
             Theme.Normalize("") == Theme.System &&
             Theme.Normalize("purple") == Theme.System);
 
+        Check("语言：en-US 大小写不敏感",
+            Localization.Normalize("EN-us") == Localization.English);
+        Check("语言：非法值回简体中文",
+            Localization.Normalize("fr-FR") == Localization.Chinese &&
+            Localization.Normalize(null) == Localization.Chinese);
+
         // ② 强制的意思就是"不看系统"
         Check("强制浅色不受系统影响", Theme.ResolveIsLight(Theme.Light));
         Check("强制深色不受系统影响", !Theme.ResolveIsLight(Theme.Dark));

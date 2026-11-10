@@ -1,0 +1,392 @@
+{
+  "sections": [
+    {
+      "Title": "Acceleration",
+      "Intro": "This group decides when acceleration starts and how much it can add. Day to day you only need the first two.",
+      "Items": [
+        {
+          "Title": "Trigger threshold",
+          "Default": "10 notches/s",
+          "What": "The line where the app switches from hands-off to accelerating. Measured in notches per second — one click of the wheel is one notch.",
+          "Bigger": "You must spin harder and faster to trigger it, so it almost never fires by accident. Above 18, basically only a deliberate hard flick accelerates.",
+          "Smaller": "Even a light spin accelerates. Below 6, ordinary web browsing may stay accelerated the whole time and the page feels like it is scrolling by itself.",
+          "Example": "10 notches/s means one notch every 0.1 s. Hunting slowly for a line of text is about 3 to 5 notches/s and does not trigger; heading for the bottom of a page you spin at roughly 15 to 25 notches/s without thinking, and it triggers at once.",
+          "Advice": "Leave it at 10. Raise it only if accidental triggering really bothers you."
+        },
+        {
+          "Title": "Saturation point",
+          "Default": "40 notches/s",
+          "What": "Where the multiplier maxes out. Between the trigger threshold and the saturation point it climbs notch by notch instead of jumping straight to the maximum.",
+          "Bigger": "You must scroll faster to reach the full multiplier, so acceleration is gentler — suited to people who scroll slowly.",
+          "Smaller": "Full multiplier arrives sooner and acceleration hits harder; but if it sits too close to the trigger threshold, crossing the line makes the page bolt.",
+          "Example": "With threshold 10 and saturation 40, scrolling at 25 notches/s (right in the middle) gives about half the maximum multiplier; only above 40 notches/s is it full.",
+          "Advice": "Leave it at 40. If it feels too weak, raise “Max acceleration multiplier” instead of touching this — this changes how gradually acceleration builds, not how fast it can end up."
+        },
+        {
+          "Title": "Max acceleration multiplier",
+          "Default": "3×",
+          "What": "The most one notch can grow to. 3× means one wheel click moves the page three notches' worth. Whole numbers 1 to 8.",
+          "Bigger": "You cover more distance. At 5× and above one notch can cross half a screen, so a single flick easily overshoots and you lose your place.",
+          "Smaller": "Closer to the native feel. 1× means no acceleration; 2× shows up only on hard flicks.",
+          "Example": "On a 1000-line file, reaching the bottom takes about 30 clicks without acceleration, about 10 at 3× and about 6 at 5×.",
+          "Advice": "3 is the sweet spot for most people. Use 4 if you read long documents a lot; use 2 if you only want a little more speed in the browser."
+        },
+        {
+          "Title": "Correct immediately on reverse scroll",
+          "Default": "On",
+          "What": "Smoothing splits one scroll into several small steps sent over time. If you suddenly scroll back, this switch decides whether the queued steps finish first or the motion turns around at once.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "Flick down hard, then scroll up one notch right away: with this on, the page stops and reverses immediately; with it off, it dives a little further down first, and scrolling back feels stuck.",
+          "Advice": "Keep it on. Turn it off only if, on a rare wheel, reverse scrolling makes the page jump."
+        },
+        {
+          "Title": "Invert acceleration direction",
+          "Default": "Off",
+          "What": "Only for mice with “reverse wheel / natural scrolling” enabled in Windows mouse settings. Scrolls injected by the app do not follow that system setting on their own, so align it here.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "Turn it on with an ordinary mouse and scrolling down moves the page up.",
+          "Advice": "Keep it off unless you know you reversed the wheel in system settings."
+        },
+        {
+          "Title": "Also enhance high-precision input",
+          "Default": "Off",
+          "What": "Two-finger touchpad scrolling and some mice in free-spin / continuous mode send very small amounts (less than one notch) at a very high rate. This switch decides whether they get accelerated too.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "Such devices can send dozens of small scrolls per second, which by notches per second looks like frantic flicking, so accelerating them sends the page straight to the bottom. That is why they pass through untouched by default.",
+          "Advice": "Keep it off. Laptop two-finger scrolling is unaffected by default and feels exactly like the system."
+        }
+      ]
+    },
+    {
+      "Title": "Smooth scrolling",
+      "Intro": "This group decides how smooth the scroll feels: every notch passes through it, not just accelerated ones. The defaults already feel close to a touchpad; change something only if scrolling feels floaty, sticky or stuttery.",
+      "Items": [
+        {
+          "Title": "Apply to",
+          "Default": "All scrolling",
+          "What": "Which scrolls get smoothed: only fast ones, or every single scroll.",
+          "Bigger": "“All scrolling” (default): even one slow notch glides up in a few small steps, with a real start and stop, so everything feels consistent; the cost is that ordinary scrolling is no longer the system's native jump.",
+          "Smaller": "“Only when accelerating”: ordinary scrolling bypasses this app entirely and behaves exactly as if it were not installed; only an amplified fast scroll gets spread across frames.",
+          "Example": "With “All scrolling”, even one slow notch shows inertia; with “Only when accelerating”, one slow notch is the system's original jump and smoothing has no effect on it.",
+          "Advice": "Keep “All scrolling”. That is what makes smooth scrolling smooth every scroll; if ordinary scrolling ever feels altered, switch back to “Only when accelerating”."
+        },
+        {
+          "Title": "Injection frame rate",
+          "Default": "Follow monitor automatically",
+          "What": "How many small steps per second the scroll is split into. By default the app asks the system for the current screen's Hz and emits frames at that pace (165 Hz means a step every 6.06 ms).",
+          "Bigger": "Only matters if you switch off automatic and set a fixed value: set higher than the screen, the extra steps are merged into the same frame — wasted work and wasted power.",
+          "Smaller": "Set lower than the screen, a step spans several refresh cycles before it is drawn, and scrolling looks choppy.",
+          "Example": "60 Hz screen → a step every 16.67 ms; 120 Hz → 8.33 ms; 144 Hz → 6.94 ms; 160 Hz → 6.25 ms; 165 Hz → 6.06 ms; 200 Hz → 5.00 ms; 240 Hz → 4.17 ms.",
+          "Advice": "Keep “Follow monitor refresh rate” on. When the refresh rate changes — new monitor, new resolution, laptop on battery — the app adjusts within 2 seconds, with no restart."
+        },
+        {
+          "Title": "Steps per notch",
+          "Default": "4",
+          "What": "How many small steps one notch (one wheel click, equal to 120 units) is split into. Choosing 4 means **at most 30 units per frame** (120÷4); how much each frame actually sends follows an exponential curve — near 30 at the start, smaller and smaller after that (10 → 5 → 2…), not an even 30/30/30/30.",
+          "Bigger": "Finer steps, but each one is so small that a few old programs ignore it outright (the symptom is a wheel that will not scroll).",
+          "Smaller": "Closer to native, with less smoothing. 2 is the compromise.",
+          "Example": "At 4, one notch goes out as four chunks of 30 / 30 / 30 / 30, so the view advances instead of jumping.",
+          "Advice": "Just keep 4; try 6 or 8 for finer steps (at 8 frames per notch each step is 0.25 px, so the grain is smaller). If a program really will not scroll, drop this to 2 first; if that fails, turn smoothing off entirely."
+        },
+        {
+          "Title": "Response time (τ)",
+          "Default": "40 ms",
+          "What": "How quickly the content catches up with your hand during a scroll. Smaller feels tighter, larger feels softer; this is not “glide length” — that is the next item.",
+          "Bigger": "Too small (below 30): a normal wheel notch finishes within 40–50 ms, the first frame alone can jump half a notch, and it reads as a lurch.",
+          "Smaller": "Too large (above 80): even slow scrolling lags noticeably, like a rubber band.",
+          "Example": "Measured touchpad gestures: a 120-unit notch advances continuously for about 100 ms. τ=45 ms together with the speed low-pass lands right in that range; the 40 ms default is slightly quicker and feels tighter for everyday browsing.",
+          "Advice": "40–60 feels most like a touchpad. Drop to 35 if it feels loose; raise to 50–60 if it floats. The old “Touchpad” preset used 16 ms, which actually rushed too fast, and has been retuned."
+        },
+        {
+          "Title": "Glide after release",
+          "Default": "320 ms",
+          "What": "After the wheel stops completely the content keeps gliding in the same direction before it settles — this controls how long that glide lasts (a **duration**, not a time constant). It only triggers on a real flick: that segment is at least 1.6 notches, with a peak of at least 18 notches/s; one slow notch does not float.",
+          "Bigger": "A longer tail, like a push on a touchpad. Above 400 ms it visibly floats, especially when the content keeps moving after a burst of fast flicks.",
+          "Smaller": "More decisive. 0 turns it off: after release the response curve settles naturally, with no extra glide.",
+          "Example": "300 ms is roughly “half a notch more after you let go”. The glide's τ scales with the peak speed of that flick, and slow scrolling does not trigger it; the app never dumps the remaining distance at the end — it glides to a stop.",
+          "Advice": "Use 300 for browsers and long documents; drop to 150 if it feels draggy; use 0–150 for short pages or WPF/Qt lists."
+        },
+        {
+          "Title": "Backlog cap",
+          "Default": "5 notches",
+          "What": "During a burst of hard flicks, how much unsent distance may be buffered. Anything beyond that is dropped outright.",
+          "Bigger": "Smoother, but the page may drift on a little after you stop.",
+          "Smaller": "Tighter, stopping when you stop; but too small makes fast repeated flicks look stuttery.",
+          "Example": "Flick 8 notches at 5× and you would theoretically send 40 notches; anything over the cap is discarded instead of played out slowly — better to scroll a little less than to keep running after you stop or skip several notches at once.",
+          "Advice": "Keep 5."
+        }
+      ]
+    },
+    {
+      "Title": "App list",
+      "Intro": "Decides which apps the enhancement applies to. Changes take effect immediately, with no restart.",
+      "Items": [
+        {
+          "Title": "List mode",
+          "Default": "Blocklist",
+          "What": "First, is the list for excluding apps or for allowing only them?",
+          "Bigger": "Allowlist: only listed programs accelerate, everything else is left alone. Good for “leave everything else alone, use it only in the browser”.",
+          "Smaller": "Blocklist: listed programs are not accelerated, everything else is. Good for “just leave a few apps alone”.",
+          "Example": "Only want it in Chrome → choose Allowlist and add chrome.exe; only want games left alone → choose Blocklist and add the game's exe.",
+          "Advice": "Keep Blocklist. Remote desktop and several timing-sensitive competitive games are already excluded by default."
+        },
+        {
+          "Title": "Match by",
+          "Default": "exe file name",
+          "What": "Matches on the program's file name (case-insensitive). Pasting a full path also works — the app keeps only the file name and adds .exe if missing.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "Entering C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe behaves exactly like entering chrome.exe.",
+          "Advice": "If you do not know the exe name, click “Pick from running apps”; it lists programs that currently have a window open. The tray right-click menu can also add or remove the current app in one click."
+        },
+        {
+          "Title": "Window title regex",
+          "Default": "Empty",
+          "What": "An extra rule on window titles, case-insensitive. A hit is handled by the same list mode as above. Leave it empty to disable.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "Entering remote excludes every window whose title contains “remote” (in blocklist mode that means no acceleration). Useful when a remote desktop client changes its exe name.",
+          "Advice": "If you do not write regexes, leave it empty — a bad pattern is flagged in red immediately and ignored, and it cannot break other settings."
+        }
+      ]
+    },
+    {
+      "Title": "Updates & token",
+      "Intro": "Updates go through GitHub Releases: downloaded, verified and replaced inside the app, with no browser involved.",
+      "Items": [
+        {
+          "Title": "Check for updates at startup",
+          "Default": "On",
+          "What": "Silently checks for the latest version in the background on every launch.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "Nothing pops up when you are up to date; if a new version exists it says so, and you can download and install it in-app with one click.",
+          "Advice": "Keep it on."
+        },
+        {
+          "Title": "GitHub personal access token",
+          "Default": "Empty (optional)",
+          "What": "A credential only you can see, used so the app talks to the GitHub API as you.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "Updates and downloads work without it, but anonymous API calls are limited to 60 per hour and heavier use gets rate-limited (“API rate limit hit, recovers in about N minutes”); with a token it is 5000 per hour.",
+          "Advice": "For a public repo a classic token with no scopes at all can read; a fine-grained token only needs read-only Contents permission on that repo. The token is stored only in the local config file, encrypted with DPAPI — other accounts and other machines cannot decrypt it, and it is never uploaded or written to logs."
+        },
+        {
+          "Title": "What if the token is wrong",
+          "Default": "—",
+          "What": "The app keeps working: if GitHub rejects the token it falls back to an anonymous request and tells you “token invalid, using anonymous” in the UI.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "So you can leave it empty at first and add a token only when you see a rate-limit warning; a wrong token just falls back to anonymous, which is no worse than leaving it blank.",
+          "Advice": "Click “Verify” to confirm the token works right away and see how many calls are left this hour."
+        }
+      ]
+    },
+    {
+      "Title": "Other switches in the UI",
+      "Intro": "",
+      "Items": [
+        {
+          "Title": "Start with Windows",
+          "Default": "Off",
+          "What": "Starts automatically after you sign in to Windows and sits in the tray without opening a window.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "It uses a startup entry in the current user's registry, needs no admin rights, and installs no system service.",
+          "Advice": "Turn it on if you use it daily."
+        },
+        {
+          "Title": "Start as administrator",
+          "Default": "Off",
+          "What": "Starts with admin rights when launched at sign-in, so windows belonging to elevated programs (Task Manager, some installers, game launchers running as admin) get accelerated too.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "It is implemented with a Windows scheduled task: in Task Scheduler you will see a task named “Mouse Wheel Enhancement (Administrator)”. It does not use a registry startup entry because programs started from the registry always run with normal rights, no exceptions. The first time you turn this on you get one UAC prompt and never again — elevation is authorized when the task is created. Turning the switch off deletes the task.",
+          "Advice": "Only needed if you often scroll in elevated windows. Ordinary browsers, Office and Notepad do not need it."
+        },
+        {
+          "Title": "Minimize to tray when closing",
+          "Default": "On",
+          "What": "Whether clicking × in the top-right corner drops to the tray and keeps working, or really exits.",
+          "Bigger": null,
+          "Smaller": null,
+          "Example": "The enhancement stays active after dropping to the tray; the first close shows a one-time notice so you are not surprised to feel it still working after thinking the app had exited.",
+          "Advice": "Keep it on. To stop it completely, use “Exit” in the tray menu."
+        },
+        {
+          "Title": "Pause enhancement in this window",
+          "Default": "Off",
+          "What": "Makes Mouse Wheel Enhancement skip its own settings window and hand scrolling entirely back to the system.",
+          "Bigger": "Turn it on and this window scrolls natively again — handy for an A/B test: scroll once to feel the enhanced behavior, flip this on and scroll again to notice the difference immediately.",
+          "Smaller": "Turn it off and this window is enhanced like any other.",
+          "Example": "The app does not exclude itself by default just to avoid accelerating itself. At normal speed it does not scale up (smoothing only, by default) and accelerates only past the threshold — the same is true in its own window, so it never runs away faster and faster.",
+          "Advice": "Keep it off. Turn it on briefly for the comparison, then turn it back off."
+        }
+      ]
+    }
+  ],
+  "faqs": [
+    {
+      "q": "Installed it and nothing feels different?",
+      "a": "First check that the first item on the Overview page, “Hook”, says “Running”, then whether “Current target app” is on the blocklist. If all of that is fine, your scroll speed simply has not crossed the trigger threshold yet — try a few fast flicks in a row, or temporarily set the trigger threshold to 6."
+    },
+    {
+      "q": "No effect at all in one particular window?",
+      "a": "That window is probably running elevated (Task Manager, installers, some game launchers). Windows does not let a normal-privilege program intercept input for higher-privilege windows; that is an OS limit. On the Overview page click “Restart as administrator” to cover such windows, or turn on “Start as administrator” in settings to fix it for good."
+    },
+    {
+      "q": "With “Start as administrator” on, will I get a UAC prompt every boot?",
+      "a": "No. The switch uses a Windows scheduled task: the one UAC prompt you accept when you first enable it authorizes the task scheduler to run with high privileges from then on, so every later sign-in starts elevated without asking. If it ever fails to start, check the task named “Mouse Wheel Enhancement (Administrator)” in Task Scheduler, or run MouseWheelEnhancement.exe --taskcheck on the command line to print its state."
+    },
+    {
+      "q": "Smoothing is on, but the page stops dead the moment the wheel stops?",
+      "a": "That is “Glide after release” being too short or 0. Set it to 200–300 ms on the Smooth scrolling page and try again: the content travels a little further after the wheel stops, so the ending no longer feels abrupt. Note that this and “glide length” are two separate items — this one shapes the ending, the other how a single scroll is spread out."
+    },
+    {
+      "q": "The last stretch ends with a snap even though everything before it is smooth?",
+      "a": "That was a flaw in the old ending algorithm, fixed in 1.7.1: the last few units (about 0.8 px each) used to be forced to “at least 1 unit per frame”, so speed stopped decaying and kept crawling at roughly one notch per second until the distance ran out, then dropped to zero — worse at higher refresh rates (at 160 Hz that is a 130 px/s brake).\nIt now uses “fractional accumulation across frames plus a landing segment”: fractions under 1 unit are carried from frame to frame and sent once they add up, and when less than 1/10 notch is left after release the time constant is interpolated smoothly to 35 ms, easing the final speed down to 0.4–0.55 notches/s before stopping.\nIf the ending still feels slow, lower “Glide after release”; for a crisp hard stop, set it to 0."
+    },
+    {
+      "q": "After the last scroll there seems to be a delay, like a sneaky extra nudge after it already stopped?",
+      "a": "Before 1.7.5 the landing segment of the ending algorithm never took effect (its time constant was clamped by Math.Max and did nothing whenever it was smaller than the glide), so the final stretch stayed at 1-unit steps with ever-growing gaps (12 → 50 ms) and the last frame waited 75 ms.\n1.7.5 fixed three things: (1) the landing segment is now pure interpolation (no more Math.Max), so it really takes over the tail; (2) it covers only the last 1/10 notch (12 units) with a 35 ms time constant, easing the last 6 frames down from 50–65 units/s; (3) the whole ending gets a hard 150 ms upper bound that only pulls it shorter, never longer.\nMeasured with --frametrace, the landing segment of a single notch went from 175 ms to 112 ms and the last-frame gap from 75 ms to 44 ms. If you want it even crisper, try lowering “Glide after release” to 100–150 ms."
+    },
+    {
+      "q": "Scrolling on the help page still shows no acceleration?",
+      "a": "Before 1.7.5 there really was a bug in delivering the multiplier: the rounding remainder was clamped to ±1 notch, far too tight, so at 5× a remainder was dropped once it reached only 1/5, and the long-run multiplier came out below the setting (5× on paper, 3.x in practice).\n1.7.5 raised the remainder cap to “1 notch × acceleration multiplier” (5× → 5 notches), so delivery keeps up with the setting.\nAlso note that only fast spinning **accelerates**; slow scrolling is never amplified (that is by design, not a fault). To check this machine, run MouseWheelEnhancement.exe --wheeltest; the report's “multiplier delivery at different hand speeds” prints the multiplier actually delivered at each speed."
+    },
+    {
+      "q": "Smoothing is on, but scrolling notch by notch still starts and stops in chunks?",
+      "a": "First check whether Smooth scrolling → Apply to is “Only when accelerating” — under that setting ordinary scrolling bypasses this app entirely, so one slow notch is the system's native jump and smoothing never applies; the default should be “All scrolling”.\nOnce the range is right, look at “Steps per notch”: raising it (6 or 8) splits a notch more finely. Since 1.7.5, old configurations of 3 frames per notch or fewer are raised to 4 once (removing the 0.5 px stair-step), while 4–8 frames per notch keeps whatever you set.\nFinally the ending: set “Glide after release” to 200 ms or more so a stop glides to rest instead of halting with a snap. With all three in place, even single-notch scrolling should be fully smooth."
+    },
+    {
+      "q": "I changed the lines per scroll in Windows but the app did not follow?",
+      "a": "They are the same value: that slider writes straight to the system setting, and after you change it in the Windows panel the app re-reads it when the window regains focus (no restart needed). The app does not keep its own copy of “the line count it believes in”, so the two can never disagree; if the system is set to “one page at a time”, the slider is disabled and explains why."
+    },
+    {
+      "q": "The whole system got very slow and one notch barely moves?",
+      "a": "Check Settings → Bluetooth & devices → Mouse → “Roll the mouse wheel to scroll” — it may have been set to 1 line. Old versions (1.6.x) temporarily lowered it to 1 line so some programs would split a notch more finely, and a crash could leave it there. Startup now restores it automatically from the backup the old version left behind; you can also run MouseWheelEnhancement.exe --wheellines to see the current value, then add --fix to restore it from the backup."
+    },
+    {
+      "q": "One notch in the app's own settings page flings past a whole page?",
+      "a": "This was most visible when “lines per notch” was set low (worst at 1) and was fixed in 1.7.2.\nThe cause: the app's own pages scroll by pixels (one notch = lines × 20 px), and frame spreading split a notch into 8 steps whose last few were only 0.2–0.5 px, which was misread as “already at the edge” and handed to the system, whose jump is a full line — so we sent 20 px and it jumped 48 px, turning one notch into more than a page.\nBoundaries are now detected only when the view is really at the top or bottom, and fractional offsets scroll themselves. To check this machine, run MouseWheelEnhancement.exe --wheeltest lines=1 and “max travel per notch” in the report should be exactly 20 px."
+    },
+    {
+      "q": "Does the UI follow the system dark/light mode automatically?",
+      "a": "Yes, and that is the default. Make sure Overview → Appearance is set to “Follow system”; then switch Windows Settings → Personalization → Colors → “Choose your default app mode” and the app's windows follow within 1–2 seconds, with no restart. The title bar changes with them."
+    },
+    {
+      "q": "Why does scrolling in the app's own settings window feel unenhanced?",
+      "a": "First check whether Overview → “Pause enhancement in this window” is on — with it on this window is fully native. It is off by default, which means the app enhances itself too.\nThen keep two things apart: only fast spinning **accelerates**; slow scrolling is not amplified, but by default it is **smoothed** (split into a few steps), and that is not a fault.\nThere was also a real bug: during fast spinning the multiplier was applied, but the amount was truncated by the “Backlog cap” inside the animator, so the page only moved 10–20% faster (fixed in 1.7.3 — that cap now scales with the max multiplier).\nTo check this machine, run MouseWheelEnhancement.exe --wheeltest; the report's “multiplier delivery at different hand speeds” prints the multiplier actually delivered at each speed."
+    },
+    {
+      "q": "I am spinning fast — why does acceleration still not feel like it?",
+      "a": "First check whether the speed is high enough: the Acceleration page's “Trigger threshold” defaults to 10 notches/s (about one notch every 100 ms). Casual browsing is 2–5 notches/s, and **scrolling below the threshold goes entirely to the system, not one byte changed** — that is by design, not a fault.\nAt 10–14 notches/s the curve itself only gives 1.0–1.2×, so a faint effect is normal; to trigger earlier, lower “Trigger threshold” to 6–7, and slow scrolling still stays untouched.\nIf your speed is already fast (20 notches/s or more) and there is still no acceleration, check whether Acceleration → “Fast scroll acceleration” is off, or whether the app is losing effect in a window that runs as administrator (see “No effect at all in one particular window” above)."
+    },
+    {
+      "q": "Does it work in games?",
+      "a": "Games that take exclusive input via Raw Input / DirectInput bypass the system mouse hook, so no tool of this kind can see the events — that is a technical boundary. The default blocklist also excludes common competitive games."
+    },
+    {
+      "q": "My screen is 165 Hz / 200 Hz — do I need to set the frame rate myself?",
+      "a": "No. The default is “Follow monitor refresh rate”: the app reads the actual Hz of the current screen and emits frames at that pace, catching up within 2 seconds after a monitor or resolution change. The manual 60/90/120/144 choices are only overrides for special cases (a laptop saving power, for example)."
+    },
+    {
+      "q": "The laptop touchpad behaves exactly the same?",
+      "a": "That is by design, and it is now **detected actively**: a touchpad usually sends continuous small steps at 60–125 Hz, sometimes even a full 120 units but only a dozen milliseconds apart. The app identifies such streams as high-precision input and passes them through untouched by default, keeping the device's native feel; to amplify the touchpad too, turn on the last item on the Acceleration page, “Also enhance high-precision input”. If what you want is a mouse wheel as smooth as a touchpad, you do not need that switch — the wheel already goes through a touchpad-grade frame-spreading curve."
+    },
+    {
+      "q": "Does Ctrl+wheel zoom get accelerated?",
+      "a": "No. Ctrl+wheel or Alt+wheel (zoom) always passes through untouched, because zoom only makes sense 1:1. Shift+wheel (horizontal scrolling) has been accelerated by speed by default since 1.8.0 (it can be turned off under Input, after which it passes through untouched)."
+    },
+    {
+      "q": "It suddenly stops accelerating after a while?",
+      "a": "Windows silently unhooks a hook whose callback times out, without telling anyone. Go to the About page and click “Restart hook” to recover; the log keeps a record."
+    },
+    {
+      "q": "After acceleration it feels like it cannot brake, and one flick overshoots?",
+      "a": "Tune in this order: first drop “Max acceleration multiplier” by one step, then lower “Backlog cap”, and finally lower “Response time (τ)” to around 35–40. Changing all three at once makes it hard to tell which one helped. If even a single slow notch floats, first make sure “Glide after release” is not above 400 — only flicks trigger it."
+    },
+    {
+      "q": "The wheel will not scroll in one program, or scrolls strangely?",
+      "a": "Change “Steps per notch” from 4 to 2 and it returns to a more native granularity; if that fails, turn smoothing off and keep acceleration only. Very old Win32 programs round each scroll amount by dividing by 120, so small steps get dropped."
+    },
+    {
+      "q": "I paused once — why is it enabled again after a restart?",
+      "a": "That is by design: “Pause enhancement” applies only to **this run** and does not survive a restart.\nOlder versions saved it as an ordinary setting in config.json, so pausing once with a hotkey or the tray menu meant every later launch at sign-in stayed paused — the symptom being that the feature was not enabled after autostart and had to be clicked on.\nEvery start now begins enabled. To stop it for good, turn off “Start with Windows” or use “Exit” in the tray menu."
+    },
+    {
+      "q": "No acceleration when scrolling fast in WeChat / QQ?",
+      "a": "WeChat 4.x and QQ use the Qt framework (window class Qt…QWindowIcon). Qt derives the step count with **integer division** of angleDelta ÷ 120, so anything under one notch divides down to 0 — that is why they must be sent whole notches (a 3× multiplier sends 3 notches) instead of splitting one notch across frames as browsers allow.\nSince 1.7.14 Qt is detected automatically and whole notches are used, at the cost of no sub-notch smoothing in those programs (same as WPF).\nIf scrolling does not move at all, it is usually WeChat running as administrator while this app does not — the app then passes scrolling through untouched (it works but is not accelerated), and the log shows a WARN."
+    },
+    {
+      "q": "Does Shift+wheel horizontal scrolling get accelerated too?",
+      "a": "Yes (on by default since 1.8.0). Horizontal scrolling uses the same speed curve but **only amplifies distance, with no smoothing** — HWHEEL jumps in whole notches in most programs, so split frames would be dropped. Holding Shift while spinning fast in a browser, a wide spreadsheet or a code diff saves a noticeable number of clicks. To disable it, turn off Overview → “Shift + wheel horizontal acceleration”."
+    },
+    {
+      "q": "What is that “3.2×” flashing in the corner of the screen?",
+      "a": "It is the current multiplier (1.8.0). During fast scrolling it appears next to the cursor for about 340 ms to show exactly how much faster this scroll was, so you no longer have to guess while tuning. It never takes focus and clicks pass through it; if it is noisy, turn off Overview → “Show multiplier when accelerating”."
+    },
+    {
+      "q": "Can one program use a different multiplier or have smoothing off?",
+      "a": "**Right-click** the program in the App list to set its own “Max multiplier” (2×–8×) and “Smoothing” switch; leave them unset to follow the global setting.\nTypical use: an IDE that should be shorter and crisper → max 2×, smoothing off; a browser that should go farther and smoother → max 5×, smoothing on. The list shows a summary like “· max 3× · smoothing off”."
+    },
+    {
+      "q": "It suddenly stops accelerating while in use, and used to need “Restart hook”?",
+      "a": "Since 1.8.0 it recovers by itself. Windows **silently removes** a low-level hook after a callback timeout (the handle stays, the callbacks stop), and the app now checks every 5 seconds: if the thread is gone it restarts it, and after long idle periods it swaps in a fresh hook regularly.\nThe log records “hook rotated (guarding against silent unhooking)” or “watchdog: hook thread gone, restarting hook”."
+    },
+    {
+      "q": "What is “Flick page flip”, and is it worth enabling?",
+      "a": "An experimental switch, off by default. When you flick fast enough to approach the full multiplier it adds roughly one screenful (about 6 notches), so long documents reach the bottom in fewer flicks. **Why it is off by default**: Windows does not tell anyone how many pixels a screen holds, so “one screen” can only be estimated in notches — great on long pages, too aggressive on short ones. It can only be enabled manually on the Acceleration page."
+    },
+    {
+      "q": "Where are the settings actually stored?",
+      "a": "In the app's own folder: <program folder>\\Mouse wheel enhancement data\\config.json, with logs at logs\\app.log in the same place. The About page has two “Open” buttons that take you straight there."
+    },
+    {
+      "q": "Can I take these settings to another computer?",
+      "a": "Yes — since 1.8.0 use “Export settings…” and “Import settings…” on the About page; no need to dig through folders.\nThe one exception is the GitHub token: it is encrypted with the current Windows account's key, so another machine cannot decrypt it (the app treats it as empty and the other settings still apply), and you just enter it again on the new machine.\nIf you hit a problem, click “Export diagnostics…” to bundle settings, logs and environment info into one zip and send it to the developer."
+    }
+  ],
+  "presets": [
+    {
+      "Name": "Long documents / code",
+      "Desc": "4× multiplier · threshold 10 · saturation 40 · smoothing: all scrolls · response 45 ms",
+      "Mult": 4,
+      "Threshold": 10,
+      "Sat": 40,
+      "Smooth": true,
+      "Tau": 45
+    },
+    {
+      "Name": "Everyday web browsing",
+      "Desc": "3× multiplier · threshold 12 · saturation 40 · smoothing: all scrolls · response 40 ms",
+      "Mult": 3,
+      "Threshold": 12,
+      "Sat": 40,
+      "Smooth": true,
+      "Tau": 40
+    },
+    {
+      "Name": "Most conservative (avoid accidents)",
+      "Desc": "2× multiplier · threshold 16 · saturation 45 · smoothing: off",
+      "Mult": 2,
+      "Threshold": 16,
+      "Sat": 45,
+      "Smooth": false,
+      "Tau": 40
+    },
+    {
+      "Name": "Smoother feel",
+      "Desc": "3× multiplier · threshold 10 · saturation 35 · smoothing: all scrolls · response 55 ms",
+      "Mult": 3,
+      "Threshold": 10,
+      "Sat": 35,
+      "Smooth": true,
+      "Tau": 55
+    }
+  ]
+}

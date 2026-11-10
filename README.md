@@ -123,7 +123,7 @@ dotnet publish -c Release -p:PublishSingleFile=true --self-contained true -o out
 ## 自检
 
 ```bash
-# 445 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、
+# 449 条纯逻辑断言：倍率曲线、速度判定、起步护栏、摊帧、滑行收尾、帧率跟随、整格化、
 # 触控板流分类、τ45 单格曲线、UWP/Java/Tk 语义、主题、自我增强、版本比较、令牌清洗、
 # 名单匹配、配置读写、按应用覆盖派生、窗口记忆、schema 迁移
 MouseWheelEnhancement.App.exe --selftest   # 退出码 0 = 全部通过

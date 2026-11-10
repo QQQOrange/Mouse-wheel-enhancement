@@ -386,6 +386,23 @@ public partial class MainWindow
         AdvancedBacklogToggle.Content = show ? "收起：积压上限" : "高级参数：积压上限";
     }
 
+    private void Language_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        Services.Config.Appearance.Language =
+            LangEn.IsChecked == true ? Core.Localization.English : Core.Localization.Chinese;
+        Commit(false);
+
+        if (_helpRendered && HelpPanel != null)
+        {
+            HelpPanel.Children.Clear();
+            _helpRendered = false;
+            EnsureHelpRendered();
+        }
+        LocalizeHelpChrome();
+        SetFooterHint(LangEn.IsChecked == true ? "帮助页已切换为 English" : "帮助页已切换为简体中文");
+    }
+
     private void Glide_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)    {
         if (_loading) return;
         Services.Config.Smooth.GlideMs = (int)Math.Round(e.NewValue);

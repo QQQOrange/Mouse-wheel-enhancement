@@ -32,6 +32,7 @@ public partial class MainWindow
         _helpRendered = true;
         var sw = Stopwatch.StartNew();
         HelpContent.Render(HelpPanel);
+        LocalizeHelpChrome();
         var anchors = HelpPanel.Children.OfType<FrameworkElement>()
             .Select(c => c.Tag as string).Where(t => !string.IsNullOrEmpty(t));
         Log.Info($"帮助页渲染完成：{sw.ElapsedMilliseconds} ms / {HelpPanel.Children.Count} 张卡片 / " +
@@ -40,6 +41,33 @@ public partial class MainWindow
 
     private DispatcherTimer? _helpFilterTimer;
 
+    /// <summary>同步帮助页顶部固定区域（快速导航/搜索提示）的语言。</summary>
+    private void LocalizeHelpChrome()
+    {
+        if (HelpQuickTitle == null) return;
+        var en = Core.Localization.IsEnglish(Services.Config.Appearance.Language);
+        HelpQuickTitle.Text = en ? "Quick navigation" : "快速定位";
+        if (HelpSearchBox != null)
+            HelpSearchBox.ToolTip = en
+                ? "Filter by parameter name or keyword"
+                : "输入参数名或关键词，只留下包含它的说明";
+
+        var titles = HelpContent.SectionTitles;
+        void Set(Button? button, int index, string zh)
+        {
+            if (button == null || index < 0 || index >= titles.Count) return;
+            button.Content = en ? titles[index] : zh;
+            button.Tag = en ? titles[index] : zh;
+        }
+        Set(HelpJumpAccel, 0, "加速");
+        Set(HelpJumpSmooth, 1, "平滑滚动");
+        Set(HelpJumpApps, 2, "应用名单");
+        if (HelpJumpFaq != null)
+        {
+            HelpJumpFaq.Content = en ? "FAQ" : "常见问题";
+            HelpJumpFaq.Tag = en ? "FAQ" : "常见问题";
+        }
+    }
     /// <summary>底部提示是否正在占用那行小字（占用期间 RefreshStats 不覆盖）。</summary>
     private bool _footerHintOn;
 

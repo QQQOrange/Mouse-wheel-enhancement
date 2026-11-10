@@ -330,6 +330,10 @@ internal static partial class SelfTest
         Check("帮助文案从嵌入 JSON 加载", HelpContent.UsingJsonResource);
         Check("帮助页至少 5 个数据段", HelpContent.SectionCount >= 5,
             HelpContent.SectionCount.ToString());
+        Check("英文帮助资源可用", HelpContent.HasEnglish);
+        Check("中英文帮助段数一致",
+            HelpContent.EnglishSectionCount == HelpContent.SectionCount,
+            $"{HelpContent.EnglishSectionCount}/{HelpContent.SectionCount}");
 
         /* Qt = 按事件滚动（v1.7.14）
          *

@@ -91,6 +91,7 @@
   <!-- 帮助页文案：数据与渲染分离；JSON 作为嵌入资源，翻译/审阅可直接改这个文件。 -->
   <ItemGroup>
     <EmbeddedResource Include="HelpContent.json" />
+    <EmbeddedResource Include="HelpContent-en.json" Condition="Exists('HelpContent-en.json')" />
   </ItemGroup>
 
   <!-- UI Automation：WPF 文档型 ScrollViewer 能按 delta 滚，ListBox/DataGrid 不能。

@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
+using MouseWheelEnhancement.Core;
 
 namespace MouseWheelEnhancement;
 
@@ -24,6 +25,17 @@ namespace MouseWheelEnhancement;
 /// </summary>
 internal static partial class HelpContent
 {
+    private static bool EnglishNow
+    {
+        get
+        {
+            try { return Core.Localization.IsEnglish(Services.Config.Appearance.Language); }
+            catch { return false; }
+        }
+    }
+
+    private static string T(string zh, string en) => EnglishNow ? en : zh;
+
     /* ══════════════ 渲染 ══════════════ */
 
     public static void Render(StackPanel host)
@@ -31,7 +43,7 @@ internal static partial class HelpContent
         host.Children.Clear();
 
         var intro = Card(Intro());
-        intro.Tag = "简介";
+        intro.Tag = T("简介", "Introduction");
         host.Children.Add(intro);
 
         foreach (var section in Sections())
@@ -53,29 +65,33 @@ internal static partial class HelpContent
         }
 
         var faq = Card(BuildFaq());
-        faq.Tag = "常见问题";
+        faq.Tag = T("常见问题", "FAQ");
         host.Children.Add(faq);
 
         var presets = Card(BuildPresets());
-        presets.Tag = "预设";
+        presets.Tag = T("预设", "Presets");
         host.Children.Add(presets);
     }
 
     private static FrameworkElement Intro()
     {
         var p = new StackPanel();
-        p.Children.Add(Text("这个软件是干什么的", 17, FontWeights.SemiBold, "TextPrimary", top: 0));
+        p.Children.Add(Text(T("这个软件是干什么的", "What this app does"), 17, FontWeights.SemiBold, "TextPrimary", top: 0));
 
         p.Children.Add(Text(
-            "只解决一个具体问题：滚轮在「需要翻很远」的时候太慢。",
+            T("只解决一个具体问题：滚轮在「需要翻很远」的时候太慢。",
+              "It solves one specific problem: the mouse wheel is too slow when you need to travel far."),
             13, FontWeights.Normal, "TextPrimary", top: 10, wrap: true));
 
         p.Children.Add(Text(
-            "它不改鼠标速度、不装驱动。唯一会碰的系统设置是「每次滚动几行」——那项只在你在设置页拖它时才会写，软件启动和退出都不碰。" +
-            "你快速连续拨动滚轮的那一瞬间，它把这一段滚动的距离按倍率放大；速度回到正常以后，放大立刻消失，只留下平滑的收尾。",
+            T("它不改鼠标速度、不装驱动。唯一会碰的系统设置是「每次滚动几行」——那项只在你在设置页拖它时才会写，软件启动和退出都不碰。" +
+              "你快速连续拨动滚轮的那一瞬间，它把这一段滚动的距离按倍率放大；速度回到正常以后，放大立刻消失，只留下平滑的收尾。",
+              "It does not change pointer speed or install drivers. The only system setting it may touch is \"lines per scroll\" — " +
+              "only when you drag that slider; startup and exit leave it alone. While you are flicking the wheel quickly it multiplies " +
+              "that burst of distance; as soon as speed returns to normal the boost disappears, leaving only the smooth tail."),
             12, FontWeights.Normal, "TextSecondary", top: 8, wrap: true));
 
-        p.Children.Add(Text("三条核心规则", 14, FontWeights.SemiBold, "TextPrimary", top: 18, bottom: 8));
+        p.Children.Add(Text(T("三条核心规则", "Three core rules"), 14, FontWeights.SemiBold, "TextPrimary", top: 18, bottom: 8));
 
         void Rule(string n, string head, string body)
         {
@@ -96,12 +112,18 @@ internal static partial class HelpContent
             p.Children.Add(g);
         }
 
-        Rule("1", "慢速滚动不放大，但默认会平滑",
-            "普通速度拨一格，倍率始终是 1×，不会变大；默认「所有滚动」下这一格还会被拆成几小步滑上去，起停都有过程。想要彻底原生的那一跳，把「施加范围」改成「仅加速时」，或关掉平滑滚动。");
-        Rule("2", "快滚才加速",
-            "判定依据是「每秒滚几格」，不是「第几格」。所以逐格微调不会被误伤，连拨翻页也不会误判。");
-        Rule("3", "随时可退出链路",
-            "总开关、名单命中、按着 Ctrl / Alt / Shift、或者反向滚动纠正时，都立刻回到原生行为。");
+        Rule("1", T("慢速滚动不放大，但默认会平滑", "Slow scrolling is not boosted, but is smoothed by default"),
+            T("普通速度拨一格，倍率始终是 1×，不会变大；默认「所有滚动」下这一格还会被拆成几小步滑上去，起停都有过程。想要彻底原生的那一跳，把「施加范围」改成「仅加速时」，或关掉平滑滚动。",
+              "At ordinary speed one notch stays at 1×. Under the default \"all scrolls\" it is also split into a few sub-steps, so " +
+              "it eases in and out. For a completely native jump, set \"Apply to\" to \"boosted only\" or turn smoothing off."));
+        Rule("2", T("快滚才加速", "Only fast scrolling is boosted"),
+            T("判定依据是「每秒滚几格」，不是「第几格」。所以逐格微调不会被误伤，连拨翻页也不会误判。",
+              "The trigger is notches per second, not a particular notch. Fine one-notch adjustments are not affected, and repeated " +
+              "flicks to page down are not misjudged."));
+        Rule("3", T("随时可退出链路", "Always easy to bypass"),
+            T("总开关、名单命中、按着 Ctrl / Alt / Shift、或者反向滚动纠正时，都立刻回到原生行为。",
+              "The master switch, a blocklist hit, holding Ctrl / Alt / Shift, or reversing direction all return immediately to " +
+              "native scrolling."));
 
         return p;
     }
@@ -123,7 +145,7 @@ internal static partial class HelpContent
             Padding = new Thickness(7, 2, 7, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8, 0, 0, 0),
-            Child = Text($"默认 {p.Default}", 10.5, FontWeights.SemiBold, "AccentHover"),
+            Child = Text($"{(EnglishNow ? "Default" : "默认")} {p.Default}", 10.5, FontWeights.SemiBold, "AccentHover"),
         };
         Grid.SetColumn(badge, 1);
         head.Children.Add(badge);
@@ -148,11 +170,11 @@ internal static partial class HelpContent
             stack.Children.Add(g);
         }
 
-        Row("是什么", p.What, R("TextMuted"));
-        Row("调大", p.Bigger, R("WarnBrush"));
-        Row("调小", p.Smaller, R("AccentHover"));
-        Row("例子", p.Example, R("SuccessBrush"));
-        Row("建议", p.Advice, R("TextMuted"));
+        Row(T("是什么", "What"), p.What, R("TextMuted"));
+        Row(T("调大", "Increase"), p.Bigger, R("WarnBrush"));
+        Row(T("调小", "Decrease"), p.Smaller, R("AccentHover"));
+        Row(T("例子", "Example"), p.Example, R("SuccessBrush"));
+        Row(T("建议", "Advice"), p.Advice, R("TextMuted"));
 
         return new Border
         {
@@ -167,7 +189,7 @@ internal static partial class HelpContent
     private static FrameworkElement BuildFaq()
     {
         var p = new StackPanel();
-        p.Children.Add(Text("常见问题", 14.5, FontWeights.SemiBold, "TextPrimary", top: 0, bottom: 12));
+        p.Children.Add(Text(T("常见问题", "Frequently asked questions"), 14.5, FontWeights.SemiBold, "TextPrimary", top: 0, bottom: 12));
 
         foreach (var (q, a) in Faqs())
         {
@@ -186,8 +208,9 @@ internal static partial class HelpContent
     private static FrameworkElement BuildPresets()
     {
         var p = new StackPanel();
-        p.Children.Add(Text("懒得逐个调？直接用这几套", 14.5, FontWeights.SemiBold, "TextPrimary", top: 0));
-        p.Children.Add(Text("大多数人其实只是想要一个「方案」。照着一行改完就行，不用理解每一项。",
+        p.Children.Add(Text(T("懒得逐个调？直接用这几套", "Don't want to tune every slider? Start with a preset"), 14.5, FontWeights.SemiBold, "TextPrimary", top: 0));
+        p.Children.Add(Text(T("大多数人其实只是想要一个「方案」。照着一行改完就行，不用理解每一项。",
+                "Most people just want a good starting point. Pick a row and you are done; you do not need to understand every item."),
             12, FontWeights.Normal, "TextSecondary", top: 6, bottom: 12, wrap: true));
 
         foreach (var preset in Presets())
@@ -207,7 +230,7 @@ internal static partial class HelpContent
 
             var apply = new Button
             {
-                Content = "应用",
+                Content = T("应用", "Apply"),
                 Style = Application.Current?.TryFindResource("GhostButton") as Style,
                 Margin = new Thickness(10, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
