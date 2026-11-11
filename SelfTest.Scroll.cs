@@ -302,6 +302,10 @@ internal static partial class SelfTest
             ScrollSemantics.IsPerEventScroll("PPTFrameClass"));
         Check("PowerPoint 放映窗口算「按事件滚动」",
             ScrollSemantics.IsPerEventScroll("screenClass"));
+        Check("PowerPoint 主窗口算「演示类」", ScrollSemantics.IsPresentation("PPTFrameClass"));
+        Check("PowerPoint 放映窗口算「演示类」", ScrollSemantics.IsPresentation("screenClass"));
+        Check("WPS 演示算「演示类」", ScrollSemantics.IsPresentation("PP12FrameClass"));
+        Check("浏览器不算「演示类」", !ScrollSemantics.IsPresentation("Chrome_WidgetWin_1"));
         Check("PowerPoint 的一格只发一格",
             ScrollSemantics.WholeNotchesFor(Native.WHEEL_DELTA) == 1);
 

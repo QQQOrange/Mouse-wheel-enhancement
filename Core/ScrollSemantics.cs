@@ -188,6 +188,22 @@ public static class ScrollSemantics
     }
 
     /// <summary>
+    /// 演示类窗口：PowerPoint / WPS 演示。
+    ///
+    /// <para>
+    /// 这类窗口里**一个滚轮事件就是一页**，不是"滚多少距离"。因此即使命中加速，
+    /// 也不能把一个物理格拆成多个整格事件 —— 那会变成"滚一下翻两页/三页"。
+    /// </para>
+    /// </summary>
+    public static bool IsPresentation(string className)
+    {
+        if (string.IsNullOrEmpty(className)) return false;
+        return string.Equals(className, "PPTFrameClass", StringComparison.Ordinal)
+               || string.Equals(className, "screenClass", StringComparison.Ordinal)
+               || IsPpFrameClass(className);
+    }
+
+    /// <summary>
     /// 目标窗口是不是 **Qt** 的顶层窗口（微信 4.x、QQ、Telegram Desktop 等都是）。
     ///
     /// <para>

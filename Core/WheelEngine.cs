@@ -1037,6 +1037,20 @@ public sealed partial class WheelEngine : IDisposable
                 /* PPT 这类"一个事件 = 翻一页"的窗口不读系统行数：
                  * 细腻模式的 ×N 补偿对它是 N 倍副作用，这里一律用原始 delta。 */
                 var wholeDelta = target.IgnoresSystemLines ? rawDelta : delta;
+                /* 演示模式（PowerPoint/WPS）：一个事件就是一页。
+                 * 即使这次命中加速，也只发**一个**原始事件，不能把物理格拆成
+                 * 多个整格 —— 否则一格翻两页/三页。 */
+                if (ScrollSemantics.IsPresentation(target.Class))
+                {
+                    if (_animator.WholeNotch || _animator.PendingUnits != 0)
+                        _animator.Clear();
+                    _animator.WholeNotch = false;
+
+                    if (ForwardWhole(wholeDelta)) return (IntPtr)1;
+
+                    Interlocked.Increment(ref _passed);
+                    return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
+                }
                 /* ① 没加速 → 让系统自己处理，零干预。
                  * ② 这一下本来就不到一格（触控板 / 自由滚轮的 15、40）→ 也放行：
                  *    在这类框架里它本来就是一档，放大成 120 只会滚得更远。 */
