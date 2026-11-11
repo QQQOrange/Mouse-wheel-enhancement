@@ -212,6 +212,35 @@ public static class ScrollSemantics
                || string.Equals(exe, "wpp.exe", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>黑名单 / 暂停自己这类"本该原样放行"的事件，在细腻模式下怎么转发。</summary>
+    public enum BypassForward
+    {
+        /// <summary>不用补偿，直接交给系统（细腻模式对它没有影响）。</summary>
+        None,
+
+        /// <summary>按比例：把乘过倍数的 delta 一次性转发。</summary>
+        Proportional,
+
+        /// <summary>整格：拆成 N 个 120 逐个转发（框架只认事件个数）。</summary>
+        WholeNotch,
+    }
+
+    /// <summary>
+    /// 细腻模式把系统行数改成 1 行之后，**被放行的应用**（黑名单、暂停自己）
+    /// 也会跟着只滚 1 行。原生是 3 行，所以这里要把距离补回去：
+    /// <list type="bullet">
+    /// <item>按比例滚的（浏览器/Office）→ 一个乘过倍数的 delta 就够；</item>
+    /// <item>按事件滚的（WPF/WinForms/Qt）→ 必须拆成 N 个 120，否则一个事件只算一档；</item>
+    /// <item>不读系统行数的（PPT/WPS 演示）→ 本来就不受影响，原样放行最稳。</item>
+    /// </list>
+    /// </summary>
+    public static BypassForward BypassCompensation(bool fineMode, bool perEvent, bool ignoresSystemLines)
+    {
+        if (!fineMode) return BypassForward.None;
+        if (ignoresSystemLines) return BypassForward.None;
+        return perEvent ? BypassForward.WholeNotch : BypassForward.Proportional;
+    }
+
     /// <summary>
     /// 目标窗口是不是 **Qt** 的顶层窗口（微信 4.x、QQ、Telegram Desktop 等都是）。
     ///

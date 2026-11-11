@@ -622,8 +622,38 @@ public sealed partial class WheelEngine : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// 细腻模式下"本该放行"的事件（黑名单 / 暂停自己）按目标语义补回距离。
+    ///
+    /// <para>
+    /// 系统行数被压到 1 行后，被放行的应用也会只滚 1 行 —— 而用户的原生设置是 3 行。
+    /// 按比例滚的应用，一个乘过 3 倍的 delta 就够；WPF/WinForms/Qt 这类只认事件个数的，
+    /// 必须拆成 3 个 120，否则一个 360 事件也只算一档，反而比原生少滚 2/3。
+    /// PPT/WPS 演示不读系统行数，直接放行。
+    /// </para>
+    /// </summary>
+    private bool ForwardBypass(in TargetInfo target, int delta)
+    {
+        switch (ScrollSemantics.BypassCompensation(
+            Volatile.Read(ref _fineScale) > 1,
+            target.ScrollsOncePerEvent,
+            target.IgnoresSystemLines))
+        {
+            case ScrollSemantics.BypassForward.WholeNotch:
+                return ForwardWhole(delta);
+            case ScrollSemantics.BypassForward.Proportional:
+                return ForwardRaw(delta);
+            default:
+                return false;
+        }
+    }
+
     private string? _lastDecisionExe;
     private long _lastDecisionMs;
+
+    /// <summary>黑名单补偿日志的去重（避免每个事件都拼字符串）。</summary>
+    private string? _lastBypassExe;
+    private long _lastBypassMs;
 
     /// <summary>每个程序每分钟最多记一条判定日志（避免刷屏）。</summary>
     private void LogOncePerExe(string exe, string message)
@@ -831,7 +861,7 @@ public sealed partial class WheelEngine : IDisposable
             if (s.ShouldSkipSelf(target.Exe))
             {
                 if (_animator.PendingUnits != 0) _animator.Clear();
-                if (ForwardRaw(delta)) return (IntPtr)1;
+                if (ForwardBypass(target, delta)) return (IntPtr)1;
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
@@ -839,7 +869,18 @@ public sealed partial class WheelEngine : IDisposable
             if (!s.IsAppEnabled(target.Exe, target.Title))
             {
                 if (_animator.PendingUnits != 0) _animator.Clear();
-                if (ForwardRaw(delta)) return (IntPtr)1;
+                /* 黑名单应用要"像没装本程序一样"：细腻模式下系统是 1 行，
+                 * 这里补回原生行数，而不是让它也跟着变慢。 */
+                var bypassFine = Volatile.Read(ref _fineScale);
+                if (bypassFine > 1 &&
+                    (!string.Equals(_lastBypassExe, target.Exe, StringComparison.OrdinalIgnoreCase) ||
+                     Environment.TickCount64 - _lastBypassMs > 120_000))
+                {
+                    _lastBypassExe = target.Exe;
+                    _lastBypassMs = Environment.TickCount64;
+                    Log.Info($"黑名单：{target.Exe} 按原生行数放行（细腻模式补偿 ×{bypassFine}）");
+                }
+                if (ForwardBypass(target, delta)) return (IntPtr)1;
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
@@ -902,7 +943,7 @@ public sealed partial class WheelEngine : IDisposable
                              $"约 {profile.NotchesPerSec:0} 格/秒，已原样放行（保留设备原生手感）");
                 }
 
-                if (ForwardRaw(delta)) return (IntPtr)1;
+                if (ForwardBypass(target, delta)) return (IntPtr)1;
                 Interlocked.Increment(ref _passed);
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }

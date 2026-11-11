@@ -308,6 +308,17 @@ internal static partial class SelfTest
         Check("PowerPoint 进程名兜底", ScrollSemantics.IsPresentation("UnknownClass", "POWERPNT.EXE"));
         Check("WPS 演示进程名兜底", ScrollSemantics.IsPresentation("UnknownClass", "wpp.exe"));
         Check("浏览器不算「演示类」", !ScrollSemantics.IsPresentation("Chrome_WidgetWin_1"));
+
+        /* 黑名单 / 暂停自己在细腻模式下的补偿（v1.9.12）：
+         * 系统行数被压成 1 行时，被放行的应用也要按原生行数滚。 */
+        Check("细腻模式：按比例应用整段补偿",
+            ScrollSemantics.BypassCompensation(true, false, false) == ScrollSemantics.BypassForward.Proportional);
+        Check("细腻模式：整格应用拆成 N 个事件",
+            ScrollSemantics.BypassCompensation(true, true, false) == ScrollSemantics.BypassForward.WholeNotch);
+        Check("细腻模式：PPT 不补偿（一格就是一页）",
+            ScrollSemantics.BypassCompensation(true, true, true) == ScrollSemantics.BypassForward.None);
+        Check("关掉细腻模式：黑名单原样放行",
+            ScrollSemantics.BypassCompensation(false, true, false) == ScrollSemantics.BypassForward.None);
         Check("PowerPoint 的一格只发一格",
             ScrollSemantics.WholeNotchesFor(Native.WHEEL_DELTA) == 1);
 
