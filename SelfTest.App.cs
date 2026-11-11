@@ -563,6 +563,14 @@ internal static partial class SelfTest
             AppRuleName.Normalize(@"C:\Program Files\App\Foo.EXE") == "foo.exe");
         Check("exe 名归一：没扩展名也补上", AppRuleName.Normalize("Foo") == "foo.exe");
 
+        /* WPS 套件：名单里写 wps.exe 也要覆盖 wpp/et/wpspdf（v1.9.12） */
+        var aliases = AppRuleName.WithSuiteAliases("wps.exe").ToList();
+        Check("WPS 名单项覆盖演示进程", aliases.Contains("wpp.exe"), string.Join(",", aliases));
+        Check("WPS 名单项覆盖表格进程", aliases.Contains("et.exe"), string.Join(",", aliases));
+        Check("WPS 名单项覆盖 PDF 进程", aliases.Contains("wpspdf.exe"), string.Join(",", aliases));
+        Check("非套件程序不会被连带",
+            !AppRuleName.WithSuiteAliases("chrome.exe").Contains("wpp.exe"));
+
         /* ── 「覆盖」是正向声明：名单里的程序设了覆盖 → 两种模式下都要增强 ──
          *
          * 以前只看"在不在名单里"，于是默认的黑名单模式下，用户给某个程序设的

@@ -764,4 +764,33 @@ public static class AppRuleName
         if (!s.EndsWith(".exe", StringComparison.Ordinal)) s += ".exe";
         return s;
     }
+
+    /// <summary>
+    /// 同一套件里会换进程的应用。WPS Office 最典型：文字是 <c>wps.exe</c>、
+    /// 演示是 <c>wpp.exe</c>、表格是 <c>et.exe</c>、PDF 是 <c>wpspdf.exe</c>。
+    /// 用户把「WPS」加进名单时指的是整个套件，只匹配其中一个进程会让另外几个漏网。
+    /// </summary>
+    private static readonly string[][] Suites =
+    {
+        new[] { "wps.exe", "wpp.exe", "et.exe", "wpspdf.exe" },
+    };
+
+    /// <summary>把名单项展开成"同一套件的其它进程"（含它自己）。</summary>
+    public static IEnumerable<string> WithSuiteAliases(string exe)
+    {
+        if (string.IsNullOrEmpty(exe)) yield break;
+        yield return exe;
+
+        foreach (var suite in Suites)
+        {
+            var hit = false;
+            foreach (var member in suite)
+                if (string.Equals(member, exe, StringComparison.OrdinalIgnoreCase)) { hit = true; break; }
+            if (!hit) continue;
+
+            foreach (var member in suite)
+                if (!string.Equals(member, exe, StringComparison.OrdinalIgnoreCase))
+                    yield return member;
+        }
+    }
 }

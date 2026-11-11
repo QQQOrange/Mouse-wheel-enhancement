@@ -26,7 +26,7 @@
                             <StackPanel>
                                 <TextBlock Text="添加应用" Style="{StaticResource H2}" Margin="0,0,0,4" />
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,12"
-                                           Text="按进程名（exe 文件名）匹配，不区分大小写。可以直接粘贴完整路径，会自动只留文件名。" />
+                                           Text="按进程名（exe 文件名）匹配，不区分大小写。可以直接粘贴完整路径，会自动只留文件名。WPS 的文字 / 演示 / 表格 / PDF 视为同一套件，填一个即可。" />
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />

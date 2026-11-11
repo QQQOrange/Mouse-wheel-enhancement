@@ -288,7 +288,10 @@ public sealed record RuntimeSettings
             FilterMode = c.Filter.Mode,
             SkipSelf = c.Behavior.PauseWhileSettingsOpen,
             FilterApps = new HashSet<string>(
-                c.Filter.Apps.Select(a => AppRuleName.Normalize(a.Exe)).Where(s => s.Length > 0),
+                c.Filter.Apps
+                    .Select(a => AppRuleName.Normalize(a.Exe))
+                    .Where(s => s.Length > 0)
+                    .SelectMany(AppRuleName.WithSuiteAliases),
                 StringComparer.OrdinalIgnoreCase),
             TitleRegex = rx,
             BoostView = new BoostConfig
