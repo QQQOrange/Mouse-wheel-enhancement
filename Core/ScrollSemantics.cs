@@ -203,6 +203,15 @@ public static class ScrollSemantics
                || IsPpFrameClass(className);
     }
 
+    /// <summary>类名不可靠时，用进程名兜底识别 PowerPoint / WPS 演示。</summary>
+    public static bool IsPresentation(string className, string? exe)
+    {
+        if (IsPresentation(className)) return true;
+        if (string.IsNullOrEmpty(exe)) return false;
+        return string.Equals(exe, "powerpnt.exe", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(exe, "wpp.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// 目标窗口是不是 **Qt** 的顶层窗口（微信 4.x、QQ、Telegram Desktop 等都是）。
     ///

@@ -305,6 +305,8 @@ internal static partial class SelfTest
         Check("PowerPoint 主窗口算「演示类」", ScrollSemantics.IsPresentation("PPTFrameClass"));
         Check("PowerPoint 放映窗口算「演示类」", ScrollSemantics.IsPresentation("screenClass"));
         Check("WPS 演示算「演示类」", ScrollSemantics.IsPresentation("PP12FrameClass"));
+        Check("PowerPoint 进程名兜底", ScrollSemantics.IsPresentation("UnknownClass", "POWERPNT.EXE"));
+        Check("WPS 演示进程名兜底", ScrollSemantics.IsPresentation("UnknownClass", "wpp.exe"));
         Check("浏览器不算「演示类」", !ScrollSemantics.IsPresentation("Chrome_WidgetWin_1"));
         Check("PowerPoint 的一格只发一格",
             ScrollSemantics.WholeNotchesFor(Native.WHEEL_DELTA) == 1);

@@ -1040,7 +1040,7 @@ public sealed partial class WheelEngine : IDisposable
                 /* 演示模式（PowerPoint/WPS）：一个事件就是一页。
                  * 即使这次命中加速，也只发**一个**原始事件，不能把物理格拆成
                  * 多个整格 —— 否则一格翻两页/三页。 */
-                if (ScrollSemantics.IsPresentation(target.Class))
+                if (ScrollSemantics.IsPresentation(target.Class, target.Exe))
                 {
                     if (_animator.WholeNotch || _animator.PendingUnits != 0)
                         _animator.Clear();
