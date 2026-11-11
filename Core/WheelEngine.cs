@@ -609,7 +609,7 @@ public sealed partial class WheelEngine : IDisposable
 
             /* 只在值真的不一致时才写：切换系统行数会广播 WM_SETTINGCHANGE，
              * 每个窗口都会重新算一遍，能少一次是一次。 */
-            if (!SystemWheelLines.ApplyLive(desired)) return;
+            if (!SystemWheelLines.ApplyLive(desired, t.Hwnd)) return;
 
             Volatile.Write(ref _liveLines, desired);
             /* 光标扫过黑名单窗口时会来回切，日志做 30 秒节流：
@@ -636,7 +636,9 @@ public sealed partial class WheelEngine : IDisposable
 
     private void StartLiveTimer()
     {
-        _liveTimer ??= new Timer(_ => LiveTick(), null, 200, 200);
+        /* 120ms 一次：切换本身只要一次注册表写入（1ms 内），
+         * 延迟主要是这个轮询间隔。100~200ms 之间用户基本感知不到"第一格不对"。 */
+        _liveTimer ??= new Timer(_ => LiveTick(), null, 120, 120);
     }
 
     private void StopLiveTimer()

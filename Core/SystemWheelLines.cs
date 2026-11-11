@@ -84,13 +84,19 @@ public static class SystemWheelLines
     /// 这是软件自己的内部状态切换，用户没有"改设置"，不该出现在设置日志里。
     /// </para>
     /// </summary>
-    public static bool ApplyLive(int lines)
+    public static bool ApplyLive(int lines, IntPtr notify)
     {
         if (!IsUsable(lines)) return false;
         try
         {
             if (Native.GetWheelScrollLines() == lines) return true;
-            return Native.SetWheelScrollLines(lines);
+
+            /* 不广播：SPIF_SENDCHANGE 在本机会卡 ~2.5 秒（有窗口不响应）。
+             * 只通知光标下那个窗口 —— 它才是真正要按新行数滚的那个。 */
+            if (!Native.SetWheelScrollLinesQuiet(lines)) return false;
+            if (notify != IntPtr.Zero)
+                Native.PostMessage(notify, Native.WM_SETTINGCHANGE, IntPtr.Zero, IntPtr.Zero);
+            return true;
         }
         catch (Exception ex)
         {

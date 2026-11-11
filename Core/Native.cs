@@ -295,6 +295,23 @@ internal static class Native
             SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
     }
 
+    /// <summary>
+    /// 只写注册表、**不广播**。给"切到黑名单应用时临时换值"用：
+    /// 带 SPIF_SENDCHANGE 的广播在这台机器上要 2.5 秒（有窗口不响应 WM_SETTINGCHANGE），
+    /// 每次换应用都等 2.5 秒是不能接受的。调用方自己给目标窗口补一条消息即可。
+    /// </summary>
+    public static bool SetWheelScrollLinesQuiet(int lines)
+    {
+        return SystemParametersInfo(SPI_SETWHEELSCROLLLINES, unchecked((uint)lines), IntPtr.Zero,
+            SPIF_UPDATEINIFILE);
+    }
+
+    public const uint WM_SETTINGCHANGE = 0x001A;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
