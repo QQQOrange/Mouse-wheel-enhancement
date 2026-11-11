@@ -570,6 +570,9 @@ public sealed partial class WheelEngine : IDisposable
     private int _lastLiveLogged;
     private long _lastLiveLogMs;
 
+    /// <summary>LiveTick 的重入闸：定时器回调可能重叠。</summary>
+    private int _liveBusy;
+
     internal static int LiveSystemLines => Volatile.Read(ref _liveLines);
 
     /// <summary>注入侧是否该做细腻补偿：只有系统真的是 1 行时才成立，避免 9 倍。</summary>
@@ -591,6 +594,9 @@ public sealed partial class WheelEngine : IDisposable
     /// </summary>
     private void LiveTick()
     {
+        /* 定时器回调可能重叠：两个 tick 同时在跑时，旧的（光标已移走的）结果
+         * 会把新结果覆盖回去，日志里能看到 50ms 内来回切两次。 */
+        if (Interlocked.Exchange(ref _liveBusy, 1) == 1) return;
         try
         {
             if (Volatile.Read(ref _fineScale) <= 1) return;
@@ -621,6 +627,10 @@ public sealed partial class WheelEngine : IDisposable
         catch (Exception ex)
         {
             Log.Warn("切换系统行数失败：" + ex.Message);
+        }
+        finally
+        {
+            Volatile.Write(ref _liveBusy, 0);
         }
     }
 
@@ -736,10 +746,6 @@ public sealed partial class WheelEngine : IDisposable
 
     private string? _lastDecisionExe;
     private long _lastDecisionMs;
-
-    /// <summary>黑名单补偿日志的去重（避免每个事件都拼字符串）。</summary>
-    private string? _lastBypassExe;
-    private long _lastBypassMs;
 
     /// <summary>每个程序每分钟最多记一条判定日志（避免刷屏）。</summary>
     private void LogOncePerExe(string exe, string message)
@@ -955,17 +961,8 @@ public sealed partial class WheelEngine : IDisposable
             if (!s.IsAppEnabled(target.Exe, target.Title))
             {
                 if (_animator.PendingUnits != 0) _animator.Clear();
-                /* 黑名单应用要"像没装本程序一样"：细腻模式下系统是 1 行，
-                 * 这里补回原生行数，而不是让它也跟着变慢。 */
-                var bypassFine = Volatile.Read(ref _fineScale);
-                if (bypassFine > 1 &&
-                    (!string.Equals(_lastBypassExe, target.Exe, StringComparison.OrdinalIgnoreCase) ||
-                     Environment.TickCount64 - _lastBypassMs > 120_000))
-                {
-                    _lastBypassExe = target.Exe;
-                    _lastBypassMs = Environment.TickCount64;
-                    Log.Info($"黑名单：{target.Exe} 按原生行数放行（细腻模式补偿 ×{bypassFine}）");
-                }
+                /* 黑名单应用要"像没装本程序一样"：行数通常已经由 LiveTick 换回原生了，
+                 * 这里只处理"还没换完"的过渡期 —— 用注入补一次，距离不会变短。 */
                 if (ForwardBypass(target, delta)) return (IntPtr)1;
                 return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
             }
