@@ -319,6 +319,12 @@ internal static partial class SelfTest
             ScrollSemantics.BypassCompensation(true, true, true) == ScrollSemantics.BypassForward.None);
         Check("关掉细腻模式：黑名单原样放行",
             ScrollSemantics.BypassCompensation(false, true, false) == ScrollSemantics.BypassForward.None);
+
+        /* 细腻模式期间的系统行数：黑名单换回原生值（v1.9.12） */
+        Check("黑名单应用换回原生 3 行", ScrollSemantics.SystemLinesFor(true, true, 3) == 3);
+        Check("普通应用保持 1 行", ScrollSemantics.SystemLinesFor(true, false, 3) == 1);
+        Check("原生值非法时兜底 3 行", ScrollSemantics.SystemLinesFor(true, true, 0) == 3);
+        Check("没开细腻模式时不管行数", ScrollSemantics.SystemLinesFor(false, true, 3) == 0);
         Check("PowerPoint 的一格只发一格",
             ScrollSemantics.WholeNotchesFor(Native.WHEEL_DELTA) == 1);
 

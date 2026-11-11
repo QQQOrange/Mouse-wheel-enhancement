@@ -536,6 +536,8 @@ public sealed partial class WheelEngine : IDisposable
     /// </summary>
     private void LeaveFineOnExit()
     {
+        StopLiveTimer();
+        Volatile.Write(ref _liveLines, 0);
         if (Volatile.Read(ref _fineScale) <= 1) return;
         try
         {
@@ -553,8 +555,87 @@ public sealed partial class WheelEngine : IDisposable
     }
 
     /// <summary>
-    /// 细腻模式的进入/退出。只在**状态发生变化**时动系统设置，避免每次 Apply 都写注册表。
+    /// 当前系统「每次滚动几行」是不是我们改的：
+    /// <c>1</c> = 细腻模式生效（注入要 ×N 补偿）；
+    /// <c>&gt;1</c> = 光标停在黑名单应用上，行数已换回原生（这一路必须原样放行）。
     /// </summary>
+    private static int _liveLines;
+
+    /// <summary>细腻模式接管前的原生行数（黑名单里换回它）。</summary>
+    private static int _liveRestore = 3;
+
+    private static Timer? _liveTimer;
+
+    /// <summary>行数切换日志的节流（光标扫过黑名单窗口时会来回切）。</summary>
+    private int _lastLiveLogged;
+    private long _lastLiveLogMs;
+
+    internal static int LiveSystemLines => Volatile.Read(ref _liveLines);
+
+    /// <summary>注入侧是否该做细腻补偿：只有系统真的是 1 行时才成立，避免 9 倍。</summary>
+    private bool FineInjectionActive =>
+        Volatile.Read(ref _fineScale) > 1 && Volatile.Read(ref _liveLines) == 1;
+
+    /// <summary>
+    /// 光标停在黑名单应用上时把系统行数换回原生（3 行），回到普通应用再换回 1 行。
+    ///
+    /// <para>
+    /// 这是"黑名单 = 像没装本程序"唯一可靠的做法：只靠注入补偿，不同框架对
+    /// 单个事件的解释并不一样（有的按 delta、有的按事件个数、有的还会夹到一档），
+    /// 换回系统原值之后，事件原样放行，行为就和没装我们时完全一致。
+    /// </para>
+    /// <para>
+    /// 用**光标下的窗口**而不是前台窗口：滚动跟着光标走，用前台会在
+    /// "前台是黑名单应用、光标在浏览器里滚"时换错值。
+    /// </para>
+    /// </summary>
+    private void LiveTick()
+    {
+        try
+        {
+            if (Volatile.Read(ref _fineScale) <= 1) return;
+
+            var t = _targets.ResolveForWheel(needTitle: false);
+            var bypassed = t.IsKnown && !Volatile.Read(ref _settings).IsAppEnabled(t.Exe, "");
+            var desired = ScrollSemantics.SystemLinesFor(true, bypassed, _liveRestore);
+            if (desired <= 0) return;
+            if (Volatile.Read(ref _liveLines) == desired) return;
+
+            /* 只在值真的不一致时才写：切换系统行数会广播 WM_SETTINGCHANGE，
+             * 每个窗口都会重新算一遍，能少一次是一次。 */
+            if (!SystemWheelLines.ApplyLive(desired)) return;
+
+            Volatile.Write(ref _liveLines, desired);
+            /* 光标扫过黑名单窗口时会来回切，日志做 30 秒节流：
+             * 同一个方向一分钟一条就够排查了，没必要每次移动都写。 */
+            var nowMs = Environment.TickCount64;
+            if (_lastLiveLogged != desired || nowMs - _lastLiveLogMs > 30_000)
+            {
+                _lastLiveLogged = desired;
+                _lastLiveLogMs = nowMs;
+                Log.Info(desired == 1
+                    ? "细腻模式：已切回 1 行（光标下是普通应用）"
+                    : $"细腻模式：{t.Exe} 在黑名单，系统行数换回原生 {desired} 行");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("切换系统行数失败：" + ex.Message);
+        }
+    }
+
+    private void StartLiveTimer()
+    {
+        _liveTimer ??= new Timer(_ => LiveTick(), null, 200, 200);
+    }
+
+    private void StopLiveTimer()
+    {
+        try { _liveTimer?.Dispose(); } catch { }
+        _liveTimer = null;
+    }
+
+    /// <summary>细腻模式的进入/退出。只在**状态发生变化**时动系统设置，避免每次 Apply 都写注册表。</summary>
     private void ApplyFineMode(AppConfig cfg)
     {
         var want = cfg.Behavior.FineMode && cfg.Enabled && cfg.Smooth.Enabled;
@@ -568,6 +649,9 @@ public sealed partial class WheelEngine : IDisposable
             {
                 Volatile.Write(ref _fineScale, scale);
                 Volatile.Write(ref _fineScaleStatic, scale);
+                _liveRestore = scale;
+                Volatile.Write(ref _liveLines, 1);
+                StartLiveTimer();
                 Log.Info($"细腻模式：补偿倍数 {scale}（注入量 ×{scale}，距离与原生一致）");
             }
             else if (scale == 1)
@@ -583,7 +667,9 @@ public sealed partial class WheelEngine : IDisposable
 
         if (_fineScale > 1)
         {
+            StopLiveTimer();
             SystemWheelLines.LeaveFine();
+            Volatile.Write(ref _liveLines, 0);
             Volatile.Write(ref _fineScale, 1);
             Volatile.Write(ref _fineScaleStatic, 1);
         }
@@ -595,7 +681,7 @@ public sealed partial class WheelEngine : IDisposable
     /// </summary>
     private bool ForwardRaw(int units)
     {
-        if (Volatile.Read(ref _fineScale) <= 1) return false;
+        if (!FineInjectionActive) return false;
         /* 动画线程不在时**绝不能吞事件**：入队没人发 = 整个滚轮停摆。
          * 交给调用方原样放行，看门狗会负责把线程拉起来。 */
         if (!_animator.IsAlive) return false;
@@ -611,7 +697,7 @@ public sealed partial class WheelEngine : IDisposable
     /// </summary>
     private bool ForwardWhole(int units)
     {
-        if (Volatile.Read(ref _fineScale) <= 1) return false;
+        if (!FineInjectionActive) return false;
         if (!_animator.IsAlive) return false;
         var notches = Math.Max(1, Math.Abs(units) / Native.WHEEL_DELTA);
         var sign = Math.Sign(units);

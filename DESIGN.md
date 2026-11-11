@@ -4084,9 +4084,9 @@ MIT License · © 2026 QQQOrange
 - `--benchhook`、`--uiaprobe`；
 - 崩溃文本 dump 之外写 minidump；
 - `publish.ps1 -Architecture arm64`，交叉编译时跳过本机自检；可选 `tools/sign.ps1` 签名；
-- GitHub Actions：build + 462 项自检 + benchhook + x64 publish；
+- GitHub Actions：build + 466 项自检 + benchhook + x64 publish；
 - UI 基线改为可见差异（每通道 ≤6 忽略），截图前固定光标；\n- 关于页实时输入监视、应用名单筛选/运行中图标、预设选中态、曲线预览、状态胶囊、主题切换轻淡入。
 
 ### 验证
 
-`--selftest` 462 项、`--featurecheck`、`--frametrace`、`--scrollsmooth`、`--uicheck`、`--uiaprobe`、`--benchhook` 全过。
+`--selftest` 466 项、`--featurecheck`、`--frametrace`、`--scrollsmooth`、`--uicheck`、`--uiaprobe`、`--benchhook` 全过。

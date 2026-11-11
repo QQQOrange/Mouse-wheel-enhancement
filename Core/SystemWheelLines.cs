@@ -77,6 +77,50 @@ public static class SystemWheelLines
     }
 
     /// <summary>
+    /// 细腻模式运行期间的"临时换值"：黑名单应用切回原生行数，回到普通应用再切回 1 行。
+    ///
+    /// <para>
+    /// 和 <see cref="Set"/> 的区别：不写日志、不动备份、不碰 RunOnce。
+    /// 这是软件自己的内部状态切换，用户没有"改设置"，不该出现在设置日志里。
+    /// </para>
+    /// </summary>
+    public static bool ApplyLive(int lines)
+    {
+        if (!IsUsable(lines)) return false;
+        try
+        {
+            if (Native.GetWheelScrollLines() == lines) return true;
+            return Native.SetWheelScrollLines(lines);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("临时切换系统行数失败：" + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 细腻模式接管前的原始行数（黑名单应用要换回这个值）。
+    /// 按备份、再按「退出时还原为」、最后兜底 3。
+    /// </summary>
+    public static int OriginalLines()
+    {
+        try
+        {
+            if (File.Exists(FineBackupPath))
+            {
+                var lines = File.ReadAllLines(FineBackupPath, Encoding.UTF8);
+                if (lines.Length > 0 && int.TryParse(lines[0].Trim(), out var v) && IsUsable(v))
+                    return v;
+            }
+        }
+        catch { /* 读不到就用下面的兜底 */ }
+
+        if (RestoreTarget > 0) return RestoreTarget;
+        return 3;
+    }
+
+    /// <summary>
     /// 清理 v1.6.x 遗留下来的"接管"痕迹。见 <see cref="RestoreFromBackup"/>。
     /// </summary>
     public static void CleanupLegacy() => RestoreFromBackup(force: false);

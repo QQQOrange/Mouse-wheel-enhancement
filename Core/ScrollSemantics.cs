@@ -242,6 +242,21 @@ public static class ScrollSemantics
     }
 
     /// <summary>
+    /// 细腻模式运行期间，系统行数应该取几行。
+    ///
+    /// <para>
+    /// 普通应用：1 行（细腻滚动，由我们按帧补距离）；
+    /// 黑名单 / 未被允许的应用：换回原生值（用户原本的 3 行），它就能像没装本程序一样滚。
+    /// </para>
+    /// </summary>
+    public static int SystemLinesFor(bool fineMode, bool bypassed, int restoreLines)
+    {
+        if (!fineMode) return 0;
+        if (!bypassed) return 1;
+        return restoreLines is >= 1 and <= 10 ? restoreLines : 3;
+    }
+
+    /// <summary>
     /// 目标窗口是不是 **Qt** 的顶层窗口（微信 4.x、QQ、Telegram Desktop 等都是）。
     ///
     /// <para>
