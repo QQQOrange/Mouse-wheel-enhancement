@@ -489,6 +489,29 @@ internal static partial class SelfTest
         Check("非法值一律拒绝写入（绝不把系统写成 -1/0/99）",
             !SystemWheelLines.Set(0) && !SystemWheelLines.Set(-1) && !SystemWheelLines.Set(99));
 
+        /* 细腻模式被强杀之后，"系统 1 行 + 备份没了"是最难认的一种残局：
+         * 备忘文件能让下次启动知道 1 行是我们改的，从而继续按原生值补偿。 */
+        Section("细腻模式原生备忘（被强杀后的自愈依据）");
+        SystemWheelLines.WriteNativeNote(7);
+        Check("备忘写入后能读回", SystemWheelLines.NativeNoteValue() == 7,
+            $"实际 {SystemWheelLines.NativeNoteValue()}");
+        SystemWheelLines.DeleteNativeNote();
+        Check("删掉备忘后读到 0（不误判原生值）", SystemWheelLines.NativeNoteValue() == 0,
+            $"实际 {SystemWheelLines.NativeNoteValue()}");
+
+        /* 备份的所有者判定：只看 pid 会被复用骗过去，必须连启动时间一起比。 */
+        Section("细腻模式备份的所有者判定");
+        var selfTicks = System.Diagnostics.Process.GetCurrentProcess()
+            .StartTime.ToUniversalTime().Ticks;
+        Check("同一进程（pid + 启动时间都对）算活着",
+            SystemWheelLines.IsOwnerAlive(Environment.ProcessId, selfTicks));
+        Check("pid 对但启动时间对不上，算遗留（防 pid 复用）",
+            !SystemWheelLines.IsOwnerAlive(Environment.ProcessId, selfTicks - TimeSpan.TicksPerMinute),
+            "同一 pid、不同启动时间被误判成\"另一个实例还活着\"，启动清理就会永远跳过还原");
+        Check("不存在的 pid 算遗留", !SystemWheelLines.IsOwnerAlive(0x7FFF_FFF0, 0));
+        Check("老备份（没有启动时间）按进程名认自己",
+            SystemWheelLines.IsOwnerAlive(Environment.ProcessId, 0));
+
         /* 本程序自己的窗口要能认出来：它的页面按像素滚（PreviewMouseWheel），
          * 所以不能走"整格语义"，否则滚过头、也丢掉摊帧的平滑。 */
         Section("认出自己（设置窗口按比例滚）");

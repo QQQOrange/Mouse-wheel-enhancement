@@ -192,6 +192,21 @@ public static class SystemWheelLines
 
     private const string FineBackupName = "wheellines.fine.backup";
 
+    /// <summary>
+    /// 细腻模式"原生值"的长期备忘（一行整数）。
+    ///
+    /// <para>
+    /// 备份文件是**短命**的：正常退出会删、发布脚本会删、用户手动清理也会删。
+    /// 但系统值可能还停在 1 行（进程被强杀、守护进程没来得及跑）。这时如果只看备份，
+    /// 下一次启动就会把 1 行当成"用户本来就这么设的"，于是不做补偿 ——
+    /// 距离只剩原生的 1/N，正是"加速失效"的由来。这份备忘不参与还原流程，
+    /// 只回答一个问题：我们上次把几行改成了 1 行。
+    /// </para>
+    /// </summary>
+    private const string NativeNoteName = "wheellines.native";
+
+    private static string NativeNotePath => Path.Combine(AppPaths.DataDir, NativeNoteName);
+
     private static string FineBackupPath => Path.Combine(AppPaths.DataDir, FineBackupName);
 
     /// <summary>细腻模式的备份还在不在（崩溃恢复用）。</summary>
@@ -262,13 +277,34 @@ public static class SystemWheelLines
             return 0;
         }
 
-        if (current == FineLines) return 1;      // 已经是 1 行：天然细腻，不用动系统设置
+        if (current == FineLines)
+        {
+            /* 系统已经是 1 行，有两种完全不同的含义：
+             *   · 用户自己就设成 1 行 —— 原生距离本来就是 1 行，不需要补偿；
+             *   · 上一个实例没退干净 —— 备份里记着原生 N 行，系统被留在了 1 行。
+             *
+             * 第二种如果按"不需要补偿"处理，整个系统的滚动距离就只剩原生的 1/N，
+             * 而且 `_liveLines` 还是 0、注入侧的补偿全部关掉 —— 用户看到的现象正是
+             * "平滑还在，加速没了"（v1.9.11 实测回归）。备份在就说明是我们改的：
+             * 接管备份、按 N 补偿，退出时再由我们还原。 */
+            var leftover = ReadBackupOriginal();
+            if (leftover <= FineLines) leftover = ReadNativeNote();
+            if (leftover > FineLines)
+            {
+                ClaimBackup(leftover);
+                Log.Warn($"细腻模式：系统已是 1 行，但备份记着原生 {leftover} 行（上次没退干净），" +
+                         $"按 ×{leftover} 补偿继续");
+                return leftover;
+            }
+
+            Log.Info("细腻模式：系统本来就是 1 行，无需补偿（也不会改系统设置）");
+            return 1;
+        }
 
         try
         {
             /* 顺序很重要：**先备份、再改**。反过来的话，改完到写备份之间崩溃就还原不回去了。 */
-            File.WriteAllText(FineBackupPath,
-                current.ToString() + "\n" + Environment.ProcessId.ToString(), new UTF8Encoding(false));
+            WriteBackup(current);
         }
         catch (Exception ex)
         {
@@ -290,6 +326,10 @@ public static class SystemWheelLines
         /* 关机 / 断电兜底：下一次登录时由 RunOnce 把行数改回去。
          * 正常退出会把它删掉；只有"没走正常退出"的场合它才会真的跑。 */
         WriteRunOnceRestore(current);
+
+        /* 备份只在"正常退出/下次启动"这一段有效；这份备忘活得比它久，
+         * 用于进程被强杀、备份被清掉之后还能认出"1 行是我们改的"。 */
+        WriteNativeNote(current);
 
         Log.Info($"细腻模式已启用：系统滚动行数 {current} → {FineLines}（退出时还原为 {current}）");
         return current;
@@ -331,7 +371,9 @@ public static class SystemWheelLines
             if (lines.Length > 0 && int.TryParse(lines[0].Trim(), out var v) && IsUsable(v)) original = v;
 
             if (onlyIfOwnerDead && lines.Length > 1 &&
-                int.TryParse(lines[1].Trim(), out var ownerPid) && IsProcessAlive(ownerPid))
+                int.TryParse(lines[1].Trim(), out var ownerPid) &&
+                IsOwnerAlive(ownerPid,
+                    lines.Length > 2 && long.TryParse(lines[2].Trim(), out var ownerTicks) ? ownerTicks : 0))
             {
                 Log.Info($"细腻模式：备份属于仍在运行的进程 {ownerPid}，跳过还原（不干扰另一个实例）");
                 return false;
@@ -369,6 +411,7 @@ public static class SystemWheelLines
 
         TryDeleteFineBackup();
         DeleteRunOnceRestore();
+        DeleteNativeNote();
         return wrote;
     }
 
@@ -383,6 +426,11 @@ public static class SystemWheelLines
             /* 备份没了但 RunOnce 还在（比如上次刚好还原成功、删备份后崩溃）：
              * 留着它会让下次登录多跑一次 reg，虽然结果一样，但没必要。 */
             DeleteRunOnceRestore();
+
+            /* 备份没了、备忘还在：只有"系统仍然是 1 行"时才可能是我们留下的；
+             * 系统已经是别的值，说明用户自己改过，备忘就该作废，
+             * 否则以后某次巧合停在 1 行时会被按旧值错误补偿。 */
+            if (Current() != FineLines) DeleteNativeNote();
             return;
         }
 
@@ -443,19 +491,96 @@ public static class SystemWheelLines
         }
     }
 
-    /// <summary>这个 pid 还活着吗（用来判断备份的写入者是否仍然在用细腻模式）。</summary>
-    private static bool IsProcessAlive(int pid)
+    /// <summary>
+    /// 备份的写入者是不是**还活着、而且确实是本程序的同一个进程**。
+    ///
+    /// <para>
+    /// 只判断"pid 还活着"是不够的：pid 会被复用，重启之后同一个号可能落在一个
+    /// 毫不相干的进程上，于是启动清理永远认为"上一个实例还在用细腻模式"、
+    /// 不敢还原 —— 系统就永久停在 1 行（v1.9.11 实测到的回归）。
+    /// 备份里从这一版开始记进程启动时间，能精确区分；老备份没有这一行，退回按进程名认。
+    /// </para>
+    /// </summary>
+    internal static bool IsOwnerAlive(int pid, long startTicks)
     {
         if (pid <= 0) return false;
         try
         {
             using var p = System.Diagnostics.Process.GetProcessById(pid);
-            return !p.HasExited;
+            if (p.HasExited) return false;
+
+            if (startTicks > 0)
+            {
+                /* 记了启动时间就能给出确定答案：对不上就是**另一个进程**（pid 被复用），
+                 * 不能再退回按名字猜 —— 名字一样恰恰是"我们的另一个实例"，
+                 * 而这里要回答的是"写这份备份的那个进程还在不在"。 */
+                try { return p.StartTime.ToUniversalTime().Ticks == startTicks; }
+                catch { /* 权限不够读启动时间：只能退回按名字 */ }
+            }
+
+            try
+            {
+                return p.ProcessName.IndexOf("MouseWheelEnhancement",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch { return true; }      // 连名字都读不到：按"还活着"保守处理
         }
-        catch
+        catch (ArgumentException) { return false; }          // 进程不存在
+        catch (InvalidOperationException) { return false; }
+        catch { return true; }
+    }
+
+    /// <summary>写备份：原值 / 写入者 pid / 写入者启动时间（UTC ticks）。</summary>
+    private static void WriteBackup(int lines)
+    {
+        long ticks = 0;
+        try { ticks = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks; }
+        catch { }
+
+        File.WriteAllText(FineBackupPath,
+            lines.ToString() + "\n" + Environment.ProcessId.ToString() + "\n" + ticks.ToString(),
+            new UTF8Encoding(false));
+    }
+
+    /// <summary>备份里记的原值；没有备份或读不出来 = 0。</summary>
+    private static int ReadBackupOriginal()
+    {
+        try
         {
-            return false;
+            if (!File.Exists(FineBackupPath)) return 0;
+            var lines = File.ReadAllLines(FineBackupPath, Encoding.UTF8);
+            return lines.Length > 0 && int.TryParse(lines[0].Trim(), out var v) && IsUsable(v) ? v : 0;
         }
+        catch { return 0; }
+    }
+
+    /// <summary>接手一份别人留下的备份：写入者换成自己，之后由自己负责还原。</summary>
+    private static void ClaimBackup(int original)
+    {
+        try { WriteBackup(original); }
+        catch (Exception ex) { Log.Warn("接管细腻模式备份失败（退出时可能还原不了）：" + ex.Message); }
+    }
+
+    internal static void WriteNativeNote(int lines)
+    {
+        try { File.WriteAllText(NativeNotePath, lines.ToString(), new UTF8Encoding(false)); }
+        catch (Exception ex) { Log.Warn("记录细腻模式原生行数失败：" + ex.Message); }
+    }
+
+    private static int ReadNativeNote()
+    {
+        try
+        {
+            if (!File.Exists(NativeNotePath)) return 0;
+            return int.TryParse(File.ReadAllText(NativeNotePath, Encoding.UTF8).Trim(), out var v) && IsUsable(v)
+                ? v : 0;
+        }
+        catch { return 0; }
+    }
+
+    internal static void DeleteNativeNote()
+    {
+        try { File.Delete(NativeNotePath); } catch { }
     }
 
     /// <summary>守护进程还原之后清掉备份（给 App 的 --fineguard 分支用）。</summary>
@@ -478,4 +603,9 @@ public static class SystemWheelLines
         }
         catch { return 0; }
     }
+
+    /// <summary>
+    /// 细腻模式"我们上次把几行改成了 1 行"的备忘（没有就是 0）。诊断 / 自检用。
+    /// </summary>
+    public static int NativeNoteValue() => ReadNativeNote();
 }

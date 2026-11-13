@@ -4084,9 +4084,31 @@ MIT License · © 2026 QQQOrange
 - `--benchhook`、`--uiaprobe`；
 - 崩溃文本 dump 之外写 minidump；
 - `publish.ps1 -Architecture arm64`，交叉编译时跳过本机自检；可选 `tools/sign.ps1` 签名；
-- GitHub Actions：build + 470 项自检 + benchhook + x64 publish；
-- UI 基线改为可见差异（每通道 ≤6 忽略），截图前固定光标；\n- 关于页实时输入监视、应用名单筛选/运行中图标、预设选中态、曲线预览、状态胶囊、主题切换轻淡入。
+- GitHub Actions：build + 476 项自检 + benchhook + x64 publish；
+- UI 基线改为可见差异（每通道 ≤6 忽略），截图前固定光标；
+- 关于页实时输入监视、应用名单筛选/运行中图标、预设选中态、曲线预览、状态胶囊、主题切换轻淡入。
+
+### 细腻模式的自愈：为什么"加速会消失"
+
+细腻模式的补偿倍率来自"进入前的系统行数"（3 → 1，于是注入时按 ×3 补回距离）。
+进程被强杀、且守护进程一起没了的时候，系统停在 1 行、备份被清掉，下一次启动
+`EnterFine()` 看到 `current == 1` 就认为"用户本来就这么设的"，返回 1：
+`_fineScale = 1`、`_liveLines = 0`，`FineInjectionActive` 恒为 false ——
+注入侧的补偿与摊帧全部关掉，同样的滚速只剩原生 1/3 的距离。用户读到的就是
+"平滑还在，加速没了"。
+
+修法分三层：
+
+1. 备份记**写入者 pid + 进程启动时间**，`IsOwnerAlive(pid, ticks)` 精确比对；
+   启动清理不再被 pid 复用骗过去（老备份没有第三行，退回按进程名判断）。
+2. 另外写一份长期备忘 `wheellines.native`（正常退出时删除）。它只在
+   "系统已是 1 行、备份却没了"时被读到，用来回答"1 行是不是我们改的、原来是几行"。
+3. `EnterFine()` 命中该残局时接管备份并按 N 补偿继续（日志「按 ×N 补偿继续」），
+   退出时仍由它还原；`CleanupFine()` 在系统值不是 1 时把过期备忘删掉，避免以后误补偿。
+
+诊断入口：`--wheellines` 打印当前值 / 备份 / 备忘；`--wheellines --fix` 按备份或备忘还原；
+`--wheellines --fix 3` 直接写回 3 行（两者都没有时的兜底）。
 
 ### 验证
 
-`--selftest` 470 项、`--featurecheck`、`--frametrace`、`--scrollsmooth`、`--uicheck`、`--uiaprobe`、`--benchhook` 全过。
+`--selftest` 476 项、`--featurecheck`、`--frametrace`、`--scrollsmooth`、`--uicheck`、`--uiaprobe`、`--benchhook` 全过。

@@ -1393,30 +1393,55 @@ public partial class App
         {
             var cur = Core.SystemWheelLines.Current();
             var backup = Core.SystemWheelLines.BackupValue();
+            var note = Core.SystemWheelLines.NativeNoteValue();
+            var fineBackup = Core.SystemWheelLines.HasFineBackup();
 
             sb.AppendLine($"软件版本：v{Log.Version}");
             sb.AppendLine($"数据目录：{AppPaths.DataDir}");
             sb.AppendLine(new string('-', 56));
             sb.AppendLine($"系统「每次滚动几行」：{Describe(cur)}");
             sb.AppendLine($"旧版接管备份：{(backup > 0 ? Describe(backup) : "（没有）")}");
+            sb.AppendLine($"细腻模式备份：{(fineBackup ? "有（退出时会还原）" : "（没有）")}");
+            sb.AppendLine($"细腻模式原生备忘：{(note > 0 ? Describe(note) : "（没有）")}");
             sb.AppendLine();
             sb.AppendLine("说明：这个值是系统的全局设置，软件启动、退出都不会改它；");
             sb.AppendLine("      只有你在设置页拖「每格滚动格数」时才会写。");
 
-            if (args.Any(a => a.Equals("--fix", StringComparison.OrdinalIgnoreCase)))
+            /* --fix        按旧版备份还原
+             * --fix 3      直接写 3 行（细腻模式被强杀、备份和备忘都没了时用这个） */
+            var fixIndex = Array.FindIndex(args, a => a.Equals("--fix", StringComparison.OrdinalIgnoreCase));
+            if (fixIndex >= 0)
             {
                 sb.AppendLine();
-                if (backup <= 0)
+                var explicitIndex = fixIndex + 1;
+                var hasExplicit = false;
+                var explicitLines = 0;
+                if (explicitIndex < args.Length) hasExplicit = int.TryParse(args[explicitIndex], out explicitLines);
+
+                if (hasExplicit)
                 {
-                    sb.AppendLine("--fix：没有备份文件，无法自动还原。");
-                    sb.AppendLine("      请手动到 设置 → 蓝牙和其他设备 → 鼠标 → 「每次滚动以下行数」改回来。");
+                    var ok = Core.SystemWheelLines.Set(explicitLines);
+                    sb.AppendLine(ok
+                        ? $"--fix {explicitLines}：已写回 {Describe(Core.SystemWheelLines.Current())}"
+                        : $"--fix {explicitLines}：写入失败（只接受 1~10 行），当前 {Describe(Core.SystemWheelLines.Current())}");
+                    return WriteCliResult("wheellines.txt", sb.ToString(), ok ? 0 : 1);
+                }
+
+                /* 备份和备忘都在时，用备忘更接近真相：备份里可能是别的实例写的旧值。 */
+                var target = backup > 0 ? backup : note;
+                if (target <= 0)
+                {
+                    sb.AppendLine("--fix：没有备份文件，也没有原生备忘，无法自动还原。");
+                    sb.AppendLine("      请手动到 设置 → 蓝牙和其他设备 → 鼠标 → 「每次滚动以下行数」改回来，");
+                    sb.AppendLine("      或者用 --fix 3 直接写回 3 行。");
                     return WriteCliResult("wheellines.txt", sb.ToString(), 0);
                 }
 
-                var wrote = Core.SystemWheelLines.RestoreFromBackup(force: true);
+                var wrote = Core.SystemWheelLines.Set(target);
                 sb.AppendLine(wrote
-                    ? $"--fix：已按备份写回 {Describe(Core.SystemWheelLines.Current())}"
-                    : $"--fix：当前已经等于备份值（{Describe(Core.SystemWheelLines.Current())}），没有改动");
+                    ? $"--fix：已写回 {Describe(Core.SystemWheelLines.Current())}"
+                    : $"--fix：写入失败，当前仍是 {Describe(Core.SystemWheelLines.Current())}");
+                return WriteCliResult("wheellines.txt", sb.ToString(), wrote ? 0 : 1);
             }
 
             return WriteCliResult("wheellines.txt", sb.ToString(), 0);
