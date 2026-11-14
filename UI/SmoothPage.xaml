@@ -39,6 +39,64 @@
 
             <Border Style="{StaticResource Card}">
                 <StackPanel>
+                    <TextBlock Text="动画模型" Style="{StaticResource H2}" />
+                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,10"
+                               Text="决定「一格的距离怎样摊到各帧」。指数衰减是默认手感：能自然叠加连滚、渐近收尾，参数按触控板实测标定。逐格缓动参考 SmoothScroll——每一格在固定时长内按选定曲线走完，落点时间确定，尾巴形状可以直接选。" />
+                    <Border Style="{StaticResource SegGroup}" HorizontalAlignment="Left">
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="ModelDecay" GroupName="model" Content="指数衰减"
+                                         Style="{StaticResource SegRadio}" Checked="Model_Changed"
+                                         ToolTip="每一帧发「剩余量的一小部分」，可叠加、没有硬停（推荐）" />
+                            <RadioButton x:Name="ModelEased" GroupName="model" Content="逐格缓动"
+                                         Style="{StaticResource SegRadio}" Checked="Model_Changed"
+                                         ToolTip="每一格在固定时长内走完，曲线可选；落点时间确定" />
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel x:Name="EasedPanel" Margin="0,16,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="缓动曲线" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                           Text="五次：起手最快、尾巴最长（SmoothScroll 默认）。三次：中段更匀。指数：起手最快、尾巴最短。线性：匀速，最机械。" />
+                            </StackPanel>
+                            <ComboBox x:Name="EasingBox" Grid.Column="1" Width="132" Margin="12,0,0,0"
+                                      VerticalAlignment="Center" SelectionChanged="Easing_Changed"
+                                      AutomationProperties.Name="缓动曲线">
+                                <ComboBoxItem Content="五次（推荐）" Tag="quintic" />
+                                <ComboBoxItem Content="三次" Tag="cubic" />
+                                <ComboBoxItem Content="指数" Tag="exponential" />
+                                <ComboBoxItem Content="线性" Tag="linear" />
+                            </ComboBox>
+                        </Grid>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="单格动画时长" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock x:Name="EasedMsValue" Grid.Column="1" Style="{StaticResource Value}"
+                                       Text="220 ms" />
+                        </Grid>
+                        <Slider x:Name="EasedMsSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
+                                Minimum="80" Maximum="600" SmallChange="10" LargeChange="40"
+                                TickFrequency="10" IsSnapToTickEnabled="True"
+                                AutomationProperties.Name="单格动画时长"
+                                ValueChanged="EasedMs_Changed" />
+                        <TextBlock x:Name="EasedHint" Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                   TextWrapping="Wrap"
+                                   Text="一格从开始到落点走多久。越短越跟手，越长越绵；220 ms 与 SmoothScroll 的默认值一致。" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />

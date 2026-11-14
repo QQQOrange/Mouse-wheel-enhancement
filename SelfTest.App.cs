@@ -81,6 +81,14 @@ internal static partial class SelfTest
         Check("主界面英文词条数量", UiText.Count >= 200, UiText.Count.ToString());
         Check("主界面中文查表", UiText.EnglishFor("触发阈值") == "Trigger threshold");
 
+        /* 平滑页新增的动画模型文案：中文键必须一条不落，
+         * 否则英文模式下这几张卡会整段留在中文。 */
+        Check("英文：动画模型", UiText.EnglishFor("动画模型") == "Animation model");
+        Check("英文：缓动曲线", UiText.EnglishFor("缓动曲线") == "Easing curve");
+        Check("英文：逐格缓动", UiText.EnglishFor("逐格缓动") == "Per-notch easing");
+        Check("英文：单格动画时长",
+            UiText.EnglishFor("单格动画时长") == "Per-notch duration");
+
         // ② 强制的意思就是"不看系统"
         Check("强制浅色不受系统影响", Theme.ResolveIsLight(Theme.Light));
         Check("强制深色不受系统影响", !Theme.ResolveIsLight(Theme.Dark));

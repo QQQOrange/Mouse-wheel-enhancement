@@ -126,6 +126,26 @@ public sealed class SmoothConfig
     public bool Enabled { get; set; } = true;
 
     /// <summary>
+    /// 摊帧模型（v1.9.12）。默认沿用指数衰减；「逐格缓动」是参考 SmoothScroll
+    /// 的实现——每一格在固定时长内按选定曲线走完，落点时间确定，曲线可选。
+    ///
+    /// <para>
+    /// 默认不切换：指数模型经过触控板实测标定，且能自然叠加连滚；
+    /// 逐格缓动作为可选项提供，方便用户按自己的手感偏好 A/B。
+    /// </para>
+    /// </summary>
+    public SmoothModel Model { get; set; } = SmoothModel.Decay;
+
+    /// <summary>逐格缓动用的曲线（<see cref="SmoothModel.Eased"/> 才生效）。</summary>
+    public ScrollEasing Easing { get; set; } = ScrollEasing.Quintic;
+
+    /// <summary>
+    /// 逐格缓动的动画时长（毫秒，80–600）。一格从开始到落点走多久；
+    /// 越长越"绵"，越短越跟手。默认 220 ms，与 SmoothScroll 的默认值一致。
+    /// </summary>
+    public int EasedMs { get; set; } = 220;
+
+    /// <summary>
     /// 默认「所有滚动」。理由见 <see cref="SmoothScope.Always"/> 的注释 ——
     /// 选「仅加速时」的话，慢慢拨一格完全不经过本程序，平滑等于没开。
     /// </summary>

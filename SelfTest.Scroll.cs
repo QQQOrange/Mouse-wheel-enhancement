@@ -358,6 +358,63 @@ internal static partial class SelfTest
             HelpContent.EnglishSectionCount == HelpContent.SectionCount,
             $"{HelpContent.EnglishSectionCount}/{HelpContent.SectionCount}");
 
+        /* ── 逐格缓动曲线（v1.9.12，参考 SmoothScroll）──
+         *
+         * 纯函数直接钉死端点、单调性和形状。预览和引擎共用这份数学，
+         * 所以这里过了，"画出来的曲线"和"跑出来的曲线"就是同一条。 */
+        foreach (var easing in new[]
+                 {
+                     ScrollEasing.Exponential, ScrollEasing.Cubic,
+                     ScrollEasing.Quintic, ScrollEasing.Linear,
+                 })
+        {
+            var id = ScrollEasingCurve.Id(easing);
+            Check($"缓动 {id}：起点 0、终点 1",
+                ScrollEasingCurve.Progress(0, easing) == 0 &&
+                ScrollEasingCurve.Progress(1, easing) == 1);
+
+            var monotonic = true;
+            var prev = -1.0;
+            for (var i = 0; i <= 200; i++)
+            {
+                var v = ScrollEasingCurve.Progress(i / 200.0, easing);
+                if (v < prev - 1e-12) monotonic = false;
+                prev = v;
+            }
+            Check($"缓动 {id}：全程单调不减", monotonic);
+        }
+
+        Check("五次缓动中点已走 96.9%（前段最快）",
+            Math.Abs(ScrollEasingCurve.Progress(0.5, ScrollEasing.Quintic) - 0.96875) < 1e-9);
+        Check("三次缓动中点 87.5%",
+            Math.Abs(ScrollEasingCurve.Progress(0.5, ScrollEasing.Cubic) - 0.875) < 1e-9);
+        Check("线性缓动中点正好一半",
+            Math.Abs(ScrollEasingCurve.Progress(0.5, ScrollEasing.Linear) - 0.5) < 1e-12);
+        Check("起点速度：五次 > 三次 > 线性",
+            ScrollEasingCurve.Speed(0, ScrollEasing.Quintic) >
+            ScrollEasingCurve.Speed(0, ScrollEasing.Cubic) &&
+            ScrollEasingCurve.Speed(0, ScrollEasing.Cubic) >
+            ScrollEasingCurve.Speed(0, ScrollEasing.Linear));
+        Check("尾部速度趋近 0（除线性）",
+            ScrollEasingCurve.Speed(1, ScrollEasing.Quintic) == 0 &&
+            ScrollEasingCurve.Speed(1, ScrollEasing.Cubic) == 0 &&
+            ScrollEasingCurve.Speed(1, ScrollEasing.Linear) == 1);
+
+        Check("曲线名解析：quintic / cubic / linear / exponential",
+            ScrollEasingCurve.Parse("quintic") == ScrollEasing.Quintic &&
+            ScrollEasingCurve.Parse("CUBIC") == ScrollEasing.Cubic &&
+            ScrollEasingCurve.Parse(" linear ") == ScrollEasing.Linear &&
+            ScrollEasingCurve.Parse("exp") == ScrollEasing.Exponential);
+        Check("曲线名认不出时回退五次（默认手感）",
+            ScrollEasingCurve.Parse("whatever") == ScrollEasing.Quintic &&
+            ScrollEasingCurve.Parse(null) == ScrollEasing.Quintic);
+
+        Check("默认摊帧模型是「指数衰减」（不改变老用户手感）",
+            AppConfig.Default().Smooth.Model == SmoothModel.Decay);
+        Check("默认缓动曲线是五次、时长 220ms",
+            AppConfig.Default().Smooth.Easing == ScrollEasing.Quintic &&
+            AppConfig.Default().Smooth.EasedMs == 220);
+
         /* Qt = 按事件滚动（v1.7.14）
          *
          * QScrollBar::wheelEvent 是 `angleDelta().y() / 120` 的**整数除法**：

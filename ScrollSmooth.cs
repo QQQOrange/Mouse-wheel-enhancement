@@ -150,6 +150,22 @@ internal static class ScrollSmooth
                 return 3;
             }
 
+            /* 注入和"原样放行"不是一条路：放行时系统把原始事件送给光标下的窗口，
+             * 而 SendInput 的滚轮只送给**前台**窗口。光标在帮助页上、前台却是终端，
+             * 就会量出"0 步"的假失败。这里把前台抢回来并确认，抢不到就明说。 */
+            for (var attempt = 0; attempt < 6 && Native.GetForegroundWindow() != myHwnd; attempt++)
+            {
+                try { w.Activate(); } catch { }
+                Native.SetForegroundWindow(myHwnd);
+                Pump(120);
+            }
+            if (Native.GetForegroundWindow() != myHwnd)
+            {
+                sb.AppendLine("失败：窗口没拿到前台焦点（SendInput 的滚轮只送给前台窗口）");
+                Finish(sb, 3);
+                return 3;
+            }
+
             /* 先滚到中段：末尾才有滑行空间，也避开"一上来就在底部"的假象。 */
             for (var i = 0; i < 5; i++)
             {

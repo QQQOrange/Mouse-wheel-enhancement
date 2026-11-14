@@ -4084,7 +4084,7 @@ MIT License · © 2026 QQQOrange
 - `--benchhook`、`--uiaprobe`；
 - 崩溃文本 dump 之外写 minidump；
 - `publish.ps1 -Architecture arm64`，交叉编译时跳过本机自检；可选 `tools/sign.ps1` 签名；
-- GitHub Actions：build + 476 项自检 + benchhook + x64 publish；
+- GitHub Actions：build + 497 项自检 + benchhook + x64 publish；
 - UI 基线改为可见差异（每通道 ≤6 忽略），截图前固定光标；
 - 关于页实时输入监视、应用名单筛选/运行中图标、预设选中态、曲线预览、状态胶囊、主题切换轻淡入。
 
@@ -4111,4 +4111,34 @@ MIT License · © 2026 QQQOrange
 
 ### 验证
 
-`--selftest` 476 项、`--featurecheck`、`--frametrace`、`--scrollsmooth`、`--uicheck`、`--uiaprobe`、`--benchhook` 全过。
+`--selftest` 497 项、`--featurecheck`、`--frametrace`、`--scrollsmooth`、`--uicheck`、`--uiaprobe`、`--benchhook` 全过。
+## 66. v1.9.12：把「逐格缓动」做成可选模型（参考 SmoothScroll）
+
+SmoothScroll 的核心不是某条曲线，而是**每条滚轮格子在固定时长内独立走完**：
+新格子来时不重设全局目标，而是新开一条「车道」，各车道按同一曲线推进、位置相加。
+朴素做法（每来一格就把目标重置为「当前位置 + 一格」，再按 220 ms 走完）在
+3 格 @45 ms 的仿真里首帧突刺 116.6 px、jerk 111.7 —— 比现有模型抖一个数量级，直接否决。
+
+车道模型（120 px/格、6.25 ms 帧、3 格 @45 ms）：
+
+| 模型 | 峰值/帧 | 落点 | jerk |
+| --- | --- | --- | --- |
+| 五次 quintic，220 ms | 24.3 px | 238 ms | 16.1 |
+| 三次 cubic，220 ms | 19.5 px | 275 ms | 9.9 |
+| 指数衰减 τ45（现有） | 23.7 px | 288 ms | 15.6 |
+
+实现放在 `Core/ScrollEasing.cs`（曲线数学）与 `Core/ScrollAnimator.cs` 的 `EasedFrame`：
+最多 12 条车道，`target = Σ units_i · Progress((now − start_i) / duration)`，
+每帧只发 `round(target − 已发)`，全部车道结束后把余数一次清掉；`Clear()`、反向冲刷、
+欠账回滚都会 `ResetEaseState()`，避免位置账对不上。
+
+配置：`smooth.model = decay|eased`、`smooth.easing = quintic|cubic|exponential|linear`、
+`smooth.easedMs = 80..600`。界面在「平滑」页新增「动画模型」卡；指数模型下缓动参数
+保留但整体降到 0.42 透明度，不隐藏（避免页面高度跳动）。
+
+**默认仍是 decay。** `--frametrace` 对比（160 Hz、单帧 90 单位、τ40）：
+decay 单格 14 帧 / 93 ms / 中段起伏 1.1×；eased 21 帧 / 157 ms / 1.6×。
+3 格与 6 格时 eased 的落点固定在 ~200 ms，decay 分别 111 / 121 ms。
+也就是说 eased 更「有设计感」、落点可预期，但延迟高 40–70%、帧间起伏更大；
+decay 在客观平滑度与跟手性上更好，且已经被触控板实测标定。eased 作为选项保留，
+让用户自己能选「更绵」的手感。

@@ -45,6 +45,15 @@ public sealed record RuntimeSettings
     public double TauMs { get; init; }
     public double MaxBacklogUnits { get; init; }
 
+    /// <summary>摊帧模型（见 <see cref="SmoothModel"/>）。默认指数衰减。</summary>
+    public SmoothModel Model { get; init; } = SmoothModel.Decay;
+
+    /// <summary>逐格缓动曲线（仅 <see cref="SmoothModel.Eased"/> 生效）。</summary>
+    public ScrollEasing Easing { get; init; } = ScrollEasing.Quintic;
+
+    /// <summary>逐格缓动的单格时长（毫秒）。</summary>
+    public int EasedMs { get; init; } = 220;
+
     /// <summary>
     /// 松手后滑行**多久**（毫秒）；0 = 不做额外滑行，按跟手曲线自然收尾。
     ///
@@ -270,6 +279,9 @@ public sealed record RuntimeSettings
             AutoFps = c.Smooth.AutoFps,
             UnitsPerFrame = UnitsPerFrameFor(framesPerNotch, boostScale),
             TauMs = c.Smooth.TailTauMs,
+            Model = c.Smooth.Model,
+            Easing = c.Smooth.Easing,
+            EasedMs = Math.Clamp(c.Smooth.EasedMs, 80, 600),
             MaxBacklogUnits = BacklogUnitsFor(c.Smooth.MaxBacklogNotches, boostScale),
             GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),

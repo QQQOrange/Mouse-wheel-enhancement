@@ -43,6 +43,47 @@ internal static class Services
     }
 
     /// <summary>
+    /// 测试用的命令行覆盖：`--model eased --easing quintic --easedms 220`。
+    ///
+    /// <para>
+    /// 只改内存里的配置、不落盘 —— 目标是让 `--scrollsmooth` 这类实测命令能
+    /// 在不打断用户当前设置的前提下 A/B 两套模型。正常启动（不带这些参数）完全不受影响。
+    /// </para>
+    /// </summary>
+    private static void ApplySmoothCliOverrides()
+    {
+        var args = Environment.GetCommandLineArgs();
+        for (var i = 1; i < args.Length; i++)
+        {
+            switch (args[i].ToLowerInvariant())
+            {
+                case "--model" when i + 1 < args.Length:
+                    Store.Config.Smooth.Model = args[++i].Equals("eased", StringComparison.OrdinalIgnoreCase)
+                        ? SmoothModel.Eased
+                        : SmoothModel.Decay;
+                    Log.Info($"命令行覆盖：摊帧模型 = {Store.Config.Smooth.Model}");
+                    break;
+                case "--easing" when i + 1 < args.Length:
+                    Store.Config.Smooth.Easing = ScrollEasingCurve.Parse(args[++i]);
+                    Log.Info($"命令行覆盖：缓动曲线 = {Store.Config.Smooth.Easing}");
+                    break;
+                case "--easedms" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var ms))
+                        Store.Config.Smooth.EasedMs = Math.Clamp(ms, 80, 600);
+                    Log.Info($"命令行覆盖：单格时长 = {Store.Config.Smooth.EasedMs} ms");
+                    break;
+
+                /* 实测用：让合成的高频事件也走增强链路。
+                 * 普通配置里这一项由用户决定；测试不从用户的 config.json 猜。 */
+                case "--enhance-precision":
+                    Store.Config.Input.EnhancePrecisionInput = true;
+                    Log.Info("命令行覆盖：增强高精度输入 = true");
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
     /// 第一阶段：目录、日志、配置、主题、刷新率。
     ///
     /// <para>
@@ -89,6 +130,10 @@ internal static class Services
          * 之后刷新率一变（换分辨率、插拔电源、动态刷新率），重建快照即可 —— 
          * 动画线程每帧都会读最新的那份。 */
         RefreshRateMonitor.Start();
+
+        /* 命令行的测试覆盖要在这里落地：--frametrace 只调 InitConfig（不装钩子），
+         * 放到 Init() 里会让它读不到 --model/--easing。覆盖只改内存，不落盘。 */
+        ApplySmoothCliOverrides();
     }
 
     /// <summary>

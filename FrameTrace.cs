@@ -151,7 +151,8 @@ internal static class FrameTrace
                 $"　单帧量 {s.UnitsPerFrame}　跟手 τ {s.TauMs:0} ms");
             sb.AppendLine(
                 $"　　　滑行 {s.GlideMs:0} ms / 松手判定 {s.GlideDelayMs:0} ms" +
-                $"　积压上限 {s.MaxBacklogUnits:0} 单位　平滑 {(s.SmoothEnabled ? "开" : "关")}");
+                $"　积压上限 {s.MaxBacklogUnits:0} 单位　平滑 {(s.SmoothEnabled ? "开" : "关")}" +
+                $"　模型 {(s.Model == SmoothModel.Eased ? $"逐格缓动/{s.Easing}/{s.EasedMs}ms" : "指数衰减")}");
             sb.AppendLine($"　　　单帧上限 {Math.Min(s.UnitsPerFrame * 2, 180)} 单位（单帧量×2，绝对上限 180）");
             if (jitterMs > 0) sb.AppendLine($"　　　⚠ 模拟慢帧：每帧额外 {jitterMs:0} ms");
             sb.AppendLine();

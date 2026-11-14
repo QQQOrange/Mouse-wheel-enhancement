@@ -143,6 +143,9 @@ internal static class FeatureCheck
              * 动画器当时只认全局快照，于是覆盖里的「平滑关」在真实滚动里毫无作用。
              * 这里用 FrameSink 真跑一遍动画线程，比"一帧发完"和"摊成多帧"两种形态。 */
             bad += Line(sb, CheckOverrideSmoothing(engine, inBlack, other, out var smoothDetail), smoothDetail);
+
+            /* ── 逐格缓动模型（v1.9.12）：真的跑一遍，总量不丢、确实摊成了多帧 ── */
+            bad += Line(sb, CheckEasedModel(engine, inBlack, out var easedDetail), easedDetail);
         }
         catch (Exception ex)
         {
@@ -152,6 +155,69 @@ internal static class FeatureCheck
 
         sb.AppendLine();
         return bad == 0 ? 0 : RcOverride;
+    }
+
+    /// <summary>
+    /// 逐格缓动模型（v1.9.12）：360 单位在 220ms 内按五次曲线发完。
+    ///
+    /// <para>
+    /// 断言三件事：① 总量一单位不差（车道叠加不能丢量/重复发）；
+    /// ② 确实摊成了多帧（不是"配置读到了但引擎没走"）；③ 首帧不是一大坨
+    /// （曲线的起点速度有限，第一帧应该只有几个单位）。
+    /// </para>
+    /// </summary>
+    private static bool CheckEasedModel(WheelEngine engine, RuntimeSettings baseSettings, out string detail)
+    {
+        detail = "";
+        var frames = 0;
+        long emitted = 0;
+        var steps = new List<int>();
+        try
+        {
+            var anim = engine.Animator;
+            anim.FrameSink = (units, _, _) =>
+            {
+                Interlocked.Increment(ref frames);
+                Interlocked.Add(ref emitted, units);
+                lock (steps) steps.Add(units);
+            };
+            anim.Start();
+            Thread.Sleep(80);
+
+            var eased = baseSettings with
+            {
+                SmoothEnabled = true,
+                Model = SmoothModel.Eased,
+                Easing = ScrollEasing.Quintic,
+                EasedMs = 220,
+            };
+
+            Interlocked.Exchange(ref frames, 0);
+            Interlocked.Exchange(ref emitted, 0);
+            lock (steps) steps.Clear();
+
+            anim.Push(360, eased);
+
+            /* 220ms 的曲线 + 余量；固定等 420ms 比轮询稳。 */
+            Thread.Sleep(420);
+
+            var totalFrames = Volatile.Read(ref frames);
+            var totalUnits = Volatile.Read(ref emitted);
+            int first;
+            lock (steps) first = steps.Count > 0 ? steps[0] : 0;
+
+            detail = $"逐格缓动 → {totalFrames} 帧发 {totalUnits} 单位，首帧 {first}";
+            return totalFrames >= 8 && totalUnits == 360 && first is > 0 and < 120;
+        }
+        catch (Exception ex)
+        {
+            detail = "逐格缓动出帧异常：" + ex.Message;
+            return false;
+        }
+        finally
+        {
+            engine.Animator.FrameSink = null;
+        }
     }
 
     /// <summary>

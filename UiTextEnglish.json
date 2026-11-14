@@ -221,5 +221,18 @@
   "管理员": "Administrator",
   "（无备注）": "(no note)",
   "监视中…把鼠标放到目标窗口上滚一下。": "Watching… scroll in the target window.",
-  "监视中…还没有滚轮事件。": "Watching… no wheel events yet."
+  "监视中…还没有滚轮事件。": "Watching… no wheel events yet.",
+  "动画模型": "Animation model",
+  "决定「一格的距离怎样摊到各帧」。指数衰减是默认手感：能自然叠加连滚、渐近收尾，参数按触控板实测标定。逐格缓动参考 SmoothScroll——每一格在固定时长内按选定曲线走完，落点时间确定，尾巴形状可以直接选。": "Decides how one notch's distance is spread across frames. Exponential decay is the default feel: notches blend naturally and ease out asymptotically, calibrated against a trackpad. Per-notch easing follows SmoothScroll: each notch completes in a fixed duration on the chosen curve, so the landing time is exact and the tail shape is selectable.",
+  "指数衰减": "Exponential decay",
+  "每一帧发「剩余量的一小部分」，可叠加、没有硬停（推荐）": "Each frame emits a fraction of what is left; notches blend and never stop hard (recommended)",
+  "逐格缓动": "Per-notch easing",
+  "每一格在固定时长内走完，曲线可选；落点时间确定": "Each notch completes in a fixed duration on a selectable curve; landing time is exact",
+  "缓动曲线": "Easing curve",
+  "五次：起手最快、尾巴最长（SmoothScroll 默认）。三次：中段更匀。指数：起手最快、尾巴最短。线性：匀速，最机械。": "Quintic: fastest start, longest tail (SmoothScroll default). Cubic: more even through the middle. Exponential: fastest start, shortest tail. Linear: constant speed, the most mechanical.",
+  "五次（推荐）": "Quintic (recommended)",
+  "三次": "Cubic",
+  "单格动画时长": "Per-notch duration",
+  "一格": "notch",
+  "一格从开始到落点走多久。越短越跟手，越长越绵；220 ms 与 SmoothScroll 的默认值一致。": "How long a notch takes to reach its landing point. Shorter feels more direct, longer feels softer; 220 ms matches SmoothScroll's default."
 }

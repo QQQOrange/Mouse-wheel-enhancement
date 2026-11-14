@@ -71,9 +71,21 @@ public partial class SmoothPage : UserControl
             GlideSlider.Value = c.Smooth.GlideMs;
             BacklogSlider.Value = c.Smooth.MaxBacklogNotches;
             AutoFpsSwitch.IsChecked = c.Smooth.AutoFps;
+
+            ModelDecay.IsChecked = c.Smooth.Model == SmoothModel.Decay;
+            ModelEased.IsChecked = c.Smooth.Model == SmoothModel.Eased;
+            EasingBox.SelectedIndex = c.Smooth.Easing switch
+            {
+                ScrollEasing.Cubic => 1,
+                ScrollEasing.Exponential => 2,
+                ScrollEasing.Linear => 3,
+                _ => 0,
+            };
+            EasedMsSlider.Value = c.Smooth.EasedMs;
         }
         finally { _syncing = false; }
 
+        UpdateModelUi();
         UpdateCurveSummary();
         RefreshLabels();
     }
@@ -311,10 +323,40 @@ public partial class SmoothPage : UserControl
     private void UpdateCurveSummary()
     {
         if (CurveSummary == null || TauSlider == null || GlideSlider == null) return;
-        var glide = GlideSlider.Value <= 0 ? "关闭" : $"{GlideSlider.Value:0} ms";
-        CurveSummary.Text = $"当前：跟手 {TauSlider.Value:0} ms · 惯性 {glide}";
+
+        var c = Services.Config.Smooth;
+        if (c.Model == SmoothModel.Eased)
+        {
+            var name = c.Easing switch
+            {
+                ScrollEasing.Cubic => "三次",
+                ScrollEasing.Exponential => "指数",
+                ScrollEasing.Linear => "线性",
+                _ => "五次",
+            };
+            CurveSummary.Text = UiText.IsEnglish
+                ? $"Current: {CurveNameEn(c.Easing)} easing · {c.EasedMs:0} ms per notch"
+                : $"当前：{name}缓动 · 每格 {c.EasedMs:0} ms";
+        }
+        else
+        {
+            var glide = GlideSlider.Value <= 0 ? "关闭" : $"{GlideSlider.Value:0} ms";
+            CurveSummary.Text = UiText.IsEnglish
+                ? $"Current: response {TauSlider.Value:0} ms · glide {(GlideSlider.Value <= 0 ? "off" : glide)}"
+                : $"当前：跟手 {TauSlider.Value:0} ms · 惯性 {glide}";
+        }
+
         InvalidateSmoothPreview();
     }
+
+    /// <summary>曲线名的英文写法（摘要行用）。</summary>
+    private static string CurveNameEn(ScrollEasing easing) => easing switch
+    {
+        ScrollEasing.Cubic => "cubic",
+        ScrollEasing.Exponential => "exponential",
+        ScrollEasing.Linear => "linear",
+        _ => "quintic",
+    };
 
     /* ══════════════ 手感曲线预设 ══════════════ */
 
@@ -380,6 +422,49 @@ public partial class SmoothPage : UserControl
         _activePreset = null;
     }
 
+    /* ══════════════ 动画模型 ══════════════ */
+
+    private void Model_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        Services.Config.Smooth.Model =
+            ModelEased.IsChecked == true ? SmoothModel.Eased : SmoothModel.Decay;
+        UpdateModelUi();
+        _host.Commit();
+    }
+
+    private void Easing_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncing) return;
+        if (EasingBox.SelectedItem is ComboBoxItem { Tag: string tag })
+            Services.Config.Smooth.Easing = ScrollEasingCurve.Parse(tag);
+        UpdateModelUi();
+        _host.Commit();
+    }
+
+    private void EasedMs_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_syncing) return;
+        Services.Config.Smooth.EasedMs = (int)Math.Round(EasedMsSlider.Value);
+        UpdateModelUi();
+        _host.Commit();
+    }
+
+    /// <summary>
+    /// 模型相关的联动：指数模型下把缓动那组控件压暗（不是隐藏——隐藏会让整页高度跳一下，
+    /// 用户还以为点错了），并同步预览和一句话摘要。
+    /// </summary>
+    private void UpdateModelUi()
+    {
+        if (EasedPanel == null || EasedMsValue == null) return;
+        var eased = Services.Config.Smooth.Model == SmoothModel.Eased;
+        EasedPanel.IsEnabled = eased;
+        EasedPanel.Opacity = eased ? 1.0 : 0.42;
+        EasedMsValue.Text = $"{Services.Config.Smooth.EasedMs:0} ms";
+        UpdateCurveSummary();
+        InvalidateSmoothPreview();
+    }
+
     /* ══════════════ 跟手曲线预览 ══════════════ */
 
     private void SmoothPreview_SizeChanged(object sender, SizeChangedEventArgs e) => InvalidateSmoothPreview();
@@ -404,8 +489,11 @@ public partial class SmoothPage : UserControl
         if (w < 40 || h < 30) return;
 
         SmoothPreview.Children.Clear();
+        var eased = Services.Config.Smooth.Model == SmoothModel.Eased;
         var tau = Math.Max(1.0, TauSlider.Value);
-        var span = Math.Max(180.0, tau * 4);
+        var span = eased
+            ? Math.Max(120.0, EasedMsSlider.Value * 1.15)
+            : Math.Max(180.0, tau * 4);
         var left = 12.0;
         var right = 44.0;
         var top = 10.0;
@@ -429,10 +517,14 @@ public partial class SmoothPage : UserControl
 
         var pts = new PointCollection();
         const int steps = 80;
+        var easeMs = Math.Max(1.0, EasedMsSlider.Value);
         for (var i = 0; i <= steps; i++)
         {
             var t = span * i / steps;
-            pts.Add(new Point(X(t), Y(1 - Math.Exp(-t / tau))));
+            var v = eased
+                ? ScrollEasingCurve.Progress(t / easeMs, Services.Config.Smooth.Easing)
+                : 1 - Math.Exp(-t / tau);
+            pts.Add(new Point(X(t), Y(v)));
         }
         var area = new PointCollection(pts)
         {
@@ -446,10 +538,10 @@ public partial class SmoothPage : UserControl
             StrokeLineJoin = PenLineJoin.Round,
         });
 
-        var mx = X(tau);
+        var guideX = X(eased ? easeMs : tau);
         SmoothPreview.Children.Add(new Line
         {
-            X1 = mx, X2 = mx, Y1 = top, Y2 = top + ph,
+            X1 = guideX, X2 = guideX, Y1 = top, Y2 = top + ph,
             Stroke = _host.B("CurveGuide"), StrokeThickness = 1,
         });
 
@@ -461,7 +553,7 @@ public partial class SmoothPage : UserControl
             SmoothPreview.Children.Add(lbl);
         }
 
-        Label("τ", mx - 4, 1);
+        Label(UiText.Translate(eased ? "一格" : "τ"), guideX - 4, 1, 52);
         Label($"0", left, top + ph + 3);
         Label($"{span:0} ms", left + pw - 32, top + ph + 3, 40);
         Label("位置", left + pw + 4, top - 2, 38);

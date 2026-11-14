@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace MouseWheelEnhancement.Core;
@@ -336,6 +336,108 @@ internal sealed partial class ScrollAnimator : IDisposable
     /// </summary>
     private double _glideTauMs;
 
+    /* ── 逐格定时缓动（v1.9.12，参考 SmoothScroll） ──
+     *
+     * 每一格记一条"车道"：在 EasedMs 内按选定曲线走完这一格的距离，多格相加。
+     * 和指数模型不同，这里不需要 τ —— 每条车道有确定的起点和落点时间，
+     * 所以"这一格什么时候停"是算得出来的，而不是渐近逼近的。
+     *
+     * 车道只在动画线程读写；钩子线程只往 _pendingMilli 里加量。
+     * _easeReset 是跨线程的"积压被清空/换向"信号，由 Clear/PushCore 置位。 */
+    private const int MaxEaseLanes = 12;
+    private readonly long[] _easeStartTicks = new long[MaxEaseLanes];
+    private readonly double[] _easeUnits = new double[MaxEaseLanes];
+    private int _easeLanes;
+    private int _easeSign;
+    private double _easePosition;
+    private long _easeSeenMilli;
+    private bool _easeFrameActive;
+    private volatile bool _easeReset;
+
+    private void ResetEaseState()
+    {
+        _easeLanes = 0;
+        _easeSign = 0;
+        _easePosition = 0;
+        _easeSeenMilli = 0;
+        _easeFrameActive = false;
+    }
+
+    /// <summary>
+    /// 逐格缓动的一帧：把"这一帧应该走到哪"换算成要发多少单位。
+    ///
+    /// <para>
+    /// 位置是「所有车道当前进度之和」，发射量是它与上一帧位置之差 ——
+    /// 这样多格叠加时速度自然相加，不会像"重设目标"那样在每格到来时跳一下。
+    /// </para>
+    /// </summary>
+    private int EasedFrame(long pendingMilli, RuntimeSettings s, long now, out double sinkTau)
+    {
+        sinkTau = Math.Max(s.TauMs, MinFollowTauMs);
+        _easeFrameActive = true;
+
+        var sign = Math.Sign(pendingMilli);
+        if (_easeLanes > 0 && sign != _easeSign) ResetEaseState();
+        _easeSign = sign;
+
+        /* 新到的量 = 积压的增量。一帧里到多格（>160Hz 的连滚）就并成一条车道，
+         * 曲线形状略变但总量不丢。 */
+        var arrivedMilli = Math.Abs(pendingMilli) - Math.Abs(_easeSeenMilli);
+        if (arrivedMilli > 0)
+        {
+            var arrivedUnits = arrivedMilli / (double)Milli;
+            if (_easeLanes < MaxEaseLanes)
+            {
+                _easeStartTicks[_easeLanes] = now;
+                _easeUnits[_easeLanes] = arrivedUnits;
+                _easeLanes++;
+            }
+            else
+            {
+                /* 车道满：并到最新一条的尾巴上。它的进度最小，并进去不会造成位置跳变，
+                 * 只是把这一格的落点时间往后推一点。 */
+                _easeUnits[_easeLanes - 1] += arrivedUnits;
+            }
+        }
+
+        var durationMs = Math.Clamp(s.EasedMs, 80, 600);
+        var allDone = true;
+        double target = 0;
+
+        for (var i = 0; i < _easeLanes; i++)
+        {
+            var p = TicksToMs(now - _easeStartTicks[i]) / durationMs;
+            if (p < 1) allDone = false;
+            target += _easeUnits[i] * ScrollEasingCurve.Progress(p, s.Easing);
+        }
+
+        var want = target - _easePosition;
+        if (want < 0) want = 0;
+
+        int units;
+        if (allDone)
+        {
+            /* 曲线已经走完：把剩下的零头一次交清。不足 1 单位也要发 ——
+             * 留着它 pending 永远回不到 0，动画线程会空转。 */
+            units = (int)Math.Ceiling(Math.Abs(pendingMilli) / (double)Milli);
+        }
+        else
+        {
+            units = (int)Math.Round(want);
+        }
+
+        if (units > MaxUnitsPerFrame) units = (int)MaxUnitsPerFrame;
+        if (units <= 0)
+        {
+            _easeSeenMilli = pendingMilli;
+            return 0;
+        }
+
+        _easePosition += units;
+        _easeSeenMilli = pendingMilli - sign * (long)(units * Milli);
+        return sign * units;
+    }
+
     private RuntimeSettings _settings = RuntimeSettings.From(AppConfig.Default());
 
     /// <summary>真正注入的出口；诊断探针可以另设 FrameSink/HorizontalSink 接管。</summary>
@@ -646,6 +748,7 @@ internal sealed partial class ScrollAnimator : IDisposable
         if (effective.FlushOnReverse && sign != 0 && Math.Sign(total) != sign)
         {
             total = Interlocked.Exchange(ref _pendingMilli, (long)units * (long)Milli);
+            _easeReset = true;
             /* 零头是"上一个方向还没凑满一单位的那一点点"，换方向之后必须丢掉：
              * 留着它会把反方向的第一步提前一点点，看起来像"往回滚还先往前抖一下"。 */
             Interlocked.Exchange(ref _carryMilli, 0);
@@ -687,6 +790,7 @@ internal sealed partial class ScrollAnimator : IDisposable
     {
         _smoothWant = 0;
         _smoothWant2 = 0;
+        _easeReset = true;
         Interlocked.Exchange(ref _pendingMilli, 0);
         Interlocked.Exchange(ref _glideStartTicks, 0);
         Interlocked.Exchange(ref _carryMilli, 0);
@@ -963,6 +1067,8 @@ internal sealed partial class ScrollAnimator : IDisposable
                      * 然后无限期等下一次输入 —— 一个核都不占。 */
                     ReleaseTimerPrecision();
                     Interlocked.Exchange(ref _glideStartTicks, 0);
+                    if (_easeLanes > 0 || _easeReset) ResetEaseState();
+                    _easeReset = false;
                     /* 顺手丢掉不到 1 单位的零头：留着也没东西可加了，
                      * 意义只有 1/120 格（亚像素）。 */
                     Interlocked.Exchange(ref _carryMilli, 0);
@@ -1023,6 +1129,14 @@ internal sealed partial class ScrollAnimator : IDisposable
                 var effDtMs = Math.Min(dtMs, FrameMs(s) * MaxLateFrameFactor);
 
                 var pendingUnits = pendingMilli / Milli;
+
+                /* 积压被 Clear/反向清空过：车道作废，下一帧按新的积压重新起算。 */
+                if (_easeReset)
+                {
+                    ResetEaseState();
+                    _easeReset = false;
+                }
+                _easeFrameActive = false;
 
                 /* 反向软起步：刚翻方向的头 45ms 先不动，让旧动量的观感散掉再走。
                  *
@@ -1120,6 +1234,13 @@ internal sealed partial class ScrollAnimator : IDisposable
                      * 见 WholeNotchStep 的说明。 */
                     units = WholeNotchStep(pendingUnits, effDtMs, tau, s, now);
                 }
+                else if (s.SmoothEnabled && s.Model == SmoothModel.Eased)
+                {
+                    /* 逐格定时缓动：发射量由「所有车道当前位置之和」决定，
+                     * 不再走 τ —— 见 EasedFrame 的说明。 */
+                    units = EasedFrame(pendingMilli, s, now, out var easeTau);
+                    tau = easeTau;
+                }
                 else if (residualUnits < 1)
                 {
                     /* 只剩不到半个单位（亚像素零头）：直接丢掉。
@@ -1191,7 +1312,14 @@ internal sealed partial class ScrollAnimator : IDisposable
                 {
                     /* 原子扣减，且绝不扣成负数（钩子线程可能同时 Clear / 换方向）。
                      * 见 TakePending 的说明。 */
+                    var requestedUnits = units;
                     units = TakePending(units);
+
+                    /* 缓动模型按"应发多少"累计位置；实际没扣到那么多（被清空/换向截了），
+                     * 位置账就对不上，直接作废车道，下一帧按剩下的积压重起一条曲线。
+                     * 不这样处理的话，欠账会让后面几帧少发、再忽然补一下。 */
+                    if (_easeFrameActive && units != requestedUnits) ResetEaseState();
+
                     if (units != 0)
                     {
                         var sink = FrameSink;

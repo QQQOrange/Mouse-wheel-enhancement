@@ -231,6 +231,9 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
     public const int GWL_STYLE = -16;
     public const long WS_CAPTION = 0x00C00000L;
     public const uint MONITOR_DEFAULTTONEAREST = 2;
