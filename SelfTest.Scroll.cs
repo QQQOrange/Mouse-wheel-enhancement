@@ -256,9 +256,11 @@ internal static partial class SelfTest
             !ScrollSemantics.IgnoresSystemLines("MozillaWindowClass"));
         /* Flutter 引擎自己把一格换算成 50 逻辑像素（delta/120×50），不读 Windows
          * 的"每次滚动几行"；细腻模式再乘 3 倍就会让它又快又跳。 */
-        Check("Flutter 按像素滚、但不吃系统行数补偿",
+        /* Flutter 的倍率在窗口创建时读一次 SPI，之后不刷新 —— 语义仍是按比例，
+         * 但"要不要 ×N 补偿"要看目标进程是不是在细腻模式生效之后才启动。 */
+        Check("Flutter 按像素滚，并读系统行数（需按启动时刻决定补偿）",
             ScrollSemantics.IsProportionalScroll("FLUTTER_RUNNER_WIN32_WINDOW") &&
-            ScrollSemantics.IgnoresSystemLines("FLUTTER_RUNNER_WIN32_WINDOW"));
+            !ScrollSemantics.IgnoresSystemLines("FLUTTER_RUNNER_WIN32_WINDOW"));
         /* v1.9.0：语义表驱动 —— 表里每一条都必须自洽（分类 + 是否补偿系统行数）。 */
         var ruleCount = 0;
         foreach (var (prefix, kind, ignoreLines) in ScrollSemantics.AllRules())

@@ -76,15 +76,18 @@ public static class ScrollSemantics
         new("MozillaWindowClass",  Kind.Proportional, false),   // Firefox
         new("CefBrowserWindow",    Kind.Proportional, false),   // 部分 CEF 宿主
 
-        /* Flutter（Windows 桌面）：WM_MOUSEWHEEL 在引擎里按
-         * delta / 120 × 50 逻辑像素换算，再作为 PointerScrollEvent 交给框架，
-         * **完全不读 Windows 的"每次滚动几行"**。
+        /* Flutter（Windows 桌面）：引擎在**创建窗口时**读一次
+         * SPI_GETWHEELSCROLLLINES，算出 scroll_offset_multiplier = lines × 100/3，
+         * 之后不再刷新（flutter_window.cc 的 UpdateScrollOffsetMultiplier 只在初始化调用），
+         * 每个 WM_MOUSEWHEEL 都按这个缓存值换算像素。
          *
-         * 所以细腻模式那套"系统 1 行 → 注入 ×N 补偿"对它是有害的：会把每一格
-         * 放大 3 倍，滚动看起来又快又跳（用户报 kelivo 卡顿就是这个）。
-         * 归类仍是按比例（Flutter 接受亚格 delta），只是不做行数补偿。 */
-        new("FLUTTER_RUNNER_WIN32_WINDOW", Kind.Proportional, true),
-        new("FLUTTERVIEW",         Kind.Proportional,      true),
+         * 也就是说：它读系统行数，但只读一次。细腻模式把行数改成 1 之后启动的
+         * Flutter 应用会缓存 1 行的倍率，注入端必须 ×N 补回来；而在改成 1 行之前
+         * 就启动的应用缓存的是 3 行倍率，再 ×N 就会变成 3 倍距离。
+         * 语义上仍归"按比例"（接受亚格 delta），补偿与否由进程启动时间决定，
+         * 见 WheelEngine 的 needsFineCompensation。 */
+        new("FLUTTER_RUNNER_WIN32_WINDOW", Kind.Proportional, false),
+        new("FLUTTERVIEW",         Kind.Proportional,      false),
     };
 
     /// <summary>把一个窗口类名解析成语义（唯一入口，所有判据都走这里）。</summary>

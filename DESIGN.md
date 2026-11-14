@@ -4167,17 +4167,24 @@ decay 在客观平滑度与跟手性上更好，且已经被触控板实测标�
 `--osdcheck` 把这条链路做成回归：显示 → 连续刷新 6 次 → 1.6 s 后必须
 `IsVisible == false && Opacity <= 0.01`。
 
-## 68. v1.9.14：Flutter 不吃系统行数，守护进程不能只认 pid
+## 68. v1.9.15：Flutter 只在启动时读一次行数，守护进程不能只认 pid
 
-**Flutter。** `FLUTTER_RUNNER_WIN32_WINDOW` 的引擎把 `WM_MOUSEWHEEL` 的
-`delta` 按 `delta / 120 × 50` 换成逻辑像素，然后当成 `PointerScrollEvent` 交给框架；
-Windows 的 `WheelScrollLines` 它根本不读。细腻模式的 ×N 补偿因此是纯放大：
-kelivo 里一格变 150 px，三格 450 px，帧步长跟着变大，用户读作「卡顿」。
-语义表新增两条 Flutter 规则：`Kind.Proportional` + `IgnoreSystemLines = true`。
-（`FLUTTERVIEW` 是子窗口类名，一并加上，防止某些路径按子窗口解析。）
+**Flutter。** `FLUTTER_RUNNER_WIN32_WINDOW` 的引擎在 `FlutterWindow` 构造时调用
+`SystemParametersInfo(SPI_GETWHEELSCROLLLINES)`，算出
+`scroll_offset_multiplier = lines × 100 / 3`，此后每个 `WM_MOUSEWHEEL`
+都乘这个缓存值；`UpdateScrollOffsetMultiplier()` 只在初始化时调用一次，
+没有 `WM_SETTINGCHANGE` 处理。所以它「读系统行数，但只读一次」：
+
+| Kelivo 启动时机 | 缓存倍率 | 我们注入 ×3 后 | 结果 |
+| --- | --- | --- | --- |
+| 细腻模式生效后（系统 1 行） | 33 px/格 | 100 px/格 | 与原生 3 行一致 ✔ |
+| 细腻模式生效前（系统 3 行） | 100 px/格 | 300 px/格 | 快 3 倍、跳 ✘ |
+
+语义表因此把 Flutter 归为 `Kind.Proportional` + `IgnoreSystemLines = false`
+（它确实读行数），并在排查时用「完全退出再打开」来刷新它的缓存值。
+这一段曾经误判成「完全不读行数」，会把距离压到 1/3 —— 已由自检断言锁住。
 
 **守护进程。** `SpawnGuard` 原来只把 `pid` 传给 `--fineguard`。主进程退出后
 pid 会被系统复用，守护进程 `WaitForExit` 就等在了无关进程上；等它退出时再把
 行数写回 3，和正在运行的实例打架。现在多传一个「主进程启动时间 UTC ticks」，
-`--fineguard` 用 `Process.StartTime` 精确比对：对不上立即退出且**不还原**
-（原主已死，但当前系统状态可能是别的实例改的，不能盲写）。
+`--fineguard` 用 `Process.StartTime` 精确比对：对不上立即退出且**不还原**。
