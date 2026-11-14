@@ -190,10 +190,15 @@ public sealed partial class WheelEngine : IDisposable
 
     private long _lastBoostNotifyMs;
 
-    private void NotifyBoosted(double multiplier, RuntimeSettings s)
+    private void NotifyBoosted(double multiplier, RuntimeSettings s, bool precisionInput)
     {
         var h = Boosted;
         if (h == null || !s.OsdMultiplier || multiplier < 1.5) return;
+
+        /* 触控板/自由滚轮是 60~125Hz 的连续流：每一小步都够 1.5×，浮层会被
+         * 一路续命成"常驻"。它解释的是"为什么这一格滚得远"，而高精度流本来
+         * 就没有"格"这个概念 —— 所以只对真正的滚轮格显示。 */
+        if (precisionInput) return;
 
         var now = Environment.TickCount64;
         if (now - Interlocked.Read(ref _lastBoostNotifyMs) < 120) return;
@@ -1064,7 +1069,7 @@ public sealed partial class WheelEngine : IDisposable
                     _animator.PushH(units);
                     Interlocked.Increment(ref _boosted);
                     Volatile.Write(ref _lastMultiplier, hd.Multiplier);
-                    NotifyBoosted(hd.Multiplier, s);
+                    NotifyBoosted(hd.Multiplier, s, false);
                     return (IntPtr)1;   // 吞掉原事件：这一下由放大后的横向事件代替
                 }
 
@@ -1224,7 +1229,7 @@ public sealed partial class WheelEngine : IDisposable
                 }
 
                 Interlocked.Increment(ref _boosted);
-                NotifyBoosted(decision.Multiplier, s);
+                NotifyBoosted(decision.Multiplier, s, profile.IsPrecision);
                 return (IntPtr)1;
             }
 
@@ -1267,7 +1272,7 @@ public sealed partial class WheelEngine : IDisposable
 
             _animator.Push(outUnits, s);
             Interlocked.Increment(ref _boosted);
-            NotifyBoosted(decision.Multiplier, s);
+            NotifyBoosted(decision.Multiplier, s, profile.IsPrecision);
 
             // 吞掉原事件：这一下由我们自己按计算好的量发出去
             return (IntPtr)1;

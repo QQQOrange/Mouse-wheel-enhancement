@@ -418,6 +418,63 @@ public partial class App
     }
 
     /// <summary>
+    /// 倍率浮层的"显示后一定会收起"回归检查（`--osdcheck`）。
+    ///
+    /// <para>
+    /// 用户报过"没滚动也一直有个显示倍速的按钮"：浮层的淡出收尾只要有一次没跑到，
+    /// 窗口就会永久贴光标。这里连续 Flash 6 次（模拟快速连滚），再空转 1.6 秒，
+    /// 断言窗口已隐藏且 Opacity 归零 —— 收尾逻辑或看门狗任一坏掉都会失败。
+    /// </para>
+    /// </summary>
+    private static int OsdCheck()
+    {
+        var code = 0;
+        OsdWindow? w = null;
+        try
+        {
+            w = new OsdWindow();
+            w.Flash(5.0);
+            PumpFor(w, 160);
+
+            var shown = w.IsVisible && w.Opacity > 0.5;
+            Console.WriteLine($"osdcheck: 显示后 visible={w.IsVisible} opacity={w.Opacity:0.00}");
+            if (!shown)
+            {
+                Console.WriteLine("osdcheck: 失败：浮层没有显示");
+                code = 33;
+            }
+
+            for (var i = 0; i < 5; i++)
+            {
+                w.Flash(5.0);
+                PumpFor(w, 110);
+            }
+
+            PumpFor(w, 1600);
+
+            var hidden = !w.IsVisible && w.Opacity <= 0.01;
+            Console.WriteLine($"osdcheck: 1.6s 后 visible={w.IsVisible} opacity={w.Opacity:0.00}");
+            if (!hidden)
+            {
+                Console.WriteLine("osdcheck: 失败：浮层没有收起");
+                code = 34;
+            }
+
+            if (code == 0) Console.WriteLine("osdcheck: 通过（显示 → 连续刷新 → 自动收起）");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("osdcheck 失败", ex);
+            code = 35;
+        }
+        finally
+        {
+            try { w?.Close(); } catch { }
+        }
+        return code;
+    }
+
+    /// <summary>
     /// 把窗口的**整个客户区**渲染成带透明通道的 PNG。
     /// 渲染 Window 而不是它的 Content：Content 带 Margin 时，直接渲染 Content
     /// 会把画面按 margin 偏移，右下角被裁掉（v1.8.20 截图时踩过）。

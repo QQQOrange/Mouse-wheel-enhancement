@@ -67,6 +67,15 @@ internal sealed class OsdWindow : Window
     private readonly ScaleTransform _scale;
     private readonly DispatcherTimer _hide;
 
+    /// <summary>
+    /// 兜底看门狗：正常路径靠 <c>_hide</c> 淡出，但只要有一次收尾没跑到
+    /// （动画被打断、回调里抛异常、UI 线程被长任务卡住后定时器被重置），
+    /// 浮层就会永久贴在光标旁边 —— 用户看到的是"没滚动也一直显示倍率"。
+    /// 这个定时器只做一件事：超过「停留 + 淡出 + 余量」还没隐藏，就强行收起。
+    /// </summary>
+    private readonly DispatcherTimer _guard;
+    private long _lastFlashTicks;
+
     /// <summary>显示代次：每次 Flash 自增，旧淡出动画的收尾回调据此作废。</summary>
     private int _generation;
 
@@ -153,12 +162,30 @@ internal sealed class OsdWindow : Window
             {
                 /* 先判代次再判可见：窗口可能已经被关闭（退出时 OSD 恰好还亮着），
                  * 对已关闭窗口调 Hide() 会抛 InvalidOperationException。 */
-                if (gen == _generation && Opacity <= 0.01 && IsVisible) Hide();
+                if (gen != _generation) return;
+                if (Opacity <= 0.01)
+                {
+                    if (IsVisible) Hide();
+                }
+                else
+                {
+                    /* 淡出动画的收尾回调居然在 Opacity 还没归零时跑到了：
+                     * 不赌动画状态，直接清掉动画并隐藏。 */
+                    HideNow("淡出结束后仍不透明");
+                }
             });
         };
 
+        _guard = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _guard.Tick += (_, _) =>
+        {
+            if (!IsVisible) { _guard.Stop(); return; }
+            if (Environment.TickCount64 - _lastFlashTicks <= HoldMs + 600) return;
+            HideNow("超过停留时间仍未隐藏");
+        };
+
         /* 关窗后必须把定时器停掉：否则它还会在已关闭的窗口上跑一次收尾。 */
-        Closed += (_, _) => _hide.Stop();
+        Closed += (_, _) => { _hide.Stop(); _guard.Stop(); };
 
         SourceInitialized += (_, _) =>
         {
@@ -171,6 +198,25 @@ internal sealed class OsdWindow : Window
 
     /// <summary>显示一次。已经显示时只更新文字并续命，不新建窗口。</summary>
     public void Flash(double multiplier)
+    {
+        _lastFlashTicks = Environment.TickCount64;
+
+        /* 任何一步抛异常都不能让窗口停在"已显示但没人收尾"的状态：
+         * 钩子线程那边只负责封送，这里自己保证收起。 */
+        try
+        {
+            FlashCore(multiplier);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("倍率浮层显示失败，已强制收起：" + ex.Message);
+            HideNow("显示过程异常");
+        }
+
+        if (IsVisible) _guard.Start();
+    }
+
+    private void FlashCore(double multiplier)
     {
         if (_value.Inlines.FirstInline is Run number) number.Text = $"{multiplier:0.0}";
         _generation++;
@@ -198,6 +244,28 @@ internal sealed class OsdWindow : Window
         _scale.BeginAnimation(ScaleTransform.ScaleYProperty, Pop());
         Fade(1, 90, null);
         _hide.Start();
+    }
+
+    /// <summary>
+    /// 立刻收起：清掉可能还在跑的淡出动画，把 Opacity 归零，再隐藏窗口。
+    /// 正常路径不会走到这里，只有看门狗或异常路径需要。
+    /// </summary>
+    private void HideNow(string reason)
+    {
+        try
+        {
+            Log.Warn("倍率浮层：" + reason + "，强制收起");
+            _hide.Stop();
+            _guard.Stop();
+            _generation++;
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 0;
+            if (IsVisible) Hide();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("倍率浮层强制收起失败：" + ex.Message);
+        }
     }
 
     /// <summary>

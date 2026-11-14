@@ -4142,3 +4142,27 @@ decay 单格 14 帧 / 93 ms / 中段起伏 1.1×；eased 21 帧 / 157 ms / 1.6×
 也就是说 eased 更「有设计感」、落点可预期，但延迟高 40–70%、帧间起伏更大；
 decay 在客观平滑度与跟手性上更好，且已经被触控板实测标定。eased 作为选项保留，
 让用户自己能选「更绵」的手感。
+
+## 67. v1.9.13：倍率浮层为什么会「常驻」
+
+浮层本身只有一条 `Flash()` → 520 ms 停留 → 180 ms 淡出 → `Hide()` 的链路，
+但它有两个入口能让这条链路失效，v1.9.13 分别堵掉。
+
+**入口一：高精度输入。** `NotifyBoosted` 只检查 `multiplier >= 1.5` 和 120 ms 节流，
+不区分这一下是「一格滚轮」还是「触控板的一小步」。高精度流每秒 60–125 个事件，
+每个都够 1.5×，节流窗口一过就又闪一次 —— 浮层被续命成常驻。
+现在 `NotifyBoosted(double, RuntimeSettings, bool precisionInput)` 直接把高精度流挡在
+显示之前：它解释的是「这一格为什么滚得远」，而高精度流没有「格」。
+
+**入口二：收尾只有一条路。** 原回调是
+`if (gen == _generation && Opacity <= 0.01 && IsVisible) Hide();`。
+动画被打断、回调抛异常、`Opacity` 没归零，三者任一发生都会跳过 `Hide()`，
+而 `_hide` 已经 `Stop()` —— 没有任何人会再来收。现在：
+
+- `Flash()` 包 try/catch，异常路径直接 `HideNow()`；
+- `HideNow()` 不读动画状态：`_hide.Stop(); _guard.Stop(); BeginAnimation(Opacity, null);
+  Opacity = 0; Hide();`
+- `_guard` 每 250 ms 检查一次，超过 `HoldMs + 600 ms` 仍未隐藏就强制收起并记 WARN。
+
+`--osdcheck` 把这条链路做成回归：显示 → 连续刷新 6 次 → 1.6 s 后必须
+`IsVisible == false && Opacity <= 0.01`。

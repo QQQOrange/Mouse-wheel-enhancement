@@ -41,7 +41,7 @@ public partial class App : System.Windows.Application
     {
         "--selftest", "--measure", "--featurecheck", "--taskcheck", "--frametrace",
         "--dialogtest", "--runtimecheck", "--wheeltest", "--scrollsmooth", "--probe",
-        "--osdshot", "--uishot", "--uibase", "--uicheck", "--langcheck", "--smoke", "--wheelcapture", "--uiaprobe", "--benchhook", "--exporthelp",
+        "--osdshot", "--osdcheck", "--uishot", "--uibase", "--uicheck", "--langcheck", "--smoke", "--wheelcapture", "--uiaprobe", "--benchhook", "--exporthelp",
     };
     private const string ActivateEventName = @"Local\MouseWheelEnhancement.Activate";
 
@@ -261,8 +261,17 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        /* 倍率浮层截图：`--osdshot`。两种主题各拍一张，用来核对颜色和圆角/投影。 */
-        if (e.Args.Any(a => a.Equals("--osdshot", StringComparison.OrdinalIgnoreCase)))
+        /* 倍率浮层自检：`--osdcheck`。显示 → 连续刷新 → 必须自动收起。 */
+        if (e.Args.Any(a => a.Equals("--osdcheck", StringComparison.OrdinalIgnoreCase)))
+        {
+            Services.Init();
+            var osdCheckCode = OsdCheck();
+            Shutdown(osdCheckCode);
+            Environment.Exit(osdCheckCode);
+            return;
+        }
+
+        /* 倍率浮层截图：`--osdshot`。两种主题各拍一张，用来核对颜色和圆角/投影。 */        if (e.Args.Any(a => a.Equals("--osdshot", StringComparison.OrdinalIgnoreCase)))
         {
             Services.Init();
             var osdCode = ShotOsd();
