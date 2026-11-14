@@ -75,6 +75,16 @@ public static class ScrollSemantics
         new("Chrome_WidgetWin_",   Kind.Proportional, false),   // Chromium / Electron / Edge / CEF
         new("MozillaWindowClass",  Kind.Proportional, false),   // Firefox
         new("CefBrowserWindow",    Kind.Proportional, false),   // 部分 CEF 宿主
+
+        /* Flutter（Windows 桌面）：WM_MOUSEWHEEL 在引擎里按
+         * delta / 120 × 50 逻辑像素换算，再作为 PointerScrollEvent 交给框架，
+         * **完全不读 Windows 的"每次滚动几行"**。
+         *
+         * 所以细腻模式那套"系统 1 行 → 注入 ×N 补偿"对它是有害的：会把每一格
+         * 放大 3 倍，滚动看起来又快又跳（用户报 kelivo 卡顿就是这个）。
+         * 归类仍是按比例（Flutter 接受亚格 delta），只是不做行数补偿。 */
+        new("FLUTTER_RUNNER_WIN32_WINDOW", Kind.Proportional, true),
+        new("FLUTTERVIEW",         Kind.Proportional,      true),
     };
 
     /// <summary>把一个窗口类名解析成语义（唯一入口，所有判据都走这里）。</summary>

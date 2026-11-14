@@ -254,6 +254,11 @@ internal static partial class SelfTest
             !ScrollSemantics.IgnoresSystemLines("Chrome_WidgetWin_1"));
         Check("Firefox 读系统行数",
             !ScrollSemantics.IgnoresSystemLines("MozillaWindowClass"));
+        /* Flutter 引擎自己把一格换算成 50 逻辑像素（delta/120×50），不读 Windows
+         * 的"每次滚动几行"；细腻模式再乘 3 倍就会让它又快又跳。 */
+        Check("Flutter 按像素滚、但不吃系统行数补偿",
+            ScrollSemantics.IsProportionalScroll("FLUTTER_RUNNER_WIN32_WINDOW") &&
+            ScrollSemantics.IgnoresSystemLines("FLUTTER_RUNNER_WIN32_WINDOW"));
         /* v1.9.0：语义表驱动 —— 表里每一条都必须自洽（分类 + 是否补偿系统行数）。 */
         var ruleCount = 0;
         foreach (var (prefix, kind, ignoreLines) in ScrollSemantics.AllRules())

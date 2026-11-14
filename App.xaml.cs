@@ -386,12 +386,28 @@ public partial class App : System.Windows.Application
             && int.TryParse(e.Args[guardIndex + 1], out var guardPid)
             && int.TryParse(e.Args[guardIndex + 2], out var guardLines))
         {
+            /* 第三个参数（可选）是主进程启动时间：pid 会被复用，
+             * 只按 pid 等会等错人。老版本守护进程没有这个参数，按 0 处理。 */
+            long guardStart = 0;
+            if (e.Args.Length > guardIndex + 3) long.TryParse(e.Args[guardIndex + 3], out guardStart);
+
             try
             {
                 /* ⚠ 这里**不能**先还原：主进程此刻正在用细腻模式（系统=1 行）。
                  * 之前误写成"启动就还原"，会让细腻模式刚开启就被打回去。
                  * 只等它退出，退出后再还原。 */
                 using var main = System.Diagnostics.Process.GetProcessById(guardPid);
+                if (guardStart > 0 &&
+                    main.StartTime.ToUniversalTime().Ticks != guardStart)
+                {
+                    /* pid 已经被别人复用了：原主早就不在了，但这个"别人"
+                     * 可能还要跑很久。绝不能等它 —— 直接结束，让系统行数
+                     * 保持现状（下次启动的自愈逻辑会处理）。 */
+                    Log.Warn($"细腻模式守护：pid {guardPid} 已被复用，退出（不还原）");
+                    Shutdown(0);
+                    Environment.Exit(0);
+                    return;
+                }
                 main.WaitForExit();          // 主进程活着就一直等（不占 CPU）
             }
             catch { /* 进程已经没了：直接还原 */ }
@@ -581,6 +597,11 @@ public partial class App : System.Windows.Application
             Shutdown(2);
             return;
         }
+
+        /* 系统颜色滤镜（Win+Ctrl+C）会把整个屏幕变成黑白。
+         * 它和本程序没有任何关系（我们只读写 WheelScrollLines，从不合成键盘事件），
+         * 但用户看到"开了软件就变黑白"时，日志里至少要有一条能解释的证据。 */
+        WarnIfColorFiltersOn();
 
         /* 把"稳定入口"（启动器 exe 的路径）落实下来。
          *
@@ -918,6 +939,24 @@ public partial class App : System.Windows.Application
     ///
     /// <returns>已经发起提权重启并退出（调用方应立刻返回）时为 true。</returns>
     /// </summary>
+    /// <summary>
+    /// 系统颜色滤镜开着时记一条 WARN：屏幕黑白是 Windows 的辅助功能
+    /// （设置 → 辅助功能 → 颜色滤镜，快捷键 Win+Ctrl+C），不是本程序。
+    /// 只读注册表，不改任何东西。
+    /// </summary>
+    private static void WarnIfColorFiltersOn()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\ColorFiltering");
+            if (key?.GetValue("Active") is int active && active != 0)
+                Log.Warn("系统「颜色滤镜」处于开启状态（Win+Ctrl+C）：屏幕会变黑白。"
+                         + "这是 Windows 辅助功能，本程序不会修改它；再按一次快捷键即可关闭。");
+        }
+        catch { /* 读不到就算了，不能影响启动 */ }
+    }
+
     private static bool TryRestartElevatedIfNeeded(string[] args)
     {
         if (!Core.AdminStart.ShouldElevate(Services.IsElevated, Services.Config.Behavior.RunAsAdmin, _elevateTried))

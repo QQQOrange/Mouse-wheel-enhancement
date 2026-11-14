@@ -246,8 +246,14 @@ public static class SystemWheelLines
             var exe = Environment.ProcessPath;
             if (string.IsNullOrEmpty(exe)) return;
 
+            /* 把**本进程的启动时间**一起传过去：只传 pid 的话，主进程退出后
+             * pid 很快会被系统复用，守护进程会傻等一个毫不相干的进程，
+             * 等它退出时再把行数写回 3 —— 这正是"用着用着滚动手感突然变了"
+             * 和多个守护进程互踩的来源。 */
+            var started = System.Diagnostics.Process.GetCurrentProcess()
+                .StartTime.ToUniversalTime().Ticks;
             var psi = new System.Diagnostics.ProcessStartInfo(exe,
-                $"--fineguard {Environment.ProcessId} {lines}")
+                $"--fineguard {Environment.ProcessId} {lines} {started}")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
