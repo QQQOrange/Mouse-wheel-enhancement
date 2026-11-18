@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace MouseWheelEnhancement.Core;
@@ -97,6 +97,13 @@ namespace MouseWheelEnhancement.Core;
 internal sealed partial class ScrollAnimator : IDisposable
 {
     private const double Milli = 1000.0;
+
+    /// <summary>
+    /// 等合成帧的预算（毫秒）。超过它且连续若干次，说明 DWM 现在不适合锁相
+    /// （全屏独占的 3D 程序、远程桌面、显示器刚醒），本会话退回定时器节拍。
+    /// 50 ms 的依据：60Hz 上就是三帧；真等这么久，锁相带来的整齐远不如它带来的迟滞。
+    /// </summary>
+    private const double VsyncGiveUpMs = 50.0;
 
     /// <summary>只剩这么多就一次收掉（单位）。1 单位 = 1/120 格，亚像素。</summary>
     private const double CloseUnits = 1.0;
@@ -408,7 +415,7 @@ internal sealed partial class ScrollAnimator : IDisposable
         {
             var p = TicksToMs(now - _easeStartTicks[i]) / durationMs;
             if (p < 1) allDone = false;
-            target += _easeUnits[i] * ScrollEasingCurve.Progress(p, s.Easing);
+            target += _easeUnits[i] * ScrollEasingCurve.Progress(p, s.Easing, s.PulseScale);
         }
 
         var want = target - _easePosition;
@@ -502,6 +509,26 @@ internal sealed partial class ScrollAnimator : IDisposable
     private long _lastPushTicks;
     private bool _timerPrecision;
     private bool _waitFailedLogged;
+
+    /* ── 垂直同步出帧（v1.10.0，移植自 SmoothScroll 的 vblank 锁帧） ── */
+
+    /// <summary>
+    /// 本会话是否已经放弃帧同步。DWM 等太久（全屏独占、远程桌面、显示器休眠）
+    /// 时会自动置位，之后整会话退回定时器节拍 —— 宁可不同步，也不要每帧多等 30ms。
+    /// </summary>
+    private bool _vsyncOff;
+
+    /// <summary>连续多少次 <c>DwmFlush</c> 超出预算。</summary>
+    private int _vsyncSlow;
+
+    /// <summary>上一次 <c>DwmFlush</c> 等了多久（毫秒）。诊断用。</summary>
+    private double _vsyncCostMs;
+
+    /// <summary>帧同步是否已经降级；<c>--frametrace</c> 会读它。</summary>
+    internal bool VsyncGaveUp => _vsyncOff;
+
+    /// <summary>上一次等合成帧花的毫秒数（0 = 还没等过）。</summary>
+    internal double LastVsyncCostMs => _vsyncCostMs;
 
     public ScrollAnimator()
     {
@@ -1102,10 +1129,10 @@ internal sealed partial class ScrollAnimator : IDisposable
 
                 if (_nextFrameTicks > now)
                 {
-                    if (!WaitUntil(_nextFrameTicks)) break;
-                    now = _clock.ElapsedTicks;
-                    // 被新输入叫醒但还没到帧点：回去继续等，别提前出帧
-                    if (now < _nextFrameTicks) continue;
+                    if (!WaitFrame(_nextFrameTicks, s, ref now, out var ready)) break;
+                    /* 定时器路径被新输入叫醒、还没到帧点：回去继续等，别提前出帧。
+                     * 帧同步路径永远 ready —— 它返回的那一刻就是"刚刷完一帧"。 */
+                    if (!ready) continue;
                 }
 
                 s = EffectiveSettings();
@@ -1434,6 +1461,98 @@ internal sealed partial class ScrollAnimator : IDisposable
     }
 
     /// <summary>等到某个绝对时间点。返回 false 表示线程要退出了。</summary>
+    /// <summary>
+    /// 等到"这一帧出帧的时刻"。
+    ///
+    /// <para>
+    /// 两条路：定时器（老路子）或帧同步（v1.10.0，SmoothScroll 的做法）。
+    /// 帧同步不是"再睡准一点"，它把**相位**也对上去：定时器只保证"大约这个时刻醒"，
+    /// 醒来时相对显示器的合成节拍是随机的 —— 于是相邻两小步有时挤进同一帧
+    /// （读作一顶），有时某一帧空着（读作卡了一下），即使平均值完全正确，观感仍是抖。
+    /// 这里先粗睡到目标前半个刷新周期，再 <see cref="Native.DwmFlush"/> 等一次合成，
+    /// 于是发出去的时刻总在"刚刷完一帧"的那一瞬间：目标应用有整整一帧时间去重画。
+    /// </para>
+    ///
+    /// <para>
+    /// 关键在**返回即出帧**：不能在 Flush 之后再补睡到目标时刻，那等于把刚对齐好的
+    /// 相位又推走（推走多少，就是这一帧晚多少）。目标的唯一用处是选"等哪一次合成"。
+    /// </para>
+    /// </summary>
+    /// <param name="ready">true = 现在就出帧；false = 被新输入提前叫醒，外层应回到循环顶部。</param>
+    /// <returns>false = 线程该退出了。</returns>
+    private bool WaitFrame(long targetTicks, RuntimeSettings s, ref long now, out bool ready)
+    {
+        ready = false;
+        var frameMs = FrameMs(s);
+
+        if (!UseVsync(s, frameMs))
+        {
+            if (!WaitUntil(targetTicks)) return false;
+            now = _clock.ElapsedTicks;
+            ready = now >= targetTicks;
+            return _alive;
+        }
+
+        /* 粗睡留半个刷新周期的提前量：DwmFlush 只能等"**下一个**"合成帧，
+         * 一路睡到目标再 Flush 的话每次都会整整晚一帧。粗睡仍走可打断的定时器路径，
+         * 所以新输入能把这一觉叫醒（这时直接返回，让外层重新判断）。 */
+        var lead = MsToTicks(Math.Clamp(frameMs * 0.5, 0.5, 8.0));
+        var coarse = targetTicks - lead;
+        now = _clock.ElapsedTicks;
+        if (coarse > now)
+        {
+            if (!WaitUntil(coarse)) return false;
+            now = _clock.ElapsedTicks;
+            if (now < coarse) return _alive;
+        }
+
+        var t0 = _clock.ElapsedTicks;
+        var hr = Native.DwmFlush();
+        var costMs = TicksToMs(_clock.ElapsedTicks - t0);
+        _vsyncCostMs = costMs;
+        now = _clock.ElapsedTicks;
+
+        if (hr != 0)
+        {
+            /* DWM 不可用（合成被关 / 极老系统）：不折腾，本会话退回定时器。 */
+            _vsyncOff = true;
+            ready = true;
+            Log.Warn("DwmFlush 失败（HRESULT 0x" + hr.ToString("X8") + "），本会话改用定时器节拍");
+            return _alive;
+        }
+
+        /* DWM 忙的时候 Flush 会拖到几帧甚至几十毫秒（全屏独占游戏、远程桌面、
+         * 显示器休眠）。拖着比不同步更难看，所以连续几次超时就把帧同步关掉。 */
+        if (costMs > Math.Max(VsyncGiveUpMs, frameMs * 3.0))
+        {
+            if (++_vsyncSlow >= 3)
+            {
+                _vsyncOff = true;
+                Log.Warn($"等合成帧花了 {costMs:0.#} ms（连续 {_vsyncSlow} 次超预算），本会话改用定时器节拍");
+            }
+        }
+        else if (_vsyncSlow > 0)
+        {
+            _vsyncSlow = 0;
+        }
+
+        ready = true;
+        return _alive;
+    }
+
+    /// <summary>
+    /// 这一轮要不要把出帧锁相到合成帧。
+    ///
+    /// <para>
+    /// 三个条件缺一不可：① 用户开了帧同步；② 帧率是「自动跟随显示器」——
+    /// 手动 60/120 是用户的明确要求，锁相会把它硬拽成刷新率；
+    /// ③ 本会话还没因为 DWM 太慢而放弃。另外帧间隔得是个合理值，
+    /// 否则 <see cref="FrameMs"/> 还没被刷新率监视器填上，粗睡会睡错地方。
+    /// </para>
+    /// </summary>
+    private bool UseVsync(RuntimeSettings s, double frameMs) =>
+        !_vsyncOff && s.VsyncPacer && s.AutoFps && frameMs is > 0 and < 50;
+
     private bool WaitUntil(long targetTicks)
     {
         var delta = targetTicks - _clock.ElapsedTicks;

@@ -76,12 +76,16 @@ public partial class SmoothPage : UserControl
             ModelEased.IsChecked = c.Smooth.Model == SmoothModel.Eased;
             EasingBox.SelectedIndex = c.Smooth.Easing switch
             {
-                ScrollEasing.Cubic => 1,
-                ScrollEasing.Exponential => 2,
-                ScrollEasing.Linear => 3,
+                ScrollEasing.Pulse => 0,
+                ScrollEasing.Quintic => 1,
+                ScrollEasing.Cubic => 2,
+                ScrollEasing.Exponential => 3,
+                ScrollEasing.Linear => 4,
                 _ => 0,
             };
             EasedMsSlider.Value = c.Smooth.EasedMs;
+            PulseSlider.Value = c.Smooth.PulseScale;
+            VsyncSwitch.IsChecked = c.Smooth.Vsync;
         }
         finally { _syncing = false; }
 
@@ -329,6 +333,7 @@ public partial class SmoothPage : UserControl
         {
             var name = c.Easing switch
             {
+                ScrollEasing.Pulse => "脉冲",
                 ScrollEasing.Cubic => "三次",
                 ScrollEasing.Exponential => "指数",
                 ScrollEasing.Linear => "线性",
@@ -352,6 +357,7 @@ public partial class SmoothPage : UserControl
     /// <summary>曲线名的英文写法（摘要行用）。</summary>
     private static string CurveNameEn(ScrollEasing easing) => easing switch
     {
+        ScrollEasing.Pulse => "pulse",
         ScrollEasing.Cubic => "cubic",
         ScrollEasing.Exponential => "exponential",
         ScrollEasing.Linear => "linear",
@@ -442,6 +448,21 @@ public partial class SmoothPage : UserControl
         _host.Commit();
     }
 
+    private void Pulse_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_syncing) return;
+        Services.Config.Smooth.PulseScale = Math.Round(PulseSlider.Value * 2) / 2;
+        UpdateModelUi();
+        _host.Commit();
+    }
+
+    private void Vsync_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        Services.Config.Smooth.Vsync = VsyncSwitch.IsChecked == true;
+        _host.Commit();
+    }
+
     private void EasedMs_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_syncing) return;
@@ -457,10 +478,20 @@ public partial class SmoothPage : UserControl
     private void UpdateModelUi()
     {
         if (EasedPanel == null || EasedMsValue == null) return;
-        var eased = Services.Config.Smooth.Model == SmoothModel.Eased;
+        var smooth = Services.Config.Smooth;
+        var eased = smooth.Model == SmoothModel.Eased;
         EasedPanel.IsEnabled = eased;
         EasedPanel.Opacity = eased ? 1.0 : 0.42;
-        EasedMsValue.Text = $"{Services.Config.Smooth.EasedMs:0} ms";
+        EasedMsValue.Text = $"{smooth.EasedMs:0} ms";
+
+        /* 脉冲强度只对脉冲曲线有意义：其它曲线下留着这个滑块，
+         * 用户拖了没反应，只会以为是 bug —— 直接收起来。 */
+        if (PulsePanel != null)
+            PulsePanel.Visibility = smooth.Easing == ScrollEasing.Pulse
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        if (PulseValue != null) PulseValue.Text = $"{smooth.PulseScale:0.0}";
+
         UpdateCurveSummary();
         InvalidateSmoothPreview();
     }
@@ -522,7 +553,8 @@ public partial class SmoothPage : UserControl
         {
             var t = span * i / steps;
             var v = eased
-                ? ScrollEasingCurve.Progress(t / easeMs, Services.Config.Smooth.Easing)
+                ? ScrollEasingCurve.Progress(t / easeMs, Services.Config.Smooth.Easing,
+                    Services.Config.Smooth.PulseScale)
                 : 1 - Math.Exp(-t / tau);
             pts.Add(new Point(X(t), Y(v)));
         }

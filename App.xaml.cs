@@ -378,50 +378,10 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        /* --fineguard <pid> <lines>：细腻模式的守护进程。
-         * 等主进程退出（正常或被杀）后把系统行数写回去，然后自己结束。
-         * 必须**在单实例检查之前**处理：它不能弹窗口、不能抢互斥量。 */
-        var guardIndex = Array.FindIndex(e.Args, a => a.Equals("--fineguard", StringComparison.OrdinalIgnoreCase));
-        if (guardIndex >= 0 && e.Args.Length > guardIndex + 2
-            && int.TryParse(e.Args[guardIndex + 1], out var guardPid)
-            && int.TryParse(e.Args[guardIndex + 2], out var guardLines))
-        {
-            /* 第三个参数（可选）是主进程启动时间：pid 会被复用，
-             * 只按 pid 等会等错人。老版本守护进程没有这个参数，按 0 处理。 */
-            long guardStart = 0;
-            if (e.Args.Length > guardIndex + 3) long.TryParse(e.Args[guardIndex + 3], out guardStart);
-
-            try
-            {
-                /* ⚠ 这里**不能**先还原：主进程此刻正在用细腻模式（系统=1 行）。
-                 * 之前误写成"启动就还原"，会让细腻模式刚开启就被打回去。
-                 * 只等它退出，退出后再还原。 */
-                using var main = System.Diagnostics.Process.GetProcessById(guardPid);
-                if (guardStart > 0 &&
-                    main.StartTime.ToUniversalTime().Ticks != guardStart)
-                {
-                    /* pid 已经被别人复用了：原主早就不在了，但这个"别人"
-                     * 可能还要跑很久。绝不能等它 —— 直接结束，让系统行数
-                     * 保持现状（下次启动的自愈逻辑会处理）。 */
-                    Log.Warn($"细腻模式守护：pid {guardPid} 已被复用，退出（不还原）");
-                    Shutdown(0);
-                    Environment.Exit(0);
-                    return;
-                }
-                main.WaitForExit();          // 主进程活着就一直等（不占 CPU）
-            }
-            catch { /* 进程已经没了：直接还原 */ }
-
-            SystemWheelLines.RestoreLines(guardLines);
-
-            /* 还原完把备份清掉：否则下次启动还会"发现上次没退干净"再还原一遍
-             * （虽无害，但日志会误报，也会让用户以为又出问题了）。 */
-            try { SystemWheelLines.ClearBackupAfterGuard(); } catch { }
-
-            Shutdown(0);
-            Environment.Exit(0);
-            return;
-        }
+        /* --fineguard <pid> <lines> [startTicks]：细腻模式的守护进程。
+         * 已在 Core/FineGuard.cs 的**模块初始化器**里分流（那时 Application 还没被
+         * new 出来，WPF 程序集一个都不加载）；走到这里说明参数里根本没有它。
+         * 来龙去脉见 DESIGN 第 70 节。 */
 
         if (e.Args.Any(a => a.Equals("--safe", StringComparison.OrdinalIgnoreCase)))
         {

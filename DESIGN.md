@@ -4188,3 +4188,206 @@ decay 在客观平滑度与跟手性上更好，且已经被触控板实测标�
 pid 会被系统复用，守护进程 `WaitForExit` 就等在了无关进程上；等它退出时再把
 行数写回 3，和正在运行的实例打架。现在多传一个「主进程启动时间 UTC ticks」，
 `--fineguard` 用 `Process.StartTime` 精确比对：对不上立即退出且**不还原**。
+
+## 69. v1.10.0：把 SmoothScroll 的「脉冲曲线」与「合成帧锁相」搬进来
+
+这一节来自一次对照：把 SmoothScroll（x64 原生 C++ 本体，反编译在
+`D:/Local AI/SmoothScroll`）的平滑算法拆开，和本项目逐项比。冲突时以
+"实测哪一个更好用"为准，不看谁的名字响。
+
+### 69.1 先看它是怎么发的
+
+发帧函数在 `0x14005cb20`，每个垂直消隐期跑一次，把**所有车道**的增量累加后
+**一次** `SendInput`（40 字节 INPUT，`MOUSEEVENTF_WHEEL`）。车道 0x20 字节：
+
+| 偏移 | 字段 |
+| --- | --- |
+| +0x00 | `A` 目标总量（带符号） |
+| +0x08 | `B` 已发量 |
+| +0x10 | `duration`（ms） |
+| +0x18 | `startTime`（`timeGetTime`） |
+
+每帧 `emit = ceil(A·p' − B); B += emit`，`p = (now−start)/duration` 钳到 1。
+登记车道时 `B` 初值是 **∓0.99**（顺滚取 −0.99，逆滚取 +0.99）—— 这不是
+四舍五入的巧合，是为了让**首帧必须有 1 单位**，否则 `ceil` 会给出 0，用户
+按下滚轮的第一帧什么都收不到。
+
+于是它的手感由三件事决定：曲线 `p' = f(p)`、车道叠加、以及**发帧时刻**。
+
+### 69.2 曲线长什么样（`0x14005d210`）
+
+```
+x = p · pulseScale
+x < 1 : y = x − (1 − e^−x)          // 起手速度为 0，然后线性加速
+x ≥ 1 : y = (1 − e^−(x−1))·(1 − 1/e) + 1/e   // 到 0.632 后指数软着陆
+返回 1/f(scale) · y                  // 归一化，保证 f(1)=1
+```
+
+两端速度都是 0，中段接近匀速。这和本项目原来四条曲线（指数/三次/五次/线性，
+全是 ease-out、峰值速度在第 0 帧）是**本质不同**的一族：它们是"窜出去再收"，
+脉冲是"轻轻起、匀速走、软着陆"。
+
+`pulseScale` 的语义容易搞反，记这一句就够：**x = p·k，缓起段是 p < 1/k。**
+所以 k 越大，缓起占的时间越短、起步越急。实测 `Progress(0.25)`：
+k=2 → 0.1388，k=4 → 0.3798，k=8 → 0.7679。
+
+### 69.3 锁相（`0x14005cdd0`）
+
+它不用 `timeBeginPeriod` 定节拍，而是开一条线程把优先级拉到
+`THREAD_PRIORITY_TIME_CRITICAL`，用 `D3DKMTWaitForVerticalBlankEvent`
+**等下一次垂直消隐**再发帧。好处是每一小步都落进自己那一帧的合成里，不会
+出现"两帧挤在一帧里、下一帧空着"的抖动。
+
+本项目用 `DwmFlush()` 达到同一效果（DWM 合成本来就是按 vblank 走的），
+少一层 GDI 句柄和 `D3DKMT` 结构体，也不挑显卡驱动。
+
+### 69.4 抄了什么、没抄什么
+
+| SmoothScroll | 本项目 | 为什么 |
+| --- | --- | --- |
+| 脉冲曲线 + 强度 | `ScrollEasing.Pulse` + `smooth.pulseScale` | 逐项一致，强度 1.5~12 可调 |
+| 每 vblank 发帧 | `Native.DwmFlush()`（`smooth.vsync`） | 等价、更省一层封装 |
+| 连甩加速度 `accelerationDelta/Max` | 没抄 | `BoostCurve` 在速度域做倍率、有饱和与回冲，比"按两次事件的间隔算倍数"更稳 |
+| 车道 `B` 初值 ∓0.99 | 没抄 | 我们用 `Quantize` 的零头跨帧累积，不硬塞 1 单位，也不把 0 抬成 1 |
+| 命中 explorer 就"行数设 1 + 总量 ×3" | 没抄 | `ScrollSemantics` 按程序语义分档（`Kind` × 是否读系统行数），比按进程名特判精确 |
+
+### 69.5 三条曲线跑同一台机器（160 Hz，6.25 ms 一帧，τ40，单帧量 90）
+
+命令是 `--frametrace decay|eased|pulse`，同一台机器同一个报告格式，可直接对比：
+
+| 配置 | 单格用时 | 首帧 | 最大单帧 | 落地段 | 末段速度 | 三格 | 六格 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 指数衰减 τ40（旧默认） | 92~96 ms | 2 单位 | 12 | 6~7 ms | 1171~1183 单位/秒 | 110 ms / 34 | 125 ms / 64 |
+| 逐格缓动·五次 220 ms | 155 ms | 18 单位 | 18 | 50 ms | 120 | 203 ms / 38 | 203 ms / 67 |
+| 逐格缓动·脉冲 220 ms | 232~234 ms | 2 单位 | **9** | 50 ms | 114 | 264 ms / 24 | 266 ms / 44 |
+| 逐格缓动·脉冲 **160 ms** | **170~172 ms** | 2 单位 | 12 | **31 ms** | **159** | 188 ms / 30 | 203 ms / 58 |
+
+读这张表的三个要点：
+
+1. **脉冲的峰值步长最小**（9 单位，五次是 18、指数是 12）—— 同样一格 120 单位，
+   它摊得更匀，观感最"顺"。
+2. 但按 SmoothScroll 原版默认（360 ms，甚至我们试的 220 ms）**尾巴太长**：单格
+   233 ms，且落地段占 50 ms，用户会觉得"松手了还在滑"。压到 160 ms 后单格 171 ms，
+   只比五次慢 16 ms，落地段降到 31 ms、末段速度 159 —— 这才是"软但不飘"。
+3. 指数衰减是**硬着陆**：末段速度 1183 单位/秒（脉冲的 7 倍），最后一下是"咔"地
+   停住。跟手性最好，但少了那段收尾。
+
+### 69.6 结论与默认策略
+
+- **全新安装**：逐格缓动 + 脉冲 + 160 ms + 帧同步（`AppConfig.FirstRun()`）。
+- **老配置**：一个字节都不动。`AppConfig.Default()` 仍是 Decay/Quintic 220，
+  读盘时配置文件里的值覆盖 `FirstRun()` 的结果，手感不会被升级改掉。
+  想换回来在「平滑」页选「指数衰减」即可。
+- 帧同步只在「自动跟随显示器刷新率」时生效：手动定帧率时锁相没有意义（目标间隔
+  和显示器周期不是整数倍，等 vblank 只会把帧挤成 2:1）。
+- 降级是自动的：`DwmFlush()` 返回非 0（DWM 被全屏独占程序停掉）或单次等待超过
+  `max(50 ms, 3×帧间隔)` 连续 3 次，就永久退回高精度定时器并写一条 warn 日志，
+  本进程内不再尝试。远程桌面、独占全屏都会走到这条路。
+
+### 69.7 帧同步真的锁住了吗
+
+`--frametrace vsync` 先量 90 次 `DwmFlush` 的间隔：这台机器 6.26 ms
+（目标 6.25，σ 0.23 ms，p5 5.89 / p95 6.63），再带着锁相跑一遍单格，全部断言通过。
+不开锁相时同一台机器的帧间隔抖动是 0.6~1.5 ms 量级，落点是"错半帧"。
+
+### 69.8 新增的东西
+
+| 位置 | 内容 |
+| --- | --- |
+| `Core/ScrollEasing.cs` | `ScrollEasing.Pulse`、`DefaultPulseScale = 4.0`、`Progress/Speed` 多一个 `pulseScale` 参数 |
+| `Core/Native.cs` | `DwmFlush()` |
+| `Core/ScrollAnimator.cs` | `WaitFrame()`（`WaitUntil` 或 `DwmFlush` 两条路）、`UseVsync()`、放弃条件 |
+| `Core/AppConfig.cs` | `smooth.pulseScale`、`smooth.vsync`、`FirstRun()` |
+| `Core/RuntimeSettings.cs` | `PulseScale`（钳 1.5~12）、`VsyncPacer` |
+| `UI/SmoothPage.xaml` | 曲线下拉多「脉冲（推荐）」、脉冲强度滑块、帧同步开关 |
+| `FrameTrace.cs` | `--frametrace decay|eased|pulse`、`vsync`、单格窗口按 `EasedMs` 缩放 |
+
+自检从 501 项涨到 518 项，失败 0。
+
+
+## 70. v1.10.1：守护进程瘦了 19 倍 —— 模块初始化器抢在 `Main` 之前
+
+### 70.1 为什么值得改
+
+细腻模式要把系统行数改成 1，就得有人在主程序退出之后把它写回去。上一版的做法
+是**把整个程序再启动一份**（`--fineguard`）去 `WaitForExit`：那 48 MB 里
+WPF 的页面、资源字典、主题模板全被解析了一遍，只为了等另一个进程退出、写个
+注册表值。实测差距：
+
+| 指标 | 旧守护（`OnStartup` + WPF） | 新守护（模块初始化器） |
+| --- | --- | --- |
+| 工作集 | 47.7 MB | **2.51 MB**（6.5 s 后 3.56 MB） |
+| 私有字节 | 11.9 MB | **6.72 MB** |
+| 线程 | 5 | 11（CLR 后台线程，CPU 0.05 s） |
+| 加载模块 | 全部 WPF | 39 个（`PresentationFramework` 仍在，见 70.4） |
+
+### 70.2 走不通的那条路：自己写 `Main`
+
+WPF 的老办法是给项目加 `<StartupObject>` 自己写 `Main`，再用
+`DISABLE_XAML_GENERATED_MAIN` 关掉生成的那个。在 .NET 10.0.402 上这条路
+**已经失效**：生成的 `App.g.cs` 第 94 行是裸的 `public static void Main()`，
+外面没有任何 `#if`。用 python 按 UTF-16LE 扫 `PresentationBuildTasks.dll`，
+`DISABLE_XAML_GENERATED_MAIN` 出现 **0 次** —— 条件编译符号还在，判断已经
+被删掉了。加了自定义 `Main` 就报：
+
+```
+App.Entry.cs(24,24): error CS0017: 程序定义了多个入口点
+```
+
+于是 `App.Entry.cs` 删除，`StartupObject` / `DefineConstants` 回滚。
+
+### 70.3 现在用的：`[ModuleInitializer]`
+
+CLR 在调用入口方法**之前**会先跑程序集里的模块初始化器；而入口方法
+`Main` 声明在 `App` 类型上，JIT 要解析 `App` 的基类 `Application`，于是在
+WPF 任何一行代码执行之前，初始化器就有机会接管 —— 这正是我们需要的时机。
+
+`Core/FineGuard.cs`：
+
+| 成员 | 作用 |
+| --- | --- |
+| `FineGuard.TryParse(args, out pid, out lines, out startTicks)` | 认 `--fineguard <pid> <lines> <utcTicks>`，参数不全/非数字一律返回 `false`（当普通启动） |
+| `FineGuard.TryRun(args)` | 先行 `MemoryTrim.TrimNow()`，再 `WaitOwnerExit`，退出后 `RestoreLines` + `ClearBackupAfterGuard` |
+| `FineGuardModule.Init()` | `[ModuleInitializer]`：解析到 `--fineguard` 就 `TryRun` 然后 `Environment.Exit(0)` |
+
+两个细节是必须的：
+
+1. **整体 try/catch 兜底。** 模块初始化器抛异常不是"这条路径失败"，而是
+   整个进程起不来 —— 用户看到的现象是「双击没反应」，连日志都没有。
+   所以异常一律吞掉、写 `Log.Warn`，继续走正常启动。
+2. **`Environment.Exit(0)` 而不是 `return`。** 初始化器返回后 CLR 会接着进
+   `Main`，那就是完整启动一遍 WPF，白瘦了。
+
+数据目录不用额外传：守护进程由主进程 `Process.Start` 拉起，继承
+`MWE_DATA_DIR`，`AppPaths` 解析结果与主进程一致，备份文件读写的是同一份。
+`pid + 启动时间 ticks` 的双重校验（第 68 节）原样保留。
+
+### 70.4 还剩什么下不来
+
+`PresentationFramework.dll` 和 `WindowsBase.dll` **仍然会被加载**。原因在
+70.3 里已经写了：入口 `Main` 的声明类型是 `App`，`App : Application`，JIT
+解析入口签名时就必须把基类所在程序集装进来。这是"进程内抢跑"的物理下限，
+不是没优化干净 —— 但页面、样式、资源字典一个都没解析，所以工作集只有 2.5 MB。
+
+要再往下压只有一条路：把守护逻辑做成独立的极简 exe（不引用 WPF），约能到
+1 MB 以内。代价是启动器要多嵌一个可执行文件、发布脚本和自检都要各写一份，
+收益只有 1.5 MB。**没做。**
+
+### 70.5 改动清单
+
+| 位置 | 内容 |
+| --- | --- |
+| `Core/FineGuard.cs` | 新增：参数解析、等待、还原、`[ModuleInitializer]` 入口 |
+| `Core/MemoryTrim.cs` | 新增 `TrimNow()`（无条件 `EmptyWorkingSet`），守护进程等之前调一次 |
+| `App.xaml.cs` | 删掉 `OnStartup` 里 44 行 `--fineguard` 分支，改成指向本节与 `Core/FineGuard.cs` 的注释 |
+| `SelfTest.Scroll.cs` | 新增「细腻模式守护进程的参数解析」7 条断言 |
+| `MouseWheelEnhancement.csproj` | `1.10.1` / `1.10.1.0` |
+
+自检从 518 项涨到 **525 项，失败 0**。
+
+### 70.6 行为没变的部分
+
+守护进程仍然只在**正常等到主进程退出**时还原并删备份；守护进程自己被强杀
+（任务管理器结束、断电）就不还原，靠备份文件在下次启动时由 RunOnce 恢复 ——
+这是 v1.9.x 就有的约定，没有改动。另外守护进程崩溃也不会拖累主程序：它只是
+另一个进程，主程序感知不到。

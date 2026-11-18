@@ -62,12 +62,13 @@
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="缓动曲线" FontWeight="SemiBold" />
                                 <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
-                                           Text="五次：起手最快、尾巴最长（SmoothScroll 默认）。三次：中段更匀。指数：起手最快、尾巴最短。线性：匀速，最机械。" />
+                                           Text="脉冲：两边都慢、中间匀，起手不窜、落点不砸（SmoothScroll 的原版曲线，推荐）。五次：起手最快、尾巴最长。三次：中段更匀。指数：起手最快、尾巴最短。线性：匀速，最机械。" />
                             </StackPanel>
                             <ComboBox x:Name="EasingBox" Grid.Column="1" Width="132" Margin="12,0,0,0"
                                       VerticalAlignment="Center" SelectionChanged="Easing_Changed"
                                       AutomationProperties.Name="缓动曲线">
-                                <ComboBoxItem Content="五次（推荐）" Tag="quintic" />
+                                <ComboBoxItem Content="脉冲（推荐）" Tag="pulse" />
+                                <ComboBoxItem Content="五次" Tag="quintic" />
                                 <ComboBoxItem Content="三次" Tag="cubic" />
                                 <ComboBoxItem Content="指数" Tag="exponential" />
                                 <ComboBoxItem Content="线性" Tag="linear" />
@@ -90,7 +91,28 @@
                                 ValueChanged="EasedMs_Changed" />
                         <TextBlock x:Name="EasedHint" Style="{StaticResource Caption}" Margin="0,8,0,0"
                                    TextWrapping="Wrap"
-                                   Text="一格从开始到落点走多久。越短越跟手，越长越绵；220 ms 与 SmoothScroll 的默认值一致。" />
+                                   Text="一格从开始到落点走多久。越短越跟手，越长越绵。脉冲曲线推荐 160 ms（单格实测 171 ms）；220 ms 是逐格缓动的通用长度，SmoothScroll 原版默认 360 ms，实测偏飘。" />
+
+                        <StackPanel x:Name="PulsePanel" Margin="0,16,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="脉冲强度" FontWeight="SemiBold" />
+                                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                               Text="只对「脉冲」曲线有效：越大起步越急（缓起段更短、峰值速度更高），越小越绵。4 = 用前 25% 的时间缓起，与 SmoothScroll 一致。" />
+                                </StackPanel>
+                                <TextBlock x:Name="PulseValue" Grid.Column="1" Style="{StaticResource Value}"
+                                           Text="4.0" VerticalAlignment="Top" Margin="12,0,0,0" />
+                            </Grid>
+                            <Slider x:Name="PulseSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
+                                    Minimum="2" Maximum="8" SmallChange="0.5" LargeChange="1"
+                                    TickFrequency="0.5" IsSnapToTickEnabled="True"
+                                    AutomationProperties.Name="脉冲强度"
+                                    ValueChanged="Pulse_Changed" />
+                        </StackPanel>
                     </StackPanel>
                 </StackPanel>
             </Border>
@@ -209,6 +231,22 @@
                                              Style="{StaticResource SegRadio}" Checked="Fps_Changed" />
                             </StackPanel>
                         </Border>
+                    </Grid>
+
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="帧同步" FontWeight="SemiBold" />
+                            <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                       Text="每帧先等一次显示器的合成帧再发出去，让每一小步都落在自己那一帧里——同样帧率下观感更整齐。只在「自动跟随显示器刷新率」时生效；全屏独占程序、远程桌面里 DWM 跟不上时会自动退回普通定时器。" />
+                        </StackPanel>
+                        <ToggleButton x:Name="VsyncSwitch" Grid.Column="1" Style="{StaticResource Switch}"
+                                      VerticalAlignment="Center"
+                                      Checked="Vsync_Changed" Unchecked="Vsync_Changed"
+                                      AutomationProperties.Name="帧同步" />
                     </Grid>
 
                     <Grid Margin="0,18,0,0">

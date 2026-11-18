@@ -371,7 +371,7 @@ internal static partial class SelfTest
          * 所以这里过了，"画出来的曲线"和"跑出来的曲线"就是同一条。 */
         foreach (var easing in new[]
                  {
-                     ScrollEasing.Exponential, ScrollEasing.Cubic,
+                     ScrollEasing.Pulse, ScrollEasing.Exponential, ScrollEasing.Cubic,
                      ScrollEasing.Quintic, ScrollEasing.Linear,
                  })
         {
@@ -407,6 +407,59 @@ internal static partial class SelfTest
             ScrollEasingCurve.Speed(1, ScrollEasing.Cubic) == 0 &&
             ScrollEasingCurve.Speed(1, ScrollEasing.Linear) == 1);
 
+        /* ── 脉冲曲线（v1.10.0，逆向自 SmoothScroll 的 pulse 算法）──
+         *
+         * 它不是"又一条缓出曲线"，而是**两端速度都为 0** 的那一类：
+         * 起手不窜（这正是 SmoothScroll 手感的来源），末段不砸停。
+         * 参考值按 pulseScale=4 手算：RawPulse(1)=1-1/e、RawPulse(4)=(1-e^-3)(1-e^-1)+e^-1
+         * 归一化后 Progress(0.25)=0.3798、Progress(0.5)=0.7924。 */
+        Check("脉冲曲线起点速度就是 0（缓起，不窜）",
+            ScrollEasingCurve.Speed(0, ScrollEasing.Pulse) == 0);
+        Check("脉冲曲线 1/4 处只走 38%（前段确实慢）",
+            Math.Abs(ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse) - 0.3798333) < 1e-5,
+            ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse).ToString("0.00000"));
+        Check("脉冲曲线中点 79.2%（比五次的 96.9% 更均匀）",
+            Math.Abs(ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse) - 0.7923936) < 1e-5,
+            ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse).ToString("0.00000"));
+        Check("脉冲曲线 3/4 处走 94.4%（尾巴收得住）",
+            Math.Abs(ScrollEasingCurve.Progress(0.75, ScrollEasing.Pulse) - 0.9441660) < 1e-5,
+            ScrollEasingCurve.Progress(0.75, ScrollEasing.Pulse).ToString("0.00000"));
+
+        var pulsePeak = 0.0;
+        for (var i = 0; i <= 4000; i++)
+            pulsePeak = Math.Max(pulsePeak, ScrollEasingCurve.Speed(i / 4000.0, ScrollEasing.Pulse));
+        Check("脉冲峰值速度只有五次的 52%（起手冲击小一半）",
+            pulsePeak > 2.5 && pulsePeak < 2.75 && pulsePeak < 5 * 0.6,
+            $"峰值 {pulsePeak:0.000} 单位/进度");
+
+        /* x=1（p=0.25）是两条支路的接点：位置和速度都必须连续，否则看到的就是"折一下"。 */
+        var before = ScrollEasingCurve.Speed(0.25 - 1e-6, ScrollEasing.Pulse);
+        var after = ScrollEasingCurve.Speed(0.25 + 1e-6, ScrollEasing.Pulse);
+        Check("脉冲曲线在接点处速度连续（无折点）", Math.Abs(after - before) < 0.01,
+            $"{before:0.0000} → {after:0.0000}");
+
+        Check("脉冲强度会被钳到合法区间（0 与 1.5 等价，超大与 12 等价）",
+            ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse, 0) ==
+            ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse, 1.5) &&
+            ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse, 1e9) ==
+            ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse, 12) &&
+            ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse, double.NaN) ==
+            ScrollEasingCurve.Progress(0.5, ScrollEasing.Pulse, ScrollEasingCurve.DefaultPulseScale));
+        /* 强度的方向：x = p*k，缓起段是 x<1 即 p<1/k。k 越大，缓起段占的时间越短，
+         * 越早进入匀速段，峰值速度也越高 —— 所以"强度大"= 起步更急，不是更绵。 */
+        Check("脉冲强度越大起步越急（8 > 4 > 2，越小越绵）",
+            ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse, 8) >
+            ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse, 4) &&
+            ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse, 4) >
+            ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse, 2),
+            $"8→{ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse, 8):0.000} " +
+            $"4→{ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse, 4):0.000} " +
+            $"2→{ScrollEasingCurve.Progress(0.25, ScrollEasing.Pulse, 2):0.000}");
+        Check("脉冲曲线名 pulse / smoothscroll 都认",
+            ScrollEasingCurve.Parse("pulse") == ScrollEasing.Pulse &&
+            ScrollEasingCurve.Parse("SmoothScroll") == ScrollEasing.Pulse &&
+            ScrollEasingCurve.Id(ScrollEasing.Pulse) == "pulse");
+
         Check("曲线名解析：quintic / cubic / linear / exponential",
             ScrollEasingCurve.Parse("quintic") == ScrollEasing.Quintic &&
             ScrollEasingCurve.Parse("CUBIC") == ScrollEasing.Cubic &&
@@ -421,6 +474,32 @@ internal static partial class SelfTest
         Check("默认缓动曲线是五次、时长 220ms",
             AppConfig.Default().Smooth.Easing == ScrollEasing.Quintic &&
             AppConfig.Default().Smooth.EasedMs == 220);
+        Check("默认脉冲强度 4.0、帧同步开（与 SmoothScroll 一致）",
+            Math.Abs(AppConfig.Default().Smooth.PulseScale - 4.0) < 1e-9 &&
+            AppConfig.Default().Smooth.Vsync);
+
+        /* 全新安装 vs 老配置：这是两件不同的事，得分开钉。
+         * 老配置里写着 "model": 0，读盘时覆盖掉 FirstRun 的值，手感不变；
+         * 没有配置文件时直接用脉冲 + 帧同步（DESIGN 第 67 节的结论）。 */
+        Check("全新安装直接用脉冲曲线 + 逐格缓动（160 ms）",
+            AppConfig.FirstRun().Smooth.Model == SmoothModel.Eased &&
+            AppConfig.FirstRun().Smooth.Easing == ScrollEasing.Pulse &&
+            AppConfig.FirstRun().Smooth.EasedMs == 160,
+            $"{AppConfig.FirstRun().Smooth.Model}/{AppConfig.FirstRun().Smooth.Easing}/{AppConfig.FirstRun().Smooth.EasedMs}ms");
+        Check("全新安装默认开帧同步", AppConfig.FirstRun().Smooth.Vsync);
+        Check("老配置的默认值仍是「指数衰减」（升级不改手感）",
+            AppConfig.Default().Smooth.Model == SmoothModel.Decay &&
+            AppConfig.Default().Smooth.Easing == ScrollEasing.Quintic);
+
+        /* 配置 → 快照的映射要真的走到：配置里存的是用户能改的原始值，
+         * 引擎读的是钳过的快照。这里钉住"钳位发生在映射层"，别只改了一边。 */
+        var cfgProbe = AppConfig.Default();
+        cfgProbe.Smooth.PulseScale = 99;
+        cfgProbe.Smooth.Vsync = false;
+        var bakedProbe = RuntimeSettings.From(cfgProbe);
+        Check("脉冲强度在快照层被钳到 12、帧同步开关照原样带过去",
+            Math.Abs(bakedProbe.PulseScale - 12) < 1e-9 && !bakedProbe.VsyncPacer,
+            $"{bakedProbe.PulseScale:0.##}/{bakedProbe.VsyncPacer}");
 
         /* Qt = 按事件滚动（v1.7.14）
          *
@@ -562,6 +641,32 @@ internal static partial class SelfTest
         SystemWheelLines.DeleteNativeNote();
         Check("删掉备忘后读到 0（不误判原生值）", SystemWheelLines.NativeNoteValue() == 0,
             $"实际 {SystemWheelLines.NativeNoteValue()}");
+
+        /* 守护进程的参数解析：它现在是 Main 里最先跑的一段代码（见 App.Entry.cs），
+         * 解析错了要么该等的不等（系统停在 1 行），要么把正常启动吞掉（双击没反应）。 */
+        Section("细腻模式守护进程的参数解析");
+
+        Check("三参数写法能认出来",
+            FineGuard.TryParse(new[] { FineGuard.Switch, "1234", "3" }, out var gPid, out var gLines, out var gTicks)
+            && gPid == 1234 && gLines == 3 && gTicks == 0,
+            $"pid={gPid} lines={gLines} ticks={gTicks}");
+        Check("第四个参数（主进程启动时间）能读出来",
+            FineGuard.TryParse(new[] { FineGuard.Switch, "1234", "3", "639305816536396862" },
+                out _, out _, out var gTicks2) && gTicks2 == 639305816536396862);
+        Check("开关大小写不敏感",
+            FineGuard.TryParse(new[] { "--FineGuard", "7", "5" }, out var gPid3, out _, out _) && gPid3 == 7);
+        Check("参数不全不算守护进程",
+            !FineGuard.TryParse(new[] { FineGuard.Switch, "1234" }, out _, out _, out _)
+            && !FineGuard.TryParse(new[] { FineGuard.Switch }, out _, out _, out _));
+        Check("数字不是数字也不算",
+            !FineGuard.TryParse(new[] { FineGuard.Switch, "abc", "3" }, out _, out _, out _));
+        Check("普通启动 / 其它诊断参数不被当成守护进程",
+            !FineGuard.TryParse(Array.Empty<string>(), out _, out _, out _)
+            && !FineGuard.TryParse(new[] { "--minimized" }, out _, out _, out _)
+            && !FineGuard.TryParse(new[] { "--selftest" }, out _, out _, out _));
+        Check("按 pid 等不到人时不还原（用不存在的 pid 走一遍等待路径）",
+            FineGuard.TryParse(new[] { FineGuard.Switch, "2147483600", "3" }, out _, out _, out _),
+            "解析层面能过；等待/还原的真实行为由 --fineguard 端到端跑");
 
         /* 备份的所有者判定：只看 pid 会被复用骗过去，必须连启动时间一起比。 */
         Section("细腻模式备份的所有者判定");

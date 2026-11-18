@@ -146,6 +146,35 @@ public sealed class SmoothConfig
     public int EasedMs { get; set; } = 220;
 
     /// <summary>
+    /// 脉冲曲线的横轴放大（2–8，默认 4 = SmoothScroll 的 <c>pulseScale</c>）。
+    /// 只对 <see cref="ScrollEasing.Pulse"/> 生效：x = p × 强度，缓起段是 x &lt; 1 即 p &lt; 1/强度，
+    /// 所以**数值越大，缓起段占整格的时间越短**（起步更急、峰值速度更高），越小越绵。
+    /// 4.0 就是前 25% 的时间用来缓起。
+    /// </summary>
+    [JsonPropertyName("pulseScale")]
+    public double PulseScale { get; set; } = ScrollEasingCurve.DefaultPulseScale;
+
+    /// <summary>
+    /// 出帧是否锁相到显示器垂直同步（默认**开**，v1.10.0）。
+    ///
+    /// <para>
+    /// 平滑的每一"帧"最终要靠显示器刷出来。定时器到点就发的话，发出的时刻相对
+    /// 刷新周期是随机的：有时两小步落进同一帧（读作一顶），有时某一帧什么都没有
+    /// （读作卡了一下）——即使平均值完全正确，观感仍是轻微抖动。
+    /// 打开后每帧先 <c>DwmFlush</c> 等下一次合成，再在"应用刚好有一整帧时间去画"
+    /// 的位置发出去，于是每一格都占**自己的一帧**。SmoothScroll 的原版也是这么做的
+    /// （它用 <c>D3DKMTWaitForVerticalBlankEvent</c>，这里用等效且更简单的 DwmFlush）。
+    /// </para>
+    /// <para>
+    /// 只在「自动跟随显示器刷新率」下生效：手动选了 60/120 这类固定帧率时，
+    /// 锁相会把帧率硬拽到显示器刷新率，与用户的设定打架。
+    /// DWM 忙（全屏独占、远程桌面）时会自动临时退回定时器节拍，见 ScrollAnimator。
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("vsync")]
+    public bool Vsync { get; set; } = true;
+
+    /// <summary>
     /// 默认「所有滚动」。理由见 <see cref="SmoothScope.Always"/> 的注释 ——
     /// 选「仅加速时」的话，慢慢拨一格完全不经过本程序，平滑等于没开。
     /// </summary>
@@ -490,6 +519,30 @@ public sealed class AppConfig
     public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 
     public static AppConfig Default() => new();
+
+    /// <summary>
+    /// **全新安装**（还没有 config.json）时的默认手感：逐格缓动 + 脉冲曲线 + 帧同步，
+    /// 也就是 SmoothScroll 那一套（见 DESIGN 第 67 节的对比数据）。
+    ///
+    /// <para>
+    /// 为什么不直接改 <see cref="Default"/>：老用户的 config.json 里写着
+    /// <c>"model": 0</c>，改 Default 对他们没有影响，但会连带改掉所有
+    /// "缺字段补默认"的语义（那正是 <see cref="Default"/> 的职责）。
+    /// 首次运行与缺字段是两件事，分开表达更不容易误伤。
+    /// </para>
+    /// </summary>
+    public static AppConfig FirstRun()
+    {
+        var c = new AppConfig();
+        c.Smooth.Model = SmoothModel.Eased;
+        c.Smooth.Easing = ScrollEasing.Pulse;
+        /* 160 ms 不是拍脑袋：脉冲曲线在 220 ms 下单格实测 233 ms（尾巴偏长），
+         * 160 ms 下是 171 ms —— 比五次的 155 ms 只慢 16 ms，但首帧 2 单位
+         * （五次是 18 单位）、末段速度 159 单位/秒（五次 120）。
+         * SmoothScroll 原版 animationTime 默认 360 ms，实测下来太飘了。 */
+        c.Smooth.EasedMs = 160;
+        return c;
+    }
 
     /// <summary>
     /// 把越界值夹回合法区间，并补齐空引用。

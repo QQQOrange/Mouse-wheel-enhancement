@@ -381,6 +381,26 @@ internal static class Native
     [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     public static extern uint TimeEndPeriod(uint uPeriod);
 
+    /* ══════════════ 垂直同步（DWM 合成） ══════════════ */
+
+    /// <summary>
+    /// 阻塞到**下一次 DWM 合成帧被呈现**之后，返回 S_OK（0）。
+    ///
+    /// <para>
+    /// 这是 <c>D3DKMTWaitForVerticalBlankEvent</c>（SmoothScroll 用的那个）在
+    /// Win8+ 桌面上的等效做法：桌面始终由 DWM 合成，合成帧的呈现本身就被
+    /// 垂直同步钉在刷新周期上，所以"等一次合成"就是"等一次 vblank"。
+    /// 它比 D3DKMT 少一整套适配器/输出枚举（要 CreateDC + VidPnSourceId），
+    /// 对只在合成桌面上跑的程序够用，且失败时会返回非 0，能就地退回定时器节拍。
+    /// </para>
+    /// <para>
+    /// 返回之后的那一瞬间是"刚刷完一帧"——此刻投递输入，目标应用有整整一个
+    /// 刷新周期去重画，正好赶上下一次合成。这就是锁相的全部意义。
+    /// </para>
+    /// </summary>
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmFlush();
+
     /* ══════════════ DPAPI（加密令牌） ══════════════ */
 
     [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]

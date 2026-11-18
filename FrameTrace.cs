@@ -134,11 +134,21 @@ internal static class FrameTrace
          * 会让**下一次**循环的 dt 变长（_lastFrameTicks 在发送前就记好了），
          * 正好复现"这台机器跟不上"的状态。 */
         var jitterMs = 0.0;
+        var wantVsync = false;
+
+        /* 模型覆盖：同一台机器上直接对比三种手感，不必改配置文件。
+         * 用法：--frametrace decay / eased / pulse / easing=quintic */
+        var modelArg = string.Empty;
         foreach (var a in args)
         {
-            if (a.Equals("jitter", StringComparison.OrdinalIgnoreCase)) { jitterMs = 12; break; }
+            if (a.Equals("vsync", StringComparison.OrdinalIgnoreCase)) { wantVsync = true; continue; }
+            if (a.Equals("decay", StringComparison.OrdinalIgnoreCase)) { modelArg = "decay"; continue; }
+            if (a.Equals("eased", StringComparison.OrdinalIgnoreCase)) { modelArg = "eased"; continue; }
+            if (a.Equals("pulse", StringComparison.OrdinalIgnoreCase)) { modelArg = "pulse"; continue; }
+            if (a.StartsWith("easing=", StringComparison.OrdinalIgnoreCase)) { modelArg = a[7..]; continue; }
+            if (a.Equals("jitter", StringComparison.OrdinalIgnoreCase)) { jitterMs = 12; continue; }
             if (a.StartsWith("jitter=", StringComparison.OrdinalIgnoreCase)
-                && double.TryParse(a[7..], out var jv)) { jitterMs = Math.Clamp(jv, 0, 40); break; }
+                && double.TryParse(a[7..], out var jv)) { jitterMs = Math.Clamp(jv, 0, 40); }
         }
 
         try
@@ -146,15 +156,34 @@ internal static class FrameTrace
             Services.InitConfig();   // 目录 + 日志 + 配置 + 刷新率（不装钩子、不建窗口）
             var s = RuntimeSettings.From(Services.Config);
 
+            /* 帧同步会让出帧时刻由**显示器**决定，而这套追踪要的是"算法本身"的
+             * 帧序列（要能重跑出同样的数字），所以默认场景一律关掉它。
+             * 想看锁相本身就用 --frametrace vsync：那一段会先量 DWM 的合成帧节拍，
+             * 再带着锁相跑一次单格，把"锁相到底赚到了什么"摊开看。 */
+            if (!wantVsync) s = s with { VsyncPacer = false };
+
+            if (modelArg.Length > 0)
+            {
+                s = modelArg.Equals("decay", StringComparison.OrdinalIgnoreCase)
+                    ? s with { Model = SmoothModel.Decay }
+                    : s with { Model = SmoothModel.Eased, Easing = ScrollEasingCurve.Parse(modelArg) };
+            }
+
             sb.AppendLine(
                 $"设置：帧间隔 {s.FrameIntervalMs:0.##} ms（{(s.AutoFps ? "跟随显示器" : "手动")}）" +
                 $"　单帧量 {s.UnitsPerFrame}　跟手 τ {s.TauMs:0} ms");
             sb.AppendLine(
                 $"　　　滑行 {s.GlideMs:0} ms / 松手判定 {s.GlideDelayMs:0} ms" +
                 $"　积压上限 {s.MaxBacklogUnits:0} 单位　平滑 {(s.SmoothEnabled ? "开" : "关")}" +
-                $"　模型 {(s.Model == SmoothModel.Eased ? $"逐格缓动/{s.Easing}/{s.EasedMs}ms" : "指数衰减")}");
+                $"　模型 {(s.Model == SmoothModel.Eased
+                    ? $"逐格缓动/{ScrollEasingCurve.Id(s.Easing)}/{s.EasedMs}ms" +
+                      (s.Easing == ScrollEasing.Pulse ? $"/强度 {s.PulseScale:0.#}" : "")
+                    : "指数衰减")}");
+            sb.AppendLine($"　　　出帧节拍 {(s.VsyncPacer ? "帧同步（等合成帧）" : "高精度定时器")}" +
+                          $"　帧率 {(s.AutoFps ? "自动跟随刷新率" : $"手动 {1000.0 / Math.Max(1, s.FrameIntervalMs):0} Hz")}");
             sb.AppendLine($"　　　单帧上限 {Math.Min(s.UnitsPerFrame * 2, 180)} 单位（单帧量×2，绝对上限 180）");
             if (jitterMs > 0) sb.AppendLine($"　　　⚠ 模拟慢帧：每帧额外 {jitterMs:0} ms");
+            if (modelArg.Length > 0) sb.AppendLine($"　　　※ 命令行指定模型：{modelArg}（忽略配置文件）");
             sb.AppendLine();
 
             if (!s.SmoothEnabled)
@@ -173,6 +202,22 @@ internal static class FrameTrace
             fail += Case(sb, s, "空闲后连甩六格（8 ms 一下）", new[] { 120, 120, 120, 120, 120, 120 },
                 gapMs: 8, idleMs: idle, jitterMs: jitterMs);
 
+            /* 帧同步（v1.10.0）：先量显示器那边的节拍，再带着锁相真跑一轮。
+             * 默认场景量的是"算法快慢"，所以那里把锁相关掉了；这一轮反过来。 */
+            if (wantVsync)
+            {
+                sb.AppendLine(new string('-', 64));
+                sb.AppendLine("■ 帧同步：DWM 合成帧节拍");
+                fail += MeasurePacer(sb, s);
+
+                var pacer = s with { VsyncPacer = true };
+                sb.AppendLine("  下面这一轮带着锁相跑：出帧时刻由合成帧决定，单格用时的窗口");
+                sb.AppendLine("  已按刷新周期放宽 —— 看的是「有没有跑飞」，不是「快慢」。");
+                sb.AppendLine();
+                fail += Case(sb, pacer, "帧同步 · 单格", new[] { 120 }, gapMs: 0, idleMs: idle,
+                    jitterMs: jitterMs);
+            }
+
             sb.AppendLine(new string('-', 64));
             sb.AppendLine(fail == 0 ? "全部通过" : $"有 {fail} 项失败");
         }
@@ -188,6 +233,54 @@ internal static class FrameTrace
         Log.Info("frametrace 结束，失败 " + fail + " 项，报告 " + path);
 
         return fail == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// 量一次 DWM 合成帧的节拍：若干次 <c>DwmFlush</c> 的间隔均值与抖动。
+    ///
+    /// <para>
+    /// 帧同步有没有意义全看这两行：均值必须≈刷新周期（说明 Flush 真的在等 vblank，
+    /// 而不是"立刻返回"），抖动必须小（否则"每一小步占自己一帧"本身就不成立）。
+    /// 顺带它也证明了这台机器上 DwmFlush 可用 —— 不可用时正式运行会自动降级成定时器。
+    /// </para>
+    /// </summary>
+    private static int MeasurePacer(StringBuilder sb, RuntimeSettings s)
+    {
+        const int samples = 90;
+        var hr = Native.DwmFlush();            // 第一次顺手把首帧开销吃掉
+        if (hr != 0)
+        {
+            sb.AppendLine($"  ✗ DwmFlush 不可用（HRESULT 0x{hr:X8}），帧同步会自动降级");
+            return 1;
+        }
+
+        var intervals = new List<double>(samples);
+        var sw = Stopwatch.StartNew();
+        var last = sw.Elapsed.TotalMilliseconds;
+        for (var i = 0; i < samples; i++)
+        {
+            Native.DwmFlush();
+            var now = sw.Elapsed.TotalMilliseconds;
+            intervals.Add(now - last);
+            last = now;
+        }
+
+        var mean = intervals.Average();
+        var std = Math.Sqrt(intervals.Sum(v => (v - mean) * (v - mean)) / intervals.Count);
+        var sorted = intervals.OrderBy(v => v).ToList();
+        var expected = s.FrameIntervalMs;
+
+        sb.AppendLine($"  合成帧间隔 {mean:0.00} ms（目标 {expected:0.00} ms）" +
+                      $"　抖动 σ {std:0.00} ms　p5 {sorted[sorted.Count / 20]:0.00} / " +
+                      $"p95 {sorted[sorted.Count * 19 / 20]:0.00} ms");
+
+        var fail = 0;
+        fail += Check(sb, "合成帧节拍 ≈ 刷新周期（±20%）",
+            Math.Abs(mean - expected) <= expected * 0.2,
+            $"实测 {mean:0.00} ms vs 期望 {expected:0.00} ms");
+        fail += Check(sb, $"合成帧抖动 σ {std:0.00} ms（≤ 2.0 ms，够匀才谈得上锁相）", std <= 2.0,
+            $"σ {std:0.00} ms");
+        return fail;
     }
 
     /// <summary>跑一个场景并打印报告，返回失败条数。</summary>
@@ -314,9 +407,27 @@ internal static class FrameTrace
          * 太慢就是"发飘"。只在单格场景检查（多格连甩本来就更长）。 */
         if (Math.Abs(total) == Native.WHEEL_DELTA)
         {
+            /* 窗口跟着两件事缩放：
+             *   ① 帧同步时出帧时刻由合成帧决定，两端各可能多等一帧；
+             *   ② 逐格缓动的总时长由用户选的「单格动画时长」(EasedMs) 决定 ——
+             *      脉冲曲线在 220ms 下单格实测 231ms，拿指数模型的 80~160ms
+             *      去卡它，等于把"选了更慢的曲线"直接判成失败。
+             *      次数少了叫"窜一下"，多了叫"发飘"，这才是这条断言要抓的东西。 */
+            double notchMin, notchMax;
+            if (s.Model == SmoothModel.Eased)
+            {
+                notchMin = s.EasedMs * 0.4;      // 曲线可能提前走完（五次在 70% 处就够数了）
+                notchMax = s.EasedMs * 1.3;      // 上界放宽到 1.3 倍，再补帧同步的相位
+            }
+            else
+            {
+                notchMin = SingleNotchMinMs;
+                notchMax = SingleNotchMaxMs;
+            }
+            if (s.VsyncPacer) notchMax += s.FrameIntervalMs * 2;
             fail += Check(sb,
-                $"单格用时 {drainMs:0} ms（{SingleNotchMinMs:0}~{SingleNotchMaxMs:0} ms，触控板一拍）",
-                drainMs >= SingleNotchMinMs && drainMs <= SingleNotchMaxMs,
+                $"单格用时 {drainMs:0} ms（{notchMin:0}~{notchMax:0} ms，触控板一拍）",
+                drainMs >= notchMin && drainMs <= notchMax,
                 $"{drainMs:0} ms 落在目标窗口外");
         }
 

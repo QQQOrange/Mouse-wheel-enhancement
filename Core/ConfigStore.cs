@@ -81,9 +81,11 @@ public sealed class ConfigStore : IDisposable
 
         if (!File.Exists(ConfigPath))
         {
-            Config = AppConfig.Default();
+            /* 全新安装才用 FirstRun 的手感（脉冲 + 帧同步）；
+             * 老配置里写着自己的 model/easing，上面那条分支不会走到这里。 */
+            Config = AppConfig.FirstRun();
             Config.Normalize();
-            Log.Info($"没有配置文件，使用默认值：{ConfigPath}");
+            Log.Info($"没有配置文件，使用默认值（全新安装：脉冲曲线 + 帧同步）：{ConfigPath}");
             SaveNow();
             return;
         }

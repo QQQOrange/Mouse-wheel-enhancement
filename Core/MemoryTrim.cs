@@ -34,6 +34,21 @@ internal static class MemoryTrim
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
 
+    /// <summary>
+    /// 无条件回收一次（不看去重、不看阈值）。
+    ///
+    /// <para>
+    /// 只有一种调用场合：细腻模式的守护进程启动之后。它整条命就是一个
+    /// <c>WaitForExit</c>，CLR 启动时摸过的那些页后面一次都不会再碰 ——
+    /// 留着只是让任务管理器上多几百 KB 到几 MB 的假占用。
+    /// </para>
+    /// </summary>
+    public static bool TrimNow()
+    {
+        try { return EmptyWorkingSet(GetCurrentProcess()); }
+        catch { return false; }
+    }
+
     private static long _lastMs;
     private const long MinIntervalMs = 30_000;
     private const long ThresholdBytes = 100L * 1024 * 1024;

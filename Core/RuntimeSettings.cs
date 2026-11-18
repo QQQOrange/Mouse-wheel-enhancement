@@ -54,6 +54,15 @@ public sealed record RuntimeSettings
     /// <summary>逐格缓动的单格时长（毫秒）。</summary>
     public int EasedMs { get; init; } = 220;
 
+    /// <summary>脉冲曲线的横轴放大（仅 <see cref="ScrollEasing.Pulse"/> 生效）。</summary>
+    public double PulseScale { get; init; } = ScrollEasingCurve.DefaultPulseScale;
+
+    /// <summary>
+    /// 出帧是否锁相到显示器垂直同步（见 <see cref="AppConfig.SmoothConfig.Vsync"/>）。
+    /// 只在自动帧率下生效 —— 手动帧率是用户的明确要求，不该被刷新率拽走。
+    /// </summary>
+    public bool VsyncPacer { get; init; } = true;
+
     /// <summary>
     /// 松手后滑行**多久**（毫秒）；0 = 不做额外滑行，按跟手曲线自然收尾。
     ///
@@ -282,6 +291,10 @@ public sealed record RuntimeSettings
             Model = c.Smooth.Model,
             Easing = c.Smooth.Easing,
             EasedMs = Math.Clamp(c.Smooth.EasedMs, 80, 600),
+            PulseScale = double.IsFinite(c.Smooth.PulseScale)
+                ? Math.Clamp(c.Smooth.PulseScale, 1.5, 12.0)
+                : ScrollEasingCurve.DefaultPulseScale,
+            VsyncPacer = c.Smooth.Vsync,
             MaxBacklogUnits = BacklogUnitsFor(c.Smooth.MaxBacklogNotches, boostScale),
             GlideMs = Math.Max(0, c.Smooth.GlideMs),
             GlideDelayMs = Math.Max(0, c.Smooth.GlideDelayMs),
