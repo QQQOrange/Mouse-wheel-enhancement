@@ -91,7 +91,7 @@
                                 ValueChanged="EasedMs_Changed" />
                         <TextBlock x:Name="EasedHint" Style="{StaticResource Caption}" Margin="0,8,0,0"
                                    TextWrapping="Wrap"
-                                   Text="一格从开始到落点走多久。越短越跟手，越长越绵。脉冲曲线推荐 160 ms（单格实测 171 ms）；220 ms 是逐格缓动的通用长度，SmoothScroll 原版默认 360 ms，实测偏飘。" />
+                                   Text="一格从开始到落点走多久。越短越跟手，越长越绵。脉冲曲线推荐 280 ms（单格实测 280 ms、单帧最多 5 单位）；220 ms 适合逐格缓动，SmoothScroll 原版默认 360 ms，实测偏飘。" />
 
                         <StackPanel x:Name="PulsePanel" Margin="0,16,0,0">
                             <Grid>

@@ -70,7 +70,7 @@
                                            Text="每秒滚多少格以上才算「快滚」。低于它的滚动完全交给系统，一个字节都不改。调高＝更不容易触发，调低＝轻轻一拨就加速。" />
                             </StackPanel>
                             <TextBlock x:Name="ThresholdValue" Grid.Column="1" Style="{StaticResource Value}"
-                                       Text="10.0 格/秒" />
+                                       Text="12 格/秒" />
                         </Grid>
                         <Slider x:Name="ThresholdSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
                                 Minimum="2" Maximum="25" SmallChange="1" LargeChange="1"
@@ -98,16 +98,16 @@
                                            Text="速度到多少格/秒时倍率已经吃满上限。它与触发阈值之间是平滑过渡，不是突变。" />
                             </StackPanel>
                             <TextBlock x:Name="SatValue" Grid.Column="1" Style="{StaticResource Value}"
-                                       Text="40.0 格/秒" />
+                                       Text="120 格/秒" />
                         </Grid>
                         <Slider x:Name="SatSlider" Style="{StaticResource HSlider}" Margin="0,10,0,0"
-                                Minimum="12" Maximum="120" SmallChange="1" LargeChange="5"
+                                Minimum="12" Maximum="240" SmallChange="1" LargeChange="5"
                                 TickFrequency="1" IsSnapToTickEnabled="True"
                                 ValueChanged="Sat_Changed" />
                         <Grid Margin="0,3,9,0">
                             <TextBlock Text="12 · 很早就满速" Style="{StaticResource Caption}" FontSize="10.5"
                                        HorizontalAlignment="Left" />
-                            <TextBlock Text="120 · 要甩得很快" Style="{StaticResource Caption}" FontSize="10.5"
+                            <TextBlock Text="240 · 要甩得飞快" Style="{StaticResource Caption}" FontSize="10.5"
                                        HorizontalAlignment="Right" />
                         </Grid>
                     </StackPanel>
@@ -243,9 +243,9 @@
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                    Text="这两个数字都是「速度」（格/秒），不是累计格数：滚得再多、只要慢，就永远不会加速。" />
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="10 格/秒 ≈ 每 100ms 拨一格。正常浏览网页、看文档基本都在这个节奏以下，所以不会误触发；而想快速翻页时人会下意识连拨，节奏立刻就到 20 格/秒以上。" />
+                                   Text="12 格/秒 ≈ 每 85ms 拨一格。正常浏览网页、看文档基本都在这个节奏以下，所以不会误触发；而想快速翻页时人会下意识连拨，节奏立刻就到 20 格/秒以上。" />
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="40 格/秒 ≈ 每 25ms 拨一格，是明显的甩动。把满速点放在这里，意味着「越用力甩，加速越充分」，同时避免轻轻一抖就顶格。" />
+                                   Text="120 格/秒 ≈ 每 8ms 拨一格，是真正的甩动。满速点放在这里，意味着「越用力甩，加速越充分」，同时避免轻轻一抖就顶格；1.10.2 之前这里写的是 40 格/秒，很多人 20 格/秒就被顶到上限，反而显得突兀。" />
                         <TextBlock Style="{StaticResource Caption}"
                                    Text="3 倍是绝大多数人不需要二次调整的值：一屏变三分之一的滚动量，又不会失控到找不到位置。觉得不够就调高，8 倍是上限。" />
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"

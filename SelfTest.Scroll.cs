@@ -35,8 +35,8 @@ internal static partial class SelfTest
         Check("倍率随速度单调不减", mono);
         Check("曲线无台阶（渐变）", smooth);
 
-        // 默认值本身要合理：阈值 10 格/秒、上限 3 倍
-        Near("默认阈值 10 格/秒", cfg.FastThresholdPerSec, 10);
+        // 默认值本身要合理：阈值 12 格/秒、上限 3 倍
+        Near("默认阈值 12 格/秒", cfg.FastThresholdPerSec, 12);
         Near("默认上限 3.0×", cfg.MaxMultiplier, 3.0);
     }
 
@@ -58,13 +58,15 @@ internal static partial class SelfTest
         }
         Check("慢滚一律不接管、输出 = 原样一格", slowAllNative);
 
-        // 快滚：每 20ms 一格 = 50 格/秒 → 加速到上限
+        /* 快滚：每 8ms 一格 = 125 格/秒 → 加速到上限。
+         * v1.10.2 起满速点在 120 格/秒（旧版是 40），所以这里必须真的甩起来：
+         * 20ms 一格（50 格/秒）新版只给 1.6 倍左右，那正是想要的效果。 */
         t.Reset();
         now = 5000;
         t.Sample(120, now, cfg, false, false);
-        for (var i = 0; i < 12; i++)
+        for (var i = 0; i < 14; i++)
         {
-            now += 20;
+            now += 8;
             d = t.Sample(120, now, cfg, false, false);
         }
         Check("快滚会接管", d.Boosted);
@@ -139,14 +141,15 @@ internal static partial class SelfTest
         }
         Check("慢滚六格（每格 200ms）不加速", !boom);
 
-        /* ⑤ 真正的连续快滚：20 ms 一格、滚 15 格（300 ms）—— 必须加速。 */
+        /* ⑤ 真正的连续快滚：8 ms 一格（125 格/秒）、滚 15 格 —— 必须吃满倍率。
+         *    （20 ms 一格 = 50 格/秒 在新曲线下只有 1.6 倍，见 TestVelocityTracking） */
         t.Reset();
         now = 9000;
         var last = default(BoostDecision);
         for (var i = 0; i < 15; i++)
         {
             last = t.Sample(120, now, cfg, false, false);
-            now += 20;
+            now += 8;
         }
         Check("持续 300ms 的快滚会加速", last.Boosted, $"mult={last.Multiplier:0.00}");
         Near("快滚倍率到上限", last.Multiplier, cfg.MaxMultiplier, 0.05);
@@ -481,10 +484,10 @@ internal static partial class SelfTest
         /* 全新安装 vs 老配置：这是两件不同的事，得分开钉。
          * 老配置里写着 "model": 0，读盘时覆盖掉 FirstRun 的值，手感不变；
          * 没有配置文件时直接用脉冲 + 帧同步（DESIGN 第 67 节的结论）。 */
-        Check("全新安装直接用脉冲曲线 + 逐格缓动（160 ms）",
+        Check("全新安装直接用脉冲曲线 + 逐格缓动（280 ms）",
             AppConfig.FirstRun().Smooth.Model == SmoothModel.Eased &&
             AppConfig.FirstRun().Smooth.Easing == ScrollEasing.Pulse &&
-            AppConfig.FirstRun().Smooth.EasedMs == 160,
+            AppConfig.FirstRun().Smooth.EasedMs == 280,
             $"{AppConfig.FirstRun().Smooth.Model}/{AppConfig.FirstRun().Smooth.Easing}/{AppConfig.FirstRun().Smooth.EasedMs}ms");
         Check("全新安装默认开帧同步", AppConfig.FirstRun().Smooth.Vsync);
         Check("老配置的默认值仍是「指数衰减」（升级不改手感）",

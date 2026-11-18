@@ -362,7 +362,7 @@ internal static partial class SelfTest
         legacy.Normalize();
         Check("v1 老配置里的自排除被纠正", !legacy.Behavior.PauseWhileSettingsOpen);
         // v1 的配置会一路迁移到当前版本（v2 自排除 + v3 平滑范围 + v4 滑行语义）
-        Check("迁移后 schemaVersion 记为当前版本 9", legacy.SchemaVersion == 9, legacy.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为当前版本", legacy.SchemaVersion >= 9, legacy.SchemaVersion.ToString());
 
         // 已经是 v2 之后，用户自己打开就不再被覆盖
         var kept = AppConfig.Default();
@@ -381,7 +381,7 @@ internal static partial class SelfTest
         scope2.Normalize();
         Check("v2 老配置的平滑范围被纠正为所有滚动", scope2.Smooth.Scope == SmoothScope.Always,
             scope2.Smooth.Scope.ToString());
-        Check("迁移后 schemaVersion 记为 9", scope2.SchemaVersion == 9, scope2.SchemaVersion.ToString());
+        Check("迁移后 schemaVersion 记为当前版本", scope2.SchemaVersion >= 9, scope2.SchemaVersion.ToString());
 
         // v3 之后用户自己选回「仅加速时」不再被覆盖
         var keptScope = AppConfig.Default();
@@ -399,7 +399,7 @@ internal static partial class SelfTest
         oldGlide.Normalize();
         Check("v3 老配置的滑行时长换算成新默认值（v8 已拉长到 420）", oldGlide.Smooth.GlideMs == 420,
             oldGlide.Smooth.GlideMs.ToString());
-        Check("v4 迁移后 schemaVersion 记为 9", oldGlide.SchemaVersion == 9, oldGlide.SchemaVersion.ToString());
+        Check("v4 迁移后 schemaVersion 记为当前版本", oldGlide.SchemaVersion >= 9, oldGlide.SchemaVersion.ToString());
 
         var glideOff = AppConfig.Default();
         glideOff.SchemaVersion = 3;
@@ -418,7 +418,7 @@ internal static partial class SelfTest
         oldFrames.Normalize();
         Check("v4 老配置的 8 帧/格 不被改动", oldFrames.Smooth.FramesPerNotch == 8,
             oldFrames.Smooth.FramesPerNotch.ToString());
-        Check("v5 迁移后 schemaVersion 记为 9", oldFrames.SchemaVersion == 9,
+        Check("v5 迁移后 schemaVersion 记为当前版本", oldFrames.SchemaVersion >= 9,
             oldFrames.SchemaVersion.ToString());
 
         var oldFrames6 = AppConfig.Default();
@@ -477,6 +477,33 @@ internal static partial class SelfTest
             && keptTau.Smooth.GlideMs == 250
             && keptTau.Smooth.GlideDelayMs == 80,
             $"{keptTau.Smooth.TailTauMs}/{keptTau.Smooth.GlideMs}/{keptTau.Smooth.GlideDelayMs}");
+
+        /* ── v9 → v10：三件套"指纹"命中才刷新手感，动过任何一项就不动 ── */
+        var untouched = AppConfig.Default();
+        untouched.SchemaVersion = 9;
+        untouched.Boost.FastThresholdPerSec = 7;
+        untouched.Boost.SaturationPerSec = 40;
+        untouched.Smooth.Model = SmoothModel.Eased;
+        untouched.Smooth.EasedMs = 160;
+        untouched.Normalize();
+        Check("v10 迁移：旧默认手感 7/40/160 → 12/120/280",
+            Math.Abs(untouched.Boost.FastThresholdPerSec - 12) < 0.01
+            && Math.Abs(untouched.Boost.SaturationPerSec - 120) < 0.01
+            && untouched.Smooth.EasedMs == 280,
+            $"{untouched.Boost.FastThresholdPerSec}/{untouched.Boost.SaturationPerSec}/{untouched.Smooth.EasedMs}");
+
+        var tweaked = AppConfig.Default();
+        tweaked.SchemaVersion = 9;
+        tweaked.Boost.FastThresholdPerSec = 7;
+        tweaked.Boost.SaturationPerSec = 60;   // 用户自己动过满速点
+        tweaked.Smooth.Model = SmoothModel.Eased;
+        tweaked.Smooth.EasedMs = 160;
+        tweaked.Normalize();
+        Check("v10 迁移：动过满速点就整组保持原样",
+            Math.Abs(tweaked.Boost.FastThresholdPerSec - 7) < 0.01
+            && Math.Abs(tweaked.Boost.SaturationPerSec - 60) < 0.01
+            && tweaked.Smooth.EasedMs == 160,
+            $"{tweaked.Boost.FastThresholdPerSec}/{tweaked.Boost.SaturationPerSec}/{tweaked.Smooth.EasedMs}");
 
         var fresh = AppConfig.Default();
         Check("新默认手感：τ 40 / 惯性 320 / 停手 60",
@@ -644,7 +671,7 @@ internal static partial class SelfTest
             var c = store.Config;
 
             // 默认值
-            Near("默认触发阈值", c.Boost.FastThresholdPerSec, 10);
+            Near("默认触发阈值", c.Boost.FastThresholdPerSec, 12);
             Near("默认最大倍率", c.Boost.MaxMultiplier, 3.0);
             Check("默认开启平滑", c.Smooth.Enabled);
             Check("默认平滑所有滚动（单格滚动也要有平滑过程）", c.Smooth.Scope == SmoothScope.Always);

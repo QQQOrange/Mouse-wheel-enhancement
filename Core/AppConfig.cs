@@ -83,15 +83,30 @@ public sealed class BoostConfig
 
     /// <summary>
     /// 触发阈值：每秒滚多少"格"以上才认为是在快滚。**整数**，2–25。
-    /// 10 格/秒 ≈ 每 100ms 拨一格 —— 正常浏览的节奏基本就在这以下。
+    /// 12 格/秒 ≈ 每 83ms 拨一格 —— 正常浏览、慢慢看长文都在这个节奏以下。
+    ///
+    /// <para>
+    /// v1.10.2 从 7 提到 12：旧阈值配旧的 40 格/秒饱和点，曲线太陡 ——
+    /// 20 格/秒就已经 2.5 倍，日常"稍微快一点"的一段滚动也会被放大成
+    /// "越甩越猛"。SmoothScroll 原版的加速度是默认关闭的，我们保留默认开，
+    /// 但把曲线压平成它那个量级（见 <see cref="SaturationPerSec"/>）。
+    /// </para>
     /// </summary>
-    public double FastThresholdPerSec { get; set; } = 10;
+    public double FastThresholdPerSec { get; set; } = 12;
 
     /// <summary>
     /// 满速点：到这个速度时倍率已经吃满 <see cref="MaxMultiplier"/>。**整数**，
-    /// 且至少比触发阈值高 5。40 格/秒 ≈ 每 25ms 拨一格，属于明显甩动。
+    /// 且至少比触发阈值高 5。120 格/秒 ≈ 每 8.3ms 拨一格 —— 那已经不是"快滚"，
+    /// 是"甩"，只有真甩起来才吃满倍率。
+    ///
+    /// <para>
+    /// v1.10.2 从 40 提到 120：40 意味着每秒 40 格就顶格 5 倍，而人的连续滚轮
+    /// 轻松就到 40 格/秒，于是"稍微快点"直接满速。放到 120 之后，30 格/秒是
+    /// 1.3 倍、60 格/秒是 2.7 倍，曲线形状与 SmoothScroll 的
+    /// `min(7, 0.035r+0.5)` 基本重合（我们封顶 5 倍）。
+    /// </para>
     /// </summary>
-    public double SaturationPerSec { get; set; } = 40;
+    public double SaturationPerSec { get; set; } = 120;
 
     /// <summary>
     /// 倍率下限（阈值处的倍率）。**恒为 1.0**（由 Normalize 强制）：
@@ -536,11 +551,18 @@ public sealed class AppConfig
         var c = new AppConfig();
         c.Smooth.Model = SmoothModel.Eased;
         c.Smooth.Easing = ScrollEasing.Pulse;
-        /* 160 ms 不是拍脑袋：脉冲曲线在 220 ms 下单格实测 233 ms（尾巴偏长），
-         * 160 ms 下是 171 ms —— 比五次的 155 ms 只慢 16 ms，但首帧 2 单位
-         * （五次是 18 单位）、末段速度 159 单位/秒（五次 120）。
-         * SmoothScroll 原版 animationTime 默认 360 ms，实测下来太飘了。 */
-        c.Smooth.EasedMs = 160;
+        /* 280 ms 是"比 SmoothScroll 短一点、但不再是抢跑"的那个点。
+         *
+         * 历史：v1.10.0 用 160 ms，是为了让单格响应快（实测 171 ms 走完）。
+         * 但 160 ms 下六格连滚会在**一帧里**发掉 58 行（见 --frametrace），
+         * 眼睛读作"整块跳一下"；SmoothScroll 用 360 ms，同样的六格最多 31 行/帧，
+         * 这就是它看起来更顺的直接原因。
+         *
+         * 280 ms 取在中间：单格实测约 280 ms 走完（SmoothScroll 354 ms），
+         * 但每帧量被 <see cref="Core.ScrollAnimator"/> 的每帧预算压住，
+         * 不再出现大块。想更快的手感可以在界面上调到 160，那是逐用户的偏好，
+         * 不该当默认。 */
+        c.Smooth.EasedMs = 280;
         return c;
     }
 
@@ -679,7 +701,32 @@ public sealed class AppConfig
             SchemaVersion = 9;
         }
 
-        SchemaVersion = Math.Max(9, SchemaVersion);
+        /* ── v10 迁移：v1.10.2 的滚动手感（默认值刷新）──
+         *
+         * 160ms + 阈值 7 + 满速 40 是 v1.10.0/v1.10.1 的默认组合。实测这组
+         * 在连甩时单帧会发到 58 单位（半格），读作"一顿一顿"，而 280ms 只有 23。
+         * 旧曲线还会在 20 格/秒（正常快滚）就给 2.37×、40 格/秒顶格。
+         *
+         * 只认这组"指纹"（三件套同时命中才认为用户没动过），动过任何一项就完全不动：
+         * 否则会把"自己调到 40 满速"的用户强行改成 120。 */
+        if (SchemaVersion < 10)
+        {
+            var untouchedFeel =
+                Math.Abs(Boost.FastThresholdPerSec - 7) < 0.01 &&
+                Math.Abs(Boost.SaturationPerSec - 40) < 0.01 &&
+                Smooth.Model == SmoothModel.Eased &&
+                Smooth.EasedMs == 160;
+            if (untouchedFeel)
+            {
+                Boost.FastThresholdPerSec = 12;
+                Boost.SaturationPerSec = 120;
+                Smooth.EasedMs = 280;
+            }
+
+            SchemaVersion = 10;
+        }
+
+        SchemaVersion = Math.Max(10, SchemaVersion);
         Appearance.Theme = Theme.Normalize(Appearance.Theme);
         Appearance.Language = Localization.Normalize(Appearance.Language);
 

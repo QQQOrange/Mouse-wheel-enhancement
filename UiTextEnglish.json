@@ -68,7 +68,7 @@
   "速度到多少格/秒时倍率已经吃满上限。它与触发阈值之间是平滑过渡，不是突变。": "The speed at which the multiplier reaches its cap. The transition between the trigger threshold and this point is smooth, not a jump.",
   "40.0 格/秒": "40.0 notches/s",
   "12 · 很早就满速": "12 · Maxes out early",
-  "120 · 要甩得很快": "120 · Needs a very fast flick",
+  "240 · 要甩得飞快": "240 · Only a violent flick gets there",
   "加速倍率上限": "Max acceleration multiplier",
   "相对原始滚动速度的倍数：3.0 表示滚轮拨一格，页面滚动三格的距离。": "Multiple of the original scroll speed: 3.0 means one wheel notch scrolls three notches' worth.",
   "1× · 不加速": "1× · No acceleration",
@@ -88,8 +88,8 @@
   "触控板、自由滚轮通常会以 60~125Hz 连续发小步（有时看起来也是整格 120）。默认不接管：这类流本身就是触控板手感，拆帧/加速只会把它弄碎。打开后才会按倍率放大；如果发现触控板变飘或过快，关掉即可。": "Touchpads and free-spinning wheels usually send small steps continuously at 60–125 Hz (sometimes what looks like a full 120-unit notch). Off by default: such streams already feel like a touchpad, and frame-splitting or accelerating only breaks them up. When on, they are scaled by the multiplier; if the touchpad becomes floaty or too fast, turn it off.",
   "默认值为什么是这样": "Why these defaults",
   "这两个数字都是「速度」（格/秒），不是累计格数：滚得再多、只要慢，就永远不会加速。": "Both numbers are speeds (notches/s), not accumulated notches: no matter how much you scroll, if it is slow it never accelerates.",
-  "10 格/秒 ≈ 每 100ms 拨一格。正常浏览网页、看文档基本都在这个节奏以下，所以不会误触发；而想快速翻页时人会下意识连拨，节奏立刻就到 20 格/秒以上。": "10 notches/s ≈ one notch every 100 ms. Ordinary web browsing and document reading stay below this pace, so it does not trigger by accident; when you want to flip through pages quickly you spin without thinking and the pace instantly reaches 20 notches/s or more.",
-  "40 格/秒 ≈ 每 25ms 拨一格，是明显的甩动。把满速点放在这里，意味着「越用力甩，加速越充分」，同时避免轻轻一抖就顶格。": "40 notches/s ≈ one notch every 25 ms, a clear flick. Putting the saturation point here means “the harder you flick, the fuller the acceleration”, while a light jitter does not max it out.",
+  "12 格/秒 ≈ 每 85ms 拨一格。正常浏览网页、看文档基本都在这个节奏以下，所以不会误触发；而想快速翻页时人会下意识连拨，节奏立刻就到 20 格/秒以上。": "12 notches/s ≈ one notch every 85 ms. Ordinary web browsing and document reading stay below this pace, so it does not trigger by accident; when you want to flip through pages quickly you spin without thinking and the pace instantly reaches 20 notches/s or more.",
+  "120 格/秒 ≈ 每 8ms 拨一格，是真正的甩动。满速点放在这里，意味着「越用力甩，加速越充分」，同时避免轻轻一抖就顶格；1.10.2 之前这里写的是 40 格/秒，很多人 20 格/秒就被顶到上限，反而显得突兀。": "120 notches/s ≈ one notch every 8 ms — a real fling. Putting the saturation point here means “the harder you fling, the fuller the acceleration”, while a light jitter does not max it out. Before 1.10.2 this read 40 notches/s, so many people hit the cap at 20 notches/s and the jump felt abrupt.",
   "3 倍是绝大多数人不需要二次调整的值：一屏变三分之一的滚动量，又不会失控到找不到位置。觉得不够就调高，8 倍是上限。": "3× is the value most people never need to change: one screenful now takes a third of the scrolling, without running away so far that you lose your place. Raise it if it feels weak; 8× is the cap.",
   "另外，一段滚动的头 2 格、以及持续不到 70ms 的抖动，一律不加速。轻轻一拨往往被鼠标拆成好几个事件、间隔只有几毫秒，按速度算会显得「极快」——这条护栏专门挡住它。": "In addition, the first 2 notches of a scroll and jitters lasting less than 70 ms are never accelerated. A light turn is often split by the mouse into several events only milliseconds apart, which by speed looks “very fast” — this guard blocks exactly that.",
   "手感曲线": "Feel presets",
@@ -234,5 +234,5 @@
   "三次": "Cubic",
   "单格动画时长": "Per-notch duration",
   "一格": "notch",
-  "一格从开始到落点走多久。越短越跟手，越长越绵；220 ms 与 SmoothScroll 的默认值一致。": "How long a notch takes to reach its landing point. Shorter feels more direct, longer feels softer; 220 ms matches SmoothScroll's default."
+  "一格从开始到落点走多久。越短越跟手，越长越绵。脉冲曲线推荐 280 ms（单格实测 280 ms、单帧最多 5 单位）；220 ms 适合逐格缓动，SmoothScroll 原版默认 360 ms，实测偏飘。": "How long a notch takes to reach its landing point. Shorter feels more direct, longer feels softer. With the pulse curve 280 ms is recommended (measured: 280 ms per notch, at most 5 units in one frame); 220 ms suits per-notch easing, and SmoothScroll's 360 ms default feels floaty in practice."
 }

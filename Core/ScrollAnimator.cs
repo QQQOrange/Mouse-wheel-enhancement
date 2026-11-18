@@ -352,6 +352,16 @@ internal sealed partial class ScrollAnimator : IDisposable
      * 车道只在动画线程读写；钩子线程只往 _pendingMilli 里加量。
      * _easeReset 是跨线程的"积压被清空/换向"信号，由 Clear/PushCore 置位。 */
     private const int MaxEaseLanes = 12;
+
+    /// <summary>每帧预算相对"平均每帧量"的余量：1.4 倍刚好容下脉冲曲线的陡峭段。</summary>
+    private const double EaseBudgetHeadroom = 1.4;
+
+    /// <summary>每帧预算的下限。2 行 = 一帧里最多两个滚轮档，肉眼已经读不出"跳"。</summary>
+    private const int EaseBudgetFloor = 2;
+
+    /// <summary>曲线走完但还有余量时，把这些余量摊在这么长的时间里发完（落地段）。</summary>
+    private const double EaseLandingMs = 45.0;
+
     private readonly long[] _easeStartTicks = new long[MaxEaseLanes];
     private readonly double[] _easeUnits = new double[MaxEaseLanes];
     private int _easeLanes;
@@ -389,7 +399,8 @@ internal sealed partial class ScrollAnimator : IDisposable
 
         /* 新到的量 = 积压的增量。一帧里到多格（>160Hz 的连滚）就并成一条车道，
          * 曲线形状略变但总量不丢。 */
-        var arrivedMilli = Math.Abs(pendingMilli) - Math.Abs(_easeSeenMilli);
+        var backlogMilli = Math.Abs(pendingMilli);
+        var arrivedMilli = backlogMilli - Math.Abs(_easeSeenMilli);
         if (arrivedMilli > 0)
         {
             var arrivedUnits = arrivedMilli / (double)Milli;
@@ -407,33 +418,73 @@ internal sealed partial class ScrollAnimator : IDisposable
             }
         }
 
+        /* 这一帧看到的积压**整个**都算已登记。
+         *
+         * v1.10.2 修：旧写法是 `seen = pending - 已发`，等于把"这一帧发出去的单位"
+         * 又登记成一条新车道 —— 车道里的总量会自己滚雪球（每帧都往里加刚发掉的量），
+         * 迟到一帧就能算出 58 行的大块（--frametrace 实测六格 203ms 单帧 58 行）。
+         * 改成记"看到的全部"，车道就只装**真正新到**的量，和 SmoothScroll 的
+         * `A（目标总量）× p'` 是同一个模型。被预算压住没发完的部分留在车道里，
+         * 不会丢，也不会被重复登记。 */
+        _easeSeenMilli = pendingMilli;
+
         var durationMs = Math.Clamp(s.EasedMs, 80, 600);
         var allDone = true;
         double target = 0;
+        double laneUnits = 0;
 
         for (var i = 0; i < _easeLanes; i++)
         {
             var p = TicksToMs(now - _easeStartTicks[i]) / durationMs;
             if (p < 1) allDone = false;
             target += _easeUnits[i] * ScrollEasingCurve.Progress(p, s.Easing, s.PulseScale);
+            laneUnits += _easeUnits[i];
         }
 
         var want = target - _easePosition;
         if (want < 0) want = 0;
 
+        /* ── 每帧预算（v1.10.2 的 B / D 两条）──
+         *
+         * 曲线算出来的是"这一帧**应该**走到哪"，它按**真实经过的时间**算：
+         * 迟到一帧（vsync 抖动、系统抢占）p 就跳一大截，want 直接变成好几格，
+         * 发出去就是"卡一下、然后猛地跳一段"。这正是 SmoothScroll 看起来更顺的
+         * 直接原因 —— 它锁 vblank，每帧最多发 1–3 行。
+         *
+         * 这里用**标称帧长**（FrameMs，见 D 条：漏帧不补大块、只往后顺延）算
+         * "这一帧平均该走多少"，再乘 1.4 的余量兜住脉冲曲线的陡峭段，最后 +1
+         * 保证曲线刚起步时也能迈出去。超出的量留在 _easePosition 的差额里，
+         * 后面几帧按同样的预算补上 —— 输运总量不变，单帧不再有大块。
+         *
+         * 预算跟着 laneUnits 走：滚得越多、车道里堆的量越大，预算自动放大，
+         * 所以连续的快速滚动不会被这个上限拖慢。 */
+        var share = laneUnits * FrameMs(s) / durationMs;
+        var budget = (int)Math.Ceiling(share * EaseBudgetHeadroom) + 1;
+        if (budget < EaseBudgetFloor) budget = EaseBudgetFloor;
+        if (budget > MaxUnitsPerFrame) budget = (int)MaxUnitsPerFrame;
+
         int units;
         if (allDone)
         {
             /* 曲线已经走完：把剩下的零头一次交清。不足 1 单位也要发 ——
-             * 留着它 pending 永远回不到 0，动画线程会空转。 */
-            units = (int)Math.Ceiling(Math.Abs(pendingMilli) / (double)Milli);
+             * 留着它 pending 永远回不到 0，动画线程会空转。
+             * 但**也受预算约束**：一次交清 58 行同样是"整块跳"。 */
+            /* 曲线走完但还有余量（前几帧被预算削掉的那部分）。以前这里是"一次交清"，
+             * 靠预算兜底 —— 六格实测最后一帧 23 单位，frametrace 判"末尾回升"：
+             * 曲线已经收到 1 单位/帧，突然又发 23，读作"停住之后又弹一下"。
+             * 改成按落地窗口（45ms）摊开：剩 23 单位约 4 帧、35ms 走完。
+             * 不足 1 单位也要发，否则 pending 永远回不到 0、动画线程空转。 */
+            var remain = Math.Abs(pendingMilli) / (double)Milli;
+            var landMs = Math.Max(FrameMs(s), EaseLandingMs);
+            units = (int)Math.Ceiling(remain * FrameMs(s) / landMs);
+            if (units < 1) units = 1;
         }
         else
         {
-            units = (int)Math.Round(want);
+            units = (int)Math.Round(want, MidpointRounding.AwayFromZero);
         }
 
-        if (units > MaxUnitsPerFrame) units = (int)MaxUnitsPerFrame;
+        if (units > budget) units = budget;
         if (units <= 0)
         {
             _easeSeenMilli = pendingMilli;
@@ -441,7 +492,9 @@ internal sealed partial class ScrollAnimator : IDisposable
         }
 
         _easePosition += units;
-        _easeSeenMilli = pendingMilli - sign * (long)(units * Milli);
+        /* 记"发之前看到的积压"，不是"发完剩下的积压" —— 剩下的那些已经在车道里了，
+         * 下一帧按新输入重新登记（旧写法会让它被当成新到的量再登记一遍）。 */
+        _easeSeenMilli = pendingMilli;
         return sign * units;
     }
 
